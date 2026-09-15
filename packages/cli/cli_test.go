@@ -197,6 +197,7 @@ func TestParseArgsEvalAndWait(t *testing.T) {
 	}
 
 	// wait by milliseconds
+	// wait by milliseconds with and without suffix
 	cmd2, err := ParseArgs([]string{"wait", "1500"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -206,6 +207,21 @@ func TestParseArgsEvalAndWait(t *testing.T) {
 		t.Errorf("expected DurationMs 1500, got %+v", waitParams)
 	}
 
+	cmdMS, err := ParseArgs([]string{"wait", "1500ms"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cmdMS.Params.(protocol.WaitParams).DurationMs != 1500 {
+		t.Errorf("expected 1500ms -> 1500, got %d", cmdMS.Params.(protocol.WaitParams).DurationMs)
+	}
+
+	cmdSec, err := ParseArgs([]string{"wait", "2s"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cmdSec.Params.(protocol.WaitParams).DurationMs != 2000 {
+		t.Errorf("expected 2s -> 2000, got %d", cmdSec.Params.(protocol.WaitParams).DurationMs)
+	}
 	// wait by selector
 	cmd3, err := ParseArgs([]string{"wait", ".spinner-done"})
 	if err != nil {
@@ -284,6 +300,7 @@ func TestParseArgsGlobalFlags(t *testing.T) {
 	if !cmd.Global.JSON {
 		t.Errorf("expected Global.JSON true")
 	}
+
 	if cmd.Global.TimeoutMs != 5000 {
 		t.Errorf("expected Global.TimeoutMs 5000, got %d", cmd.Global.TimeoutMs)
 	}
@@ -338,5 +355,19 @@ func TestParseArgsValidationErrors(t *testing.T) {
 		if err == nil {
 			t.Errorf("expected error for args %v, got nil", args)
 		}
+	}
+}
+func TestParseArgsEndOfOptionsDelimiter(t *testing.T) {
+	// Arguments after "--" must be preserved as literal positional arguments
+	cmd, err := ParseArgs([]string{"fill", "#input", "--", "--json"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cmd.Global.JSON {
+		t.Errorf("expected global JSON to be false when --json is after --")
+	}
+	fillParams := cmd.Params.(protocol.FillParams)
+	if fillParams.Text != "--json" {
+		t.Errorf("expected text to be '--json', got %q", fillParams.Text)
 	}
 }
