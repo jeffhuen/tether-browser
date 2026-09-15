@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"context"
@@ -31,6 +31,7 @@ Commands:
   screenshot [path]          Capture screenshot
   close [--all]              Close active tab or all tabs
   status                     Show daemon and target connectivity
+  review [start|list|send]   In-page developer review inspector
   broker [run|start|stop]    Manage session broker daemon
 
 Snapshot Options:
@@ -89,6 +90,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	} else {
 		client = NewClient(daemonAddr)
 	}
+
 	timeout := 30 * time.Second
 	if cmd.Global.TimeoutMs > 0 {
 		timeout = time.Duration(cmd.Global.TimeoutMs) * time.Millisecond
@@ -223,9 +225,4 @@ func injectSessionAndTimeout(params any, session string, timeoutMs int) any {
 		m["timeoutMs"] = timeoutMs
 	}
 	return m
-}
-
-func main() {
-	code := Run(os.Args[1:], os.Stdout, os.Stderr)
-	os.Exit(code)
 }
