@@ -559,6 +559,7 @@
       this.pendingPayload = null;
       this.rafId = 0;
       this.boundOnPointerMove = this.onPointerMove.bind(this);
+      this.boundOnClick = this.onClick.bind(this);
       this.boundOnKeyDown = this.onKeyDown.bind(this);
     }
 
@@ -728,6 +729,7 @@
         if (entry && entry.element) entry.element.style.pointerEvents = 'auto';
       });
       window.addEventListener('mousemove', this.boundOnPointerMove, true);
+      window.addEventListener('click', this.boundOnClick, true);
       window.addEventListener('keydown', this.boundOnKeyDown, true);
       this.startTracking();
     }
@@ -742,6 +744,7 @@
         if (entry && entry.element) entry.element.style.pointerEvents = 'none';
       });
       window.removeEventListener('mousemove', this.boundOnPointerMove, true);
+      window.removeEventListener('click', this.boundOnClick, true);
       window.removeEventListener('keydown', this.boundOnKeyDown, true);
       if (this.reticle) this.reticle.style.display = 'none';
       if (this.tooltip) this.tooltip.style.display = 'none';
@@ -832,6 +835,29 @@
       }
     }
 
+    onClick(e) {
+      if (!this.active) return;
+      if (e.target === this.host || (this.host && this.host.contains(e.target))) {
+        return;
+      }
+
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+
+      if (this.modalOpen) {
+        this.closeModal();
+        return;
+      }
+
+      const target = e.target;
+      if (!target || target === document.documentElement || target === document.body) return;
+
+      this.selectedEl = target;
+      this.pendingPayload = extractPayload(target);
+      this.openModal(e.clientX, e.clientY);
+    }
+
     openModal(clickX, clickY) {
       this.modalOpen = true;
       this.editingNote = null;
@@ -901,6 +927,7 @@
     createBadge(note) {
       const badge = document.createElement('div');
       badge.className = 'badge';
+      badge.textContent = String(note.index);
       badge.title = 'Pin [' + note.index + ']: ' + (note.comment || note.intent) + ' (click to view/edit)';
       badge.style.pointerEvents = this.active ? 'auto' : 'none';
       badge.addEventListener('click', (e) => {
