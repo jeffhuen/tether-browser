@@ -68,6 +68,36 @@ func TestJSONRPCNumericAndNullIDs(t *testing.T) {
 	if !strings.Contains(string(errJSON), `"id":null`) {
 		t.Errorf("expected raw json to contain null id: %s", string(errJSON))
 	}
+	// 3. Empty string ID
+	reqEmpty, err := NewRequest("", "browser.status", nil, 1, "epoch-a")
+	if err != nil {
+		t.Fatalf("create empty string id: %v", err)
+	}
+	if string(reqEmpty.ID) != `""` {
+		t.Errorf("expected empty string ID to be \"\", got: %s", string(reqEmpty.ID))
+	}
+
+	// 4. String ID "null"
+	reqNullStr, err := NewRequest("null", "browser.status", nil, 1, "epoch-a")
+	if err != nil {
+		t.Fatalf("create string id 'null': %v", err)
+	}
+	if string(reqNullStr.ID) != `"null"` {
+		t.Errorf("expected string ID 'null' to be \"null\", got: %s", string(reqNullStr.ID))
+	}
+
+	// 5. String ID with control character \x00
+	reqCtrl, err := NewRequest("\x00", "browser.status", nil, 1, "epoch-a")
+	if err != nil {
+		t.Fatalf("create control char id: %v", err)
+	}
+	rawCtrl, err := json.Marshal(reqCtrl)
+	if err != nil {
+		t.Fatalf("json.Marshal with control char in ID failed: %v", err)
+	}
+	if !strings.Contains(string(rawCtrl), `\u0000`) {
+		t.Errorf("expected JSON-escaped null byte \\u0000, got: %s", string(rawCtrl))
+	}
 }
 
 func TestJSONRPCResponseNilResultEmitsLiteralNull(t *testing.T) {
@@ -86,9 +116,12 @@ func TestJSONRPCResponseNilResultEmitsLiteralNull(t *testing.T) {
 		t.Errorf("expected JSON-RPC response to contain 'result':null, got: %s", string(raw))
 	}
 
-	var unpacked struct{}
-	if err := resp.UnmarshalResult(&unpacked); err != nil {
-		t.Errorf("unmarshal nil result should succeed without error, got: %v", err)
+	var dest any = "old"
+	if err := resp.UnmarshalResult(&dest); err != nil {
+		t.Fatalf("unmarshal nil result should succeed, got: %v", err)
+	}
+	if dest != nil {
+		t.Errorf("expected dest to be cleared to nil, got: %v", dest)
 	}
 }
 

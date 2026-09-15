@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 )
 
 // JSONRPCVersion is the supported protocol version.
@@ -93,16 +92,14 @@ func FormatID(id any) json.RawMessage {
 	}
 	switch v := id.(type) {
 	case string:
-		if v == "" || v == "null" {
+		d, err := json.Marshal(v)
+		if err != nil {
 			return json.RawMessage("null")
 		}
-		return json.RawMessage(strconv.Quote(v))
-	case int:
-		return json.RawMessage(strconv.Itoa(v))
-	case int64:
-		return json.RawMessage(strconv.FormatInt(v, 10))
-	case uint64:
-		return json.RawMessage(strconv.FormatUint(v, 10))
+		return d
+	case int, int64, uint64:
+		d, _ := json.Marshal(v)
+		return d
 	case json.RawMessage:
 		if len(v) == 0 {
 			return json.RawMessage("null")
@@ -207,7 +204,7 @@ func (r *Response) UnmarshalResult(dest any) error {
 	if r.Error != nil {
 		return r.Error
 	}
-	if len(r.Result) == 0 || bytes.Equal(r.Result, []byte("null")) {
+	if len(r.Result) == 0 {
 		return nil
 	}
 	if err := json.Unmarshal(r.Result, dest); err != nil {
