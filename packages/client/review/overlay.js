@@ -201,18 +201,17 @@
     };
   }
 
-  function getAncestorPath(el) {
-    const path = [];
-    let curr = el.parentElement;
-    while (curr && curr !== document.documentElement && path.length < 8) {
-      const tag = curr.tagName.toLowerCase();
-      const role = curr.getAttribute('role');
-      path.push(role ? tag + '[role=' + role + ']' : tag);
+  function isElementFixed(el) {
+    let curr = el;
+    while (curr && curr !== document.body && curr !== document.documentElement) {
+      try {
+        const pos = window.getComputedStyle(curr).position;
+        if (pos === 'fixed' || pos === 'sticky') return true;
+      } catch (e) {}
       curr = curr.parentElement;
     }
-    return path;
+    return false;
   }
-
   function buildElementPath(el) {
     const parts = [];
     let curr = el;
@@ -474,6 +473,17 @@
       provenance: 'unavailable'
     };
   }
+  function getAncestorPath(el) {
+    const path = [];
+    let curr = el ? el.parentElement : null;
+    while (curr && curr !== document.documentElement && path.length < 8) {
+      const tag = curr.tagName.toLowerCase();
+      const role = curr.getAttribute('role');
+      path.push(role ? tag + '[role=' + role + ']' : tag);
+      curr = curr.parentElement;
+    }
+    return path;
+  }
 
   // --- 3. Complete Target Payload Extraction ---
 
@@ -522,7 +532,7 @@
           width: Math.round(rect.width),
           height: Math.round(rect.height)
         },
-        isFixed: window.getComputedStyle(el).position === 'fixed',
+        isFixed: isElementFixed(el),
         computedStyles: getComputedStylesSubset(el),
         framework: fw
       },
@@ -666,6 +676,17 @@
       card.querySelector('#card-cancel').addEventListener('click', () => this.closeModal());
       card.querySelector('#card-save').addEventListener('click', () => this.saveModal());
 
+      const textarea = card.querySelector('#card-comment');
+      textarea.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+          e.preventDefault();
+          this.saveModal();
+        }
+      });
+
+      host.addEventListener('wheel', (e) => {
+        window.scrollBy({ left: e.deltaX, top: e.deltaY, behavior: 'auto' });
+      }, { passive: true });
       (document.body || document.documentElement).appendChild(host);
       this.host = host;
       this.shadowRoot = shadow;
@@ -819,6 +840,7 @@
 
     closeModal() {
       this.modalOpen = false;
+      this.editingNote = null;
       if (this.host) this.host.style.cursor = this.active ? 'crosshair' : 'default';
       if (this.modal) this.modal.style.display = 'none';
       this.selectedEl = null;
@@ -826,10 +848,16 @@
     }
 
     saveModal() {
+      if (this.editingNote) {
+        this.editingNote.intent = this.modal.querySelector('#card-intent').value;
+        this.editingNote.comment = this.modal.querySelector('#card-comment').value.trim();
+        this.editingNote = null;
+        this.closeModal();
+        return;
+      }
       if (!this.pendingPayload || !this.selectedEl) return;
       const intent = this.modal.querySelector('#card-intent').value;
       const comment = this.modal.querySelector('#card-comment').value.trim();
-
       const note = {
         id: 'note-' + (this.notes.length + 1),
         index: this.notes.length + 1,
@@ -855,9 +883,47 @@
       const badge = document.createElement('div');
       badge.className = 'badge';
       badge.textContent = String(note.index);
+      badge.title = 'Pin [' + note.index + ']: ' + (note.comment || note.intent) + ' (click to view/edit)';
+      badge.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.openExistingModal(note);
+      });
       this.shadowRoot.appendChild(badge);
       this.markerElements.set(note.id, { element: badge, note: note });
       this.updatePositions();
+    }
+
+    openExistingModal(note) {
+      if (!note) return;
+      this.modalOpen = true;
+      this.editingNote = note;
+      const card = this.modal;
+      const meta = card.querySelector('#card-meta');
+      const target = note.payload.target;
+      const fw = target.framework;
+
+      const cName = fw.component || fw.Component || target.tagName;
+      const sLoc = fw.sourceLocation || fw.SourceLocation || target.selector;
+      meta.textContent = '[Pin ' + note.index + '] ' + cName + ' • ' + sLoc;
+
+      card.querySelector('#card-intent').value = note.intent || 'design_fix';
+      card.querySelector('#card-comment').value = note.comment || '';
+
+      const badgeEntry = this.markerElements.get(note.id);
+      let posX = window.innerWidth / 2 - 160;
+      let posY = window.innerHeight / 2 - 100;
+      if (badgeEntry && badgeEntry.element) {
+        const r = badgeEntry.element.getBoundingClientRect();
+        posX = Math.max(20, Math.min(window.innerWidth - 340, r.left + 30));
+        posY = Math.max(20, Math.min(window.innerHeight - 300, r.top));
+      }
+
+      if (this.host) this.host.style.cursor = 'default';
+      card.style.display = 'block';
+      card.style.left = posX + 'px';
+      card.style.top = posY + 'px';
+
+      setTimeout(() => card.querySelector('#card-comment').focus(), 50);
     }
 
     updatePositions() {
