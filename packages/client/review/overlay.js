@@ -68,23 +68,33 @@
   function buildSelector(el) {
     if (!el || el.nodeType !== Node.ELEMENT_NODE) return '';
     if (el.id && !containsSecret(el.id)) {
-      return '#' + CSS.escape(el.id);
+      const sel = '#' + CSS.escape(el.id);
+      try {
+        if (document.querySelectorAll(sel).length === 1) return sel;
+      } catch (e) {}
     }
     const tag = el.tagName.toLowerCase();
+    let sel = tag;
     if (el.className && typeof el.className === 'string') {
       const classes = el.className.trim().split(/\s+/).filter(c => c && !c.includes(':') && !containsSecret(c));
       if (classes.length > 0) {
-        return tag + '.' + classes.map(c => CSS.escape(c)).slice(0, 3).join('.');
+        sel = tag + '.' + classes.map(c => CSS.escape(c)).slice(0, 3).join('.');
+        try {
+          if (document.querySelectorAll(sel).length === 1) return sel;
+        } catch (e) {}
       }
     }
     const parent = el.parentElement;
-    if (!parent) return tag;
-    const siblings = Array.from(parent.children).filter(c => c.tagName === el.tagName);
-    if (siblings.length > 1) {
-      const index = siblings.indexOf(el) + 1;
-      return buildSelector(parent) + ' > ' + tag + ':nth-of-type(' + index + ')';
+    if (!parent || parent === document.body || parent === document.documentElement) {
+      return sel;
     }
-    return buildSelector(parent) + ' > ' + tag;
+    const siblings = Array.from(parent.children).filter(c => c.tagName === el.tagName);
+    const index = siblings.indexOf(el) + 1;
+    const parentSel = buildSelector(parent);
+    if (parentSel) {
+      return parentSel + ' > ' + tag + ':nth-of-type(' + index + ')';
+    }
+    return tag + ':nth-of-type(' + index + ')';
   }
 
   function buildElementPath(el) {
@@ -135,9 +145,9 @@
     const index = siblings.indexOf(el);
     for (let i = Math.max(0, index - 2); i <= Math.min(siblings.length - 1, index + 2); i++) {
       if (i === index) continue;
-      const text = siblings[i].innerText || siblings[i].textContent;
-      if (text && text.trim().length > 0) {
-        nearby.push(sanitizeText(text, 100));
+      const text = extractSanitizedText(siblings[i]);
+      if (text && text.trim().length > 0 && text !== '[redacted]') {
+        nearby.push(text);
       }
       if (nearby.length >= 4) break;
     }
@@ -239,12 +249,14 @@
     curr = el;
     while (curr && curr !== document.body) {
       if (curr.tagName && curr.tagName.toLowerCase() === 'astro-island') {
-        const url = curr.getAttribute('component-url') || '';
+        const url = sanitizeURL(curr.getAttribute('component-url') || '');
         const exportName = curr.getAttribute('component-export') || '';
         return {
           name: 'Astro',
           component: exportName,
+          Component: exportName,
           sourceLocation: url,
+          SourceLocation: url,
           provenance: 'exact',
           attributes: { 'component-url': url }
         };
@@ -289,11 +301,13 @@
     while (curr && curr !== document.body) {
       if (curr.hasAttribute('hx-get') || curr.hasAttribute('hx-post') || curr.hasAttribute('hx-target')) {
         const target = curr.getAttribute('hx-target') || '';
-        const endpoint = curr.getAttribute('hx-get') || curr.getAttribute('hx-post') || '';
+        const endpoint = sanitizeURL(curr.getAttribute('hx-get') || curr.getAttribute('hx-post') || '');
         return {
           name: 'HTMX',
           component: target,
+          Component: target,
           sourceLocation: endpoint,
+          SourceLocation: endpoint,
           provenance: 'inferred'
         };
       }
@@ -636,8 +650,10 @@
       this.reticle.style.height = rect.height + 'px';
 
       let label = target.tagName.toLowerCase();
-      if (fw.Component) label = fw.Component + ' (' + label + ')';
-      if (fw.SourceLocation) label += ' • ' + fw.SourceLocation;
+      const cName = fw.component || fw.Component;
+      const sLoc = fw.sourceLocation || fw.SourceLocation;
+      if (cName) label = cName + ' (' + label + ')';
+      if (sLoc) label += ' • ' + sLoc;
 
       this.tooltip.style.display = 'block';
       this.tooltip.textContent = label;
@@ -677,7 +693,9 @@
       const target = this.pendingPayload.target;
       const fw = target.framework;
 
-      meta.textContent = `${fw.Component || target.tagName} • ${fw.SourceLocation || target.selector}`;
+      const cName = fw.component || fw.Component || target.tagName;
+      const sLoc = fw.sourceLocation || fw.SourceLocation || target.selector;
+      meta.textContent = `${cName} • ${sLoc}`;
       card.querySelector('#card-comment').value = '';
 
       card.style.display = 'block';
@@ -744,8 +762,8 @@
           return;
         }
         element.style.display = 'flex';
-        element.style.left = (rect.left + scrollX + rect.width / 2 - 12) + 'px';
-        element.style.top = (rect.top + scrollY - 12) + 'px';
+        element.style.left = (rect.left + rect.width / 2 - 12) + 'px';
+        element.style.top = (rect.top - 12) + 'px';
       });
     }
 
