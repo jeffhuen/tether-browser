@@ -685,8 +685,33 @@
       });
 
       host.addEventListener('wheel', (e) => {
-        window.scrollBy({ left: e.deltaX, top: e.deltaY, behavior: 'auto' });
+        const path = e.composedPath ? e.composedPath() : [];
+        const inCard = path.some(node => node && node.classList && node.classList.contains('card'));
+        if (!inCard) {
+          window.scrollBy({ left: e.deltaX, top: e.deltaY, behavior: 'auto' });
+        }
       }, { passive: true });
+
+      host.addEventListener('click', (e) => {
+        if (!this.active) return;
+        const path = e.composedPath ? e.composedPath() : [];
+        const isControl = path.some(node =>
+          node && node.classList && (node.classList.contains('badge') || node.classList.contains('card'))
+        );
+        if (isControl) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+
+        const target = this.getElementUnderPointer(e.clientX, e.clientY);
+        if (!target) return;
+
+        this.selectedEl = target;
+        this.pendingPayload = extractPayload(target);
+        this.openModal(e.clientX, e.clientY);
+      });
+
       (document.body || document.documentElement).appendChild(host);
       this.host = host;
       this.shadowRoot = shadow;
@@ -700,7 +725,6 @@
       this.host.style.pointerEvents = 'all';
       this.host.style.cursor = 'crosshair';
       window.addEventListener('mousemove', this.boundOnPointerMove, true);
-      window.addEventListener('click', this.boundOnClick, true);
       window.addEventListener('keydown', this.boundOnKeyDown, true);
       this.startTracking();
     }
@@ -712,7 +736,6 @@
         this.host.style.cursor = 'default';
       }
       window.removeEventListener('mousemove', this.boundOnPointerMove, true);
-      window.removeEventListener('click', this.boundOnClick, true);
       window.removeEventListener('keydown', this.boundOnKeyDown, true);
       if (this.reticle) this.reticle.style.display = 'none';
       if (this.tooltip) this.tooltip.style.display = 'none';
@@ -795,7 +818,11 @@
 
     onClick(e) {
       if (!this.active) return;
-      if (this.modalOpen && this.modal && this.modal.contains(e.target)) return;
+      const path = e.composedPath ? e.composedPath() : [];
+      const hitOverlayControl = path.some(node =>
+        node && node.classList && (node.classList.contains('badge') || node.classList.contains('card'))
+      );
+      if (hitOverlayControl) return;
 
       e.preventDefault();
       e.stopPropagation();
@@ -851,6 +878,10 @@
       if (this.editingNote) {
         this.editingNote.intent = this.modal.querySelector('#card-intent').value;
         this.editingNote.comment = this.modal.querySelector('#card-comment').value.trim();
+        const entry = this.markerElements.get(this.editingNote.id);
+        if (entry && entry.element) {
+          entry.element.title = 'Pin [' + this.editingNote.index + ']: ' + (this.editingNote.comment || this.editingNote.intent) + ' (click to view/edit)';
+        }
         this.editingNote = null;
         this.closeModal();
         return;
