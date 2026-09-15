@@ -26,10 +26,11 @@ Separate required behavior from implementation preferences. A discovered bug or 
 
 ## 3. Codebase Discovery
 
-Use codebase-memory for code structure: definitions, relationships, and call paths. Check coverage for cited and changed files, then read source code directly where coverage is incomplete.
+Choose the tool that fits the scope of your question. Do not query both graphs for one question.
 
-Use direct text search for literals, configuration, scripts, and documentation.
-
+- **Code structure and call paths**: Use `codebase-memory-mcp`. Search for symbols with `search_graph`, trace callers and callees with `trace_path`, and read source code with `get_code_snippet`. Check index coverage for cited files before you make negative claims.
+- **System architecture and concepts**: Use Graphify. Read artifacts in `graphify-out/` to inspect component boundaries, documentation relationships, and design decisions. Run `graphify update .` only after you make structural code changes.
+- **Exact text and configuration**: Use direct file search for string literals, configuration values, scripts, and documentation files.
 ## 4. Verification Follows Changed Behavior
 
 Use the smallest relevant check that can observe the changed behavior:
