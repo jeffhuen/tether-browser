@@ -452,7 +452,9 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 
 	case protocol.MethodReviewStart:
 		var p protocol.ReviewParams
-		_ = req.UnmarshalParams(&p)
+		if err := req.UnmarshalParams(&p); err != nil {
+			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
+		}
 		if err := s.driver.StartReview(ctx, p); err != nil {
 			return mapDriverError(req, err)
 		}
@@ -461,17 +463,26 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 
 	case protocol.MethodReviewList:
 		var p protocol.ReviewParams
-		_ = req.UnmarshalParams(&p)
+		if err := req.UnmarshalParams(&p); err != nil {
+			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
+		}
 		notes, err := s.driver.GetReviewNotes(ctx, p)
 		if err != nil {
 			return mapDriverError(req, err)
 		}
-		resp, _ := protocol.NewResponse(req.ID, protocol.ReviewListResult{Notes: notes}, req.Seq, req.Epoch)
+		var pageURL, viewport string
+		if len(notes) > 0 && notes[0] != nil && notes[0].Payload != nil {
+			pageURL = notes[0].Payload.Page.SanitizedURL
+			viewport = fmt.Sprintf("%dx%d", notes[0].Payload.Page.ViewportWidth, notes[0].Payload.Page.ViewportHeight)
+		}
+		resp, _ := protocol.NewResponse(req.ID, protocol.ReviewListResult{Notes: notes, PageURL: pageURL, Viewport: viewport}, req.Seq, req.Epoch)
 		return resp
 
 	case protocol.MethodReviewClear:
 		var p protocol.ReviewParams
-		_ = req.UnmarshalParams(&p)
+		if err := req.UnmarshalParams(&p); err != nil {
+			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
+		}
 		if err := s.driver.ClearReview(ctx, p); err != nil {
 			return mapDriverError(req, err)
 		}
@@ -480,13 +491,20 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 
 	case protocol.MethodReviewSend:
 		var p protocol.ReviewParams
-		_ = req.UnmarshalParams(&p)
+		if err := req.UnmarshalParams(&p); err != nil {
+			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
+		}
 		notes, err := s.driver.GetReviewNotes(ctx, p)
 		if err != nil {
 			return mapDriverError(req, err)
 		}
-		md := protocol.FormatDesignFeedbackReport(notes, "", "")
-		resp, _ := protocol.NewResponse(req.ID, protocol.ReviewSendResult{Markdown: md, Notes: notes}, req.Seq, req.Epoch)
+		var pageURL, viewport string
+		if len(notes) > 0 && notes[0] != nil && notes[0].Payload != nil {
+			pageURL = notes[0].Payload.Page.SanitizedURL
+			viewport = fmt.Sprintf("%dx%d", notes[0].Payload.Page.ViewportWidth, notes[0].Payload.Page.ViewportHeight)
+		}
+		md := protocol.FormatDesignFeedbackReport(notes, pageURL, viewport)
+		resp, _ := protocol.NewResponse(req.ID, protocol.ReviewSendResult{Markdown: md, Notes: notes, PageURL: pageURL}, req.Seq, req.Epoch)
 		return resp
 
 	default:
