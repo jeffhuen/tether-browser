@@ -559,7 +559,6 @@
       this.pendingPayload = null;
       this.rafId = 0;
       this.boundOnPointerMove = this.onPointerMove.bind(this);
-      this.boundOnClick = this.onClick.bind(this);
       this.boundOnKeyDown = this.onKeyDown.bind(this);
     }
 
@@ -673,6 +672,13 @@
       shadow.appendChild(card);
       this.modal = card;
 
+      card.addEventListener('click', (e) => {
+        e.stopPropagation();
+      });
+      card.addEventListener('wheel', (e) => {
+        e.stopPropagation();
+      });
+
       card.querySelector('#card-cancel').addEventListener('click', () => this.closeModal());
       card.querySelector('#card-save').addEventListener('click', () => this.saveModal());
 
@@ -685,24 +691,18 @@
       });
 
       host.addEventListener('wheel', (e) => {
-        const path = e.composedPath ? e.composedPath() : [];
-        const inCard = path.some(node => node && node.classList && node.classList.contains('card'));
-        if (!inCard) {
-          window.scrollBy({ left: e.deltaX, top: e.deltaY, behavior: 'auto' });
-        }
+        window.scrollBy({ left: e.deltaX, top: e.deltaY, behavior: 'auto' });
       }, { passive: true });
 
       host.addEventListener('click', (e) => {
         if (!this.active) return;
-        const path = e.composedPath ? e.composedPath() : [];
-        const isControl = path.some(node =>
-          node && node.classList && (node.classList.contains('badge') || node.classList.contains('card'))
-        );
-        if (isControl) return;
+        if (this.modalOpen) {
+          this.closeModal();
+          return;
+        }
 
         e.preventDefault();
         e.stopPropagation();
-        e.stopImmediatePropagation();
 
         const target = this.getElementUnderPointer(e.clientX, e.clientY);
         if (!target) return;
@@ -816,25 +816,6 @@
       this.tooltip.style.top = Math.max(10, rect.top - 30) + 'px';
     }
 
-    onClick(e) {
-      if (!this.active) return;
-      const path = e.composedPath ? e.composedPath() : [];
-      const hitOverlayControl = path.some(node =>
-        node && node.classList && (node.classList.contains('badge') || node.classList.contains('card'))
-      );
-      if (hitOverlayControl) return;
-
-      e.preventDefault();
-      e.stopPropagation();
-      e.stopImmediatePropagation();
-
-      const target = this.getElementUnderPointer(e.clientX, e.clientY);
-      if (!target) return;
-
-      this.selectedEl = target;
-      this.pendingPayload = extractPayload(target);
-      this.openModal(e.clientX, e.clientY);
-    }
     onKeyDown(e) {
       if (e.key === 'Escape') {
         if (this.modalOpen) {
@@ -847,6 +828,7 @@
 
     openModal(clickX, clickY) {
       this.modalOpen = true;
+      this.editingNote = null;
       const card = this.modal;
       const meta = card.querySelector('#card-meta');
       const target = this.pendingPayload.target;
