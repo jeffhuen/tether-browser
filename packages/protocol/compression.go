@@ -16,9 +16,15 @@ const (
 
 	// CompressionThreshold is the minimum payload size in bytes to trigger zstd compression.
 	CompressionThreshold = 1024
+
+	// MaxFramePayload is the hard cap (32 MiB) on uncompressed frame payloads to prevent OOM/DoS.
+	MaxFramePayload uint32 = 32 * 1024 * 1024
 )
 
 var (
+	ErrPayloadTooLarge = errors.New("frame uncompressed length exceeds maximum allowed limit (32 MiB)")
+	ErrCorruptedFrame  = errors.New("frame payload too short (< 5 bytes)")
+
 	encoderPool sync.Pool
 	decoderPool sync.Pool
 )
@@ -35,7 +41,11 @@ func init() {
 	}
 	decoderPool = sync.Pool{
 		New: func() any {
-			dec, err := zstd.NewReader(nil)
+			dec, err := zstd.NewReader(
+				nil,
+				zstd.WithDecoderMaxMemory(uint64(MaxFramePayload)),
+				zstd.WithDecodeAllCapLimit(true),
+			)
 			if err != nil {
 				panic(err)
 			}
@@ -47,8 +57,11 @@ func init() {
 // CompressPayload wraps a byte slice with framing headers and optional zstd compression.
 func CompressPayload(data []byte) ([]byte, error) {
 	uncompressedLen := uint32(len(data))
+	if uncompressedLen > MaxFramePayload {
+		return nil, ErrPayloadTooLarge
+	}
+
 	if len(data) < CompressionThreshold {
-		// Small payload: send uncompressed with 5-byte header.
 		buf := make([]byte, 5+len(data))
 		buf[0] = FormatRaw
 		binary.BigEndian.PutUint32(buf[1:5], uncompressedLen)
@@ -68,14 +81,18 @@ func CompressPayload(data []byte) ([]byte, error) {
 	return buf, nil
 }
 
-// DecompressPayload decodes a framed payload, decompressing with zstd if required.
+// DecompressPayload decodes a framed payload, enforcing maximum payload bounds before allocation.
 func DecompressPayload(framed []byte) ([]byte, error) {
 	if len(framed) < 5 {
-		return nil, errors.New("framed payload too short (< 5 bytes)")
+		return nil, ErrCorruptedFrame
 	}
 
 	format := framed[0]
 	uncompressedLen := binary.BigEndian.Uint32(framed[1:5])
+	if uncompressedLen > MaxFramePayload {
+		return nil, fmt.Errorf("%w: advertised %d bytes", ErrPayloadTooLarge, uncompressedLen)
+	}
+
 	payload := framed[5:]
 
 	switch format {

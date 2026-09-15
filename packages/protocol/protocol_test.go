@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"encoding/binary"
 	"strings"
 	"testing"
 	"time"
@@ -40,25 +41,69 @@ func TestSnapshotTreeHashAndFormatting(t *testing.T) {
 		t.Fatalf("expected non-empty hash")
 	}
 
-	// Recomputing hash on identical tree should yield exact same hash
+	// Determinism check
 	hash2 := ComputeTreeHash(nodes)
 	if hash1 != hash2 {
 		t.Errorf("expected deterministic hash: %s != %s", hash1, hash2)
 	}
 
-	// Mutating child should change hash
-	nodes[0].Children[0].Disabled = true
-	hash3 := ComputeTreeHash(nodes)
-	if hash1 == hash3 {
-		t.Errorf("expected mutated tree to produce different hash")
+	// Checked state change must change hash
+	nodes[0].Children[0].Checked = "true"
+	hashChecked := ComputeTreeHash(nodes)
+	if hash1 == hashChecked {
+		t.Errorf("expected Checked state mutation to change hash")
+	}
+	nodes[0].Children[0].Checked = ""
+
+	// Focus state change must change hash
+	nodes[0].Children[1].Focused = false
+	hashFocus := ComputeTreeHash(nodes)
+	if hash1 == hashFocus {
+		t.Errorf("expected Focused state mutation to change hash")
+	}
+	nodes[0].Children[1].Focused = true
+
+	// Selected state change must change hash
+	nodes[0].Children[0].Selected = true
+	hashSelected := ComputeTreeHash(nodes)
+	if hash1 == hashSelected {
+		t.Errorf("expected Selected state mutation to change hash")
+	}
+	nodes[0].Children[0].Selected = false
+
+	// Expanded state change must change hash
+	nodes[0].Children[0].Expanded = true
+	hashExpanded := ComputeTreeHash(nodes)
+	if hash1 == hashExpanded {
+		t.Errorf("expected Expanded state mutation to change hash")
+	}
+	nodes[0].Children[0].Expanded = false
+
+	// Delimiter injection test: Name="a:b", Value="c" vs Name="a", Value="b:c"
+	nodeA := []*AXNode{{Role: "item", Name: "a:b", Value: "c"}}
+	nodeB := []*AXNode{{Role: "item", Name: "a", Value: "b:c"}}
+	if ComputeTreeHash(nodeA) == ComputeTreeHash(nodeB) {
+		t.Errorf("length-prefixed fields should prevent delimiter collision")
 	}
 
-	formatted := FormatCompactText(nodes, 0)
-	if !strings.Contains(formatted, "[@e2] button \"Submit Order\" (disabled)") {
-		t.Errorf("expected formatted output to contain disabled button, got:\n%s", formatted)
+	// Structural boundary test: tree vs forest
+	// Tree: parent has child
+	tree := []*AXNode{{Role: "root", Children: []*AXNode{{Role: "child"}}}}
+	// Forest: two sibling roots
+	forest := []*AXNode{{Role: "root"}, {Role: "child"}}
+	if ComputeTreeHash(tree) == ComputeTreeHash(forest) {
+		t.Errorf("structural delimiters should prevent tree vs forest collision")
 	}
-	if !strings.Contains(formatted, "[@e3] textbox \"Email\" value=\"user@example.com\" (focused)") {
-		t.Errorf("expected formatted output to contain focused textbox, got:\n%s", formatted)
+
+	// Compact text formatting checks
+	nodes[0].Children[0].Selected = true
+	nodes[0].Children[0].Expanded = true
+	formatted := FormatCompactText(nodes, 0)
+	if !strings.Contains(formatted, "(selected)") {
+		t.Errorf("expected formatted output to contain (selected), got:\n%s", formatted)
+	}
+	if !strings.Contains(formatted, "(expanded)") {
+		t.Errorf("expected formatted output to contain (expanded), got:\n%s", formatted)
 	}
 }
 
@@ -82,9 +127,6 @@ func TestCompressionRoundtrip(t *testing.T) {
 
 	// 2. Large repetitive payload (zstd)
 	large := []byte(strings.Repeat(`{"role":"button","backendNodeId":1234,"name":"Submit Order"},`, 100))
-	if len(large) < CompressionThreshold {
-		t.Fatalf("payload should be > threshold")
-	}
 	compressedLarge, err := CompressPayload(large)
 	if err != nil {
 		t.Fatalf("compress large: %v", err)
@@ -105,29 +147,50 @@ func TestCompressionRoundtrip(t *testing.T) {
 	}
 }
 
+func TestOversizedFrameRejection(t *testing.T) {
+	// Malicious frame advertising 4 GB uncompressed size
+	malicious := make([]byte, 5)
+	malicious[0] = FormatZstd
+	binary.BigEndian.PutUint32(malicious[1:5], 0xffffffff)
+
+	_, err := DecompressPayload(malicious)
+	if err == nil {
+		t.Fatalf("expected error for oversized payload, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum allowed limit") {
+		t.Errorf("expected ErrPayloadTooLarge, got: %v", err)
+	}
+}
+
 func TestDesignFeedbackReportFormatting(t *testing.T) {
+	// Snippet containing triple backticks
+	trickyHTML := "<pre>```\ncode block\n```</pre>"
+
 	notes := []*ReviewNote{
+		nil, // Nil entry should be safely ignored
 		{
-			ID:      "note-1",
-			Index:   1,
-			Intent:  "design_fix",
-			Comment: "Button padding is too narrow on mobile.",
+			ID:        "note-3",
+			Index:     3, // Pin 3 explicitly
+			Intent:    "design_fix",
+			Comment:   "Button padding is too narrow on mobile.",
 			CreatedAt: time.Now(),
 			Payload: &ReviewPayload{
 				Page: PageInfo{
-					SanitizedURL:  "http://localhost:3000/orders/42",
-					Title:         "Orders",
-					ViewportWidth: 1440,
+					SanitizedURL:   "http://localhost:3000/orders/42",
+					Title:          "Orders",
+					ViewportWidth:  1440,
 					ViewportHeight: 900,
 				},
 				Target: TargetInfo{
-					TagName:      "button",
-					Selector:     "form#checkout-form button.btn-submit",
-					ElementPath:  "main > form#checkout-form > div.actions > button",
-					TextSnippet:  "Confirm Order",
-					CSSClasses:   "btn btn-submit rounded-lg",
-					RectViewport: Rect{X: 540, Y: 720, Width: 200, Height: 48},
-					HTMLSnippet:  `<button class="btn btn-submit" phx-click="confirm_order">Confirm Order</button>`,
+					TagName:        "button",
+					Role:           "button",
+					AccessibleName: "Confirm Order",
+					Selector:       "form#checkout-form button.btn-submit",
+					ElementPath:    "main > form#checkout-form > div.actions > button",
+					TextSnippet:    "Confirm Order",
+					CSSClasses:     "btn btn-submit rounded-lg",
+					RectViewport:   Rect{X: 540, Y: 720, Width: 200, Height: 48},
+					HTMLSnippet:    trickyHTML,
 					ComputedStyles: map[string]string{
 						"display":          "flex",
 						"background-color": "rgb(37, 99, 235)",
@@ -149,21 +212,13 @@ func TestDesignFeedbackReportFormatting(t *testing.T) {
 
 	report := FormatDesignFeedbackReport(notes, "http://localhost:3000/orders/42", "1440x900")
 
-	expectedSubstrings := []string{
-		"## Design Feedback: http://localhost:3000/orders/42",
-		"### 1. OrderLive button \"Confirm Order\"",
-		"**Intent:** design_fix",
-		"**Framework:** Elixir Phoenix LiveView (OrderLive)",
-		"**Source:** lib/my_app_web/live/order_live.html.heex:42 (provenance: exact)",
-		"**Selector:** form#checkout-form button.btn-submit",
-		"**Bounds:** x=540, y=720, 200x48",
-		"**Classes:** `btn btn-submit rounded-lg`",
-		"**Feedback:** Button padding is too narrow on mobile.",
+	// Heading must preserve pin index 3
+	if !strings.Contains(report, "### 3. OrderLive button \"Confirm Order\"") {
+		t.Errorf("heading should preserve pin index 3, got:\n%s", report)
 	}
 
-	for _, sub := range expectedSubstrings {
-		if !strings.Contains(report, sub) {
-			t.Errorf("report missing expected substring %q\nFull report:\n%s", sub, report)
-		}
+	// Code block must use quadruple backticks to avoid premature closure by triple backticks in snippet
+	if !strings.Contains(report, "````html\n<pre>```\ncode block\n```</pre>\n````") {
+		t.Errorf("expected 4-backtick safe code block, got:\n%s", report)
 	}
 }

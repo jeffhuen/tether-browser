@@ -29,6 +29,8 @@ type FrameworkInfo struct {
 // TargetInfo captures complete element inspection details.
 type TargetInfo struct {
 	TagName        string            `json:"tagName"`
+	Role           string            `json:"role,omitempty"`           // Resolved ARIA role
+	AccessibleName string            `json:"accessibleName,omitempty"` // Resolved accessible name
 	Selector       string            `json:"selector"`
 	ElementPath    string            `json:"elementPath"`
 	FullPath       string            `json:"fullPath"`
@@ -62,6 +64,28 @@ type ReviewNote struct {
 	Payload   *ReviewPayload `json:"payload"`
 }
 
+// safeHTMLFence generates a Markdown code fence that cannot be terminated by backticks inside the snippet.
+func safeHTMLFence(snippet string) (string, string) {
+	maxRun := 0
+	currentRun := 0
+	for _, ch := range snippet {
+		if ch == '`' {
+			currentRun++
+			if currentRun > maxRun {
+				maxRun = currentRun
+			}
+		} else {
+			currentRun = 0
+		}
+	}
+	fenceLen := 3
+	if maxRun >= 3 {
+		fenceLen = maxRun + 1
+	}
+	fence := strings.Repeat("`", fenceLen)
+	return fence + "html\n", "\n" + fence + "\n"
+}
+
 // FormatDesignFeedbackReport formats a collection of review notes into structured markdown for AI agents.
 func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport string) string {
 	if len(notes) == 0 {
@@ -76,16 +100,30 @@ func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport st
 	}
 	sb.WriteString("\n")
 
-	for i, note := range notes {
+	for _, note := range notes {
+		if note == nil || note.Payload == nil {
+			continue
+		}
+
 		target := note.Payload.Target
 		fw := target.Framework
 
-		// Title line: e.g. "### 1. <Button> button "Checkout Now""
-		componentLabel := target.TagName
-		if fw.Component != "" {
-			componentLabel = fmt.Sprintf("%s %s", fw.Component, target.TagName)
+		// Title line uses the actual stored pin index, not slice position
+		pinIndex := note.Index
+		if pinIndex <= 0 {
+			pinIndex = 1
 		}
-		if target.TextSnippet != "" {
+
+		componentLabel := target.TagName
+		if target.Role != "" && target.Role != target.TagName {
+			componentLabel = fmt.Sprintf("%s (%s)", componentLabel, target.Role)
+		}
+		if fw.Component != "" {
+			componentLabel = fmt.Sprintf("%s %s", fw.Component, componentLabel)
+		}
+		if target.AccessibleName != "" {
+			componentLabel = fmt.Sprintf("%s %q", componentLabel, target.AccessibleName)
+		} else if target.TextSnippet != "" {
 			snip := strings.TrimSpace(target.TextSnippet)
 			if len(snip) > 40 {
 				snip = snip[:40] + "..."
@@ -93,7 +131,7 @@ func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport st
 			componentLabel = fmt.Sprintf("%s %q", componentLabel, snip)
 		}
 
-		sb.WriteString(fmt.Sprintf("### %d. %s\n", i+1, componentLabel))
+		sb.WriteString(fmt.Sprintf("### %d. %s\n", pinIndex, componentLabel))
 		if note.Intent != "" {
 			sb.WriteString(fmt.Sprintf("**Intent:** %s\n", note.Intent))
 		}
@@ -129,9 +167,11 @@ func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport st
 			}
 		}
 		if target.HTMLSnippet != "" {
-			sb.WriteString("**HTML:**\n```html\n")
+			startFence, endFence := safeHTMLFence(target.HTMLSnippet)
+			sb.WriteString("**HTML:**\n")
+			sb.WriteString(startFence)
 			sb.WriteString(strings.TrimSpace(target.HTMLSnippet))
-			sb.WriteString("\n```\n")
+			sb.WriteString(endFence)
 		}
 		sb.WriteString(fmt.Sprintf("**Feedback:** %s\n\n", strings.TrimSpace(note.Comment)))
 	}
