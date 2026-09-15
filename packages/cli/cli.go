@@ -270,7 +270,9 @@ func ParseArgs(args []string) (*Command, error) {
 			TimeoutMs: global.TimeoutMs,
 		}
 		for _, a := range optionsArgs {
-			if !strings.HasPrefix(a, "-") {
+			if a == "--full" || a == "-f" {
+				p.FullPage = true
+			} else if !strings.HasPrefix(a, "-") {
 				cmd.ScreenshotPath = a
 			}
 		}

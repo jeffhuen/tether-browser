@@ -74,6 +74,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	socketPath := DefaultBrokerSocket()
 	// Named sessions require the broker for isolated target tracking
+	var client *Client
 	if cmd.Global.Session != "" && cmd.Global.Session != "default" {
 		if !IsBrokerAlive(socketPath) {
 			_ = StartBackgroundBroker()
@@ -82,10 +83,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "Error: session %q requires the tether broker; start it with 'tether broker start'\n", cmd.Global.Session)
 			return 1
 		}
-	}
-
-	var client *Client
-	if IsBrokerAlive(socketPath) {
+		client = NewClient("unix:" + socketPath)
+	} else if IsBrokerAlive(socketPath) {
 		client = NewClient("unix:" + socketPath)
 	} else {
 		client = NewClient(daemonAddr)
