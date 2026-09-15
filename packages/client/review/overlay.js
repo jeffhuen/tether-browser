@@ -174,9 +174,14 @@
       allInputs.forEach(input => {
         const name = input.getAttribute('name') || '';
         const id = input.getAttribute('id') || '';
-        if (input.type === 'password' || containsSecret(name) || containsSecret(id)) {
+        const rawType = input.getAttribute('type') || '';
+        const tag = input.tagName ? input.tagName.toLowerCase() : '';
+        if (input.type === 'password' || containsSecret(rawType) || containsSecret(name) || containsSecret(id)) {
           input.value = '[redacted]';
           input.setAttribute('value', '[redacted]');
+          if (tag === 'textarea') {
+            input.textContent = '[redacted]';
+          }
         }
       });
 
@@ -553,6 +558,9 @@
         }
       });
       this.markerElements.clear();
+      try {
+        document.querySelectorAll('[data-tether-pin]').forEach(el => el.removeAttribute('data-tether-pin'));
+      } catch (e) {}
       this.closeModal();
     }
 
@@ -647,6 +655,9 @@
         payload: this.pendingPayload,
         targetEl: this.selectedEl
       };
+      try {
+        this.selectedEl.setAttribute('data-tether-pin', note.id);
+      } catch (e) {}
 
       this.notes.push(note);
       this.createBadge(note);
