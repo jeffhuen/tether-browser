@@ -1,10 +1,11 @@
 package tests
 
 import (
+	"bufio"
 	"bytes"
 	"context"
-	"io"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -203,6 +204,10 @@ func (m *e2eMockDriver) ClearReview(ctx context.Context, p protocol.ReviewParams
 }
 
 func TestEndToEndCLIAutomationCycle(t *testing.T) {
+	// Isolate from any user-running broker by assigning a private temporary socket path
+	testSocket := filepath.Join(t.TempDir(), "test-e2e-broker.sock")
+	t.Setenv("TETHER_BROKER_SOCKET", testSocket)
+
 	driver := &e2eMockDriver{}
 	server := client.NewServer(driver)
 
@@ -315,17 +320,34 @@ func TestEndToEndCLIAutomationCycle(t *testing.T) {
 }
 
 func TestModeAForwardProxyStreaming(t *testing.T) {
-	// Remote mock development server with chunked responses
+	chunk1Sent := make(chan struct{})
+	chunk1Received := make(chan struct{})
+
+	// Remote mock development server with synchronized chunk streaming
 	remoteServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
 		flusher, ok := w.(http.Flusher)
-		for i := 1; i <= 3; i++ {
+
+		// Send first chunk
+		fmt.Fprintf(w, "chunk-1\n")
+		if ok {
+			flusher.Flush()
+		}
+		close(chunk1Sent)
+
+		// Wait for client to prove chunk-1 was received while stream is STILL open
+		select {
+		case <-chunk1Received:
+		case <-time.After(3 * time.Second):
+		}
+
+		// Send remaining chunks
+		for i := 2; i <= 3; i++ {
 			fmt.Fprintf(w, "chunk-%d\n", i)
 			if ok {
 				flusher.Flush()
 			}
-			time.Sleep(10 * time.Millisecond)
 		}
 	}))
 	defer remoteServer.Close()
@@ -342,7 +364,6 @@ func TestModeAForwardProxyStreaming(t *testing.T) {
 	// Enroll localhost:3000 -> remoteServer
 	proxy.Enroll("localhost:3000", remoteHostPort)
 
-	// Make request through proxy
 	req, err := http.NewRequest(http.MethodGet, "http://localhost:3000/stream", nil)
 	if err != nil {
 		t.Fatalf("create request: %v", err)
@@ -368,17 +389,32 @@ func TestModeAForwardProxyStreaming(t *testing.T) {
 		t.Fatalf("expected 200 OK, got: %d", resp.StatusCode)
 	}
 
-	buf := new(bytes.Buffer)
-	_, err = io.Copy(buf, resp.Body)
+	reader := bufio.NewReader(resp.Body)
+
+	// Read chunk-1 while remoteServer is STILL blocked waiting for chunk1Received
+	line1, err := reader.ReadString('\n')
 	if err != nil {
-		t.Fatalf("read response body: %v", err)
+		t.Fatalf("read first chunk: %v", err)
+	}
+	if !strings.Contains(line1, "chunk-1") {
+		t.Fatalf("expected chunk-1, got: %s", line1)
 	}
 
-	bodyStr := buf.String()
+	// Confirm receipt to unblock remoteServer
+	close(chunk1Received)
+
+	// Read remaining chunks
+	var rest bytes.Buffer
+	_, err = io.Copy(&rest, reader)
+	if err != nil {
+		t.Fatalf("read rest of stream: %v", err)
+	}
+
+	all := line1 + rest.String()
 	for i := 1; i <= 3; i++ {
 		chunk := fmt.Sprintf("chunk-%d", i)
-		if !strings.Contains(bodyStr, chunk) {
-			t.Errorf("expected body to contain %q, got: %s", chunk, bodyStr)
+		if !strings.Contains(all, chunk) {
+			t.Errorf("expected stream output to contain %q, got: %s", chunk, all)
 		}
 	}
 }

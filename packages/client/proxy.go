@@ -61,6 +61,16 @@ func (p *Proxy) ResolveTarget(hostPort string) (string, bool) {
 	return target, ok
 }
 
+// Serve starts serving proxy connections on an existing listener.
+func (p *Proxy) Serve(ln net.Listener) error {
+	p.listener = ln
+	p.port = ln.Addr().(*net.TCPAddr).Port
+	p.server = &http.Server{
+		Handler: p,
+	}
+	return p.server.Serve(ln)
+}
+
 // ListenAndServe binds to 127.0.0.1 on the requested port (or 0 for ephemeral).
 func (p *Proxy) ListenAndServe(port int) error {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
@@ -68,14 +78,7 @@ func (p *Proxy) ListenAndServe(port int) error {
 	if err != nil {
 		return fmt.Errorf("proxy listen on %s: %w", addr, err)
 	}
-	p.listener = ln
-	p.port = ln.Addr().(*net.TCPAddr).Port
-
-	p.server = &http.Server{
-		Handler: p,
-	}
-
-	return p.server.Serve(ln)
+	return p.Serve(ln)
 }
 
 // Port returns the listening port of the proxy.

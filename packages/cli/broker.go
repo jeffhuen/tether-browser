@@ -20,6 +20,9 @@ import (
 
 // DefaultBrokerSocket returns the default unix socket path for the session broker.
 func DefaultBrokerSocket() string {
+	if sock := os.Getenv("TETHER_BROKER_SOCKET"); sock != "" {
+		return sock
+	}
 	tmp := os.TempDir()
 	return filepath.Join(tmp, "tether-broker.sock")
 }
@@ -294,7 +297,7 @@ func StartBackgroundBroker() error {
 	}
 
 	cmd := exec.Command(bin, "broker", "run")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	setSysProcAttr(cmd)
 
 	logPath := filepath.Join(os.TempDir(), "tether-broker.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
