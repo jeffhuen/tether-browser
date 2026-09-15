@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/jeffhuen/tether-browser/packages/cli"
@@ -23,6 +24,27 @@ Usage:
 Run 'tether help' or 'tether <command> --help' for details.
 `
 
+func enrollRoutes(proxy *client.Proxy, enrollStr string) {
+	if enrollStr == "" {
+		return
+	}
+	pairs := strings.Split(enrollStr, ",")
+	for _, pair := range pairs {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		parts := strings.Split(pair, "=")
+		if len(parts) == 2 {
+			local := strings.TrimSpace(parts[0])
+			remote := strings.TrimSpace(parts[1])
+			if local != "" && remote != "" {
+				proxy.Enroll(local, remote)
+			}
+		}
+	}
+}
+
 func runDaemon(args []string) int {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	port := fs.Int("port", 9333, "Daemon RPC listen port (default 9333)")
@@ -30,19 +52,32 @@ func runDaemon(args []string) int {
 	workspace := fs.String("workspace", "default", "Workspace profile identifier")
 	noChrome := fs.Bool("no-chrome", false, "Do not launch Chrome automatically")
 	chromeURL := fs.String("chrome-url", "", "Custom Chrome CDP URL to attach to")
+	enroll := fs.String("enroll", "localhost:3000=127.0.0.1:3000,localhost:5173=127.0.0.1:5173,localhost:8000=127.0.0.1:8000,localhost:8080=127.0.0.1:8080", "Comma-separated route enrollments")
 	_ = fs.Parse(args)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var chromeProc *client.ChromeProcess
-	cdpURL := *chromeURL
+	// Synchronously bind the forward proxy listener to guarantee readiness before Chrome launches
+	proxyAddr := fmt.Sprintf("127.0.0.1:%d", *proxyPort)
+	proxyLn, err := net.Listen("tcp", proxyAddr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error starting forward proxy listener on %s: %v\n", proxyAddr, err)
+		return 1
+	}
+	defer proxyLn.Close()
 
 	proxy := client.NewProxy()
+	enrollRoutes(proxy, *enroll)
+
+	proxyErrChan := make(chan error, 1)
 	go func() {
-		_ = proxy.ListenAndServe(*proxyPort)
+		proxyErrChan <- proxy.Serve(proxyLn)
 	}()
 	defer proxy.Close()
+
+	var chromeProc *client.ChromeProcess
+	cdpURL := *chromeURL
 
 	if !*noChrome && cdpURL == "" {
 		proc, err := client.LaunchChrome(ctx, *workspace, proxy.Port())
@@ -64,19 +99,25 @@ func runDaemon(args []string) int {
 
 	fmt.Printf("Tether daemon listening on 127.0.0.1:%d (Mode A proxy on 127.0.0.1:%d)\n", *port, proxy.Port())
 
-	errChan := make(chan error, 1)
+	serverErrChan := make(chan error, 1)
 	go func() {
-		errChan <- server.ListenAndServe(*port)
+		serverErrChan <- server.ListenAndServe(*port)
 	}()
+	defer server.Close()
 
 	select {
 	case <-ctx.Done():
 		fmt.Println("\nShutting down daemon...")
-		_ = server.Close()
 		return 0
-	case err := <-errChan:
+	case err := <-serverErrChan:
 		if err != nil && !isClosedError(err) {
-			fmt.Fprintf(os.Stderr, "Daemon error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Daemon RPC server error: %v\n", err)
+			return 1
+		}
+		return 0
+	case err := <-proxyErrChan:
+		if err != nil && !isClosedError(err) {
+			fmt.Fprintf(os.Stderr, "Daemon forward proxy error: %v\n", err)
 			return 1
 		}
 		return 0
