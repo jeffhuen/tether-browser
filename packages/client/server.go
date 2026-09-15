@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -80,7 +81,6 @@ func (s *Server) handleConn(conn net.Conn) {
 	setTCPNoDelay(conn, true)
 
 	br := bufio.NewReader(conn)
-	var streamDec *json.Decoder
 
 	for {
 		peek, err := br.Peek(1)
@@ -90,13 +90,18 @@ func (s *Server) handleConn(conn net.Conn) {
 		firstByte := peek[0]
 
 		// HTTP request detection (POST, GET, etc.)
-		if firstByte == 'P' || firstByte == 'G' || firstByte == 'H' || firstByte == 'O' {
+		if firstByte == 'P' || firstByte == 'G' || firstByte == 'H' || firstByte == 'O' || firstByte == 'D' || firstByte == 'U' {
 			req, err := http.ReadRequest(br)
 			if err != nil {
 				return
 			}
 
-			// Reject unauthorized cross-origin requests from websites
+			if req.Method != http.MethodPost {
+				res := "HTTP/1.1 405 Method Not Allowed\r\nAllow: POST\r\nContent-Length: 0\r\n\r\n"
+				_, _ = conn.Write([]byte(res))
+				return
+			}
+
 			origin := req.Header.Get("Origin")
 			if origin != "" && !isAuthorizedOrigin(origin) {
 				res := "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"
@@ -104,14 +109,11 @@ func (s *Server) handleConn(conn net.Conn) {
 				return
 			}
 
-			// Enforce Content-Type for POST
-			if req.Method == http.MethodPost {
-				ct := req.Header.Get("Content-Type")
-				if !strings.HasPrefix(ct, "application/json") {
-					res := "HTTP/1.1 415 Unsupported Media Type\r\nContent-Length: 0\r\n\r\n"
-					_, _ = conn.Write([]byte(res))
-					return
-				}
+			ct := req.Header.Get("Content-Type")
+			if !strings.HasPrefix(ct, "application/json") {
+				res := "HTTP/1.1 415 Unsupported Media Type\r\nContent-Length: 0\r\n\r\n"
+				_, _ = conn.Write([]byte(res))
+				return
 			}
 
 			body, err := io.ReadAll(req.Body)
@@ -139,7 +141,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			continue
 		}
 
-		// Binary framing (FormatRaw or FormatZstd)
+		// Binary framing: FormatRaw
 		if firstByte == protocol.FormatRaw {
 			header := make([]byte, 5)
 			if _, err := io.ReadFull(br, header); err != nil {
@@ -174,6 +176,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			continue
 		}
 
+		// Binary framing: FormatZstd
 		if firstByte == protocol.FormatZstd {
 			header := make([]byte, 5)
 			if _, err := io.ReadFull(br, header); err != nil {
@@ -183,6 +186,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			if uncompressedLen > protocol.MaxFramePayload {
 				return
 			}
+
 			dec, err := zstd.NewReader(br)
 			if err != nil {
 				return
@@ -210,32 +214,39 @@ func (s *Server) handleConn(conn net.Conn) {
 			continue
 		}
 
-		// Reusable JSON-RPC stream decoder (preserves read-ahead buffer)
-		if streamDec == nil {
-			streamDec = json.NewDecoder(br)
-		}
-
-		var req protocol.Request
-		if err := streamDec.Decode(&req); err != nil {
-			return
-		}
-		resp := s.Dispatch(context.Background(), &req)
-		respBytes, err := json.Marshal(resp)
-		if err != nil {
-			return
-		}
-		respBytes = append(respBytes, '\n')
-		if _, err := conn.Write(respBytes); err != nil {
-			return
+		// JSON-RPC stream mode: loop continuously without peeking to preserve read-ahead buffer
+		dec := json.NewDecoder(br)
+		for {
+			var req protocol.Request
+			if err := dec.Decode(&req); err != nil {
+				return
+			}
+			resp := s.Dispatch(context.Background(), &req)
+			respBytes, err := json.Marshal(resp)
+			if err != nil {
+				return
+			}
+			respBytes = append(respBytes, '\n')
+			if _, err := conn.Write(respBytes); err != nil {
+				return
+			}
 		}
 	}
 }
 
 func isAuthorizedOrigin(origin string) bool {
-	oLower := strings.ToLower(origin)
-	return strings.HasPrefix(oLower, "http://localhost") ||
-		strings.HasPrefix(oLower, "http://127.0.0.1") ||
-		strings.HasPrefix(oLower, "chrome-extension://")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if u.Scheme == "chrome-extension" {
+		return true
+	}
+	h := strings.ToLower(u.Hostname())
+	return h == "localhost" || h == "127.0.0.1" || h == "::1" || strings.HasSuffix(h, ".localhost")
 }
 
 // ServeHTTP implements http.Handler for standard HTTP servers and testing.

@@ -132,7 +132,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	p.handlePlainHTTP(w, req)
 }
 
-func isLoopback(hostPort string) bool {
+func isLoopbackDestination(hostPort string) bool {
 	host := hostPort
 	if h, _, err := net.SplitHostPort(hostPort); err == nil {
 		host = h
@@ -143,6 +143,14 @@ func isLoopback(hostPort string) bool {
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		return ip.IsLoopback()
+	}
+	// Check if DNS resolves to loopback
+	if ips, err := net.LookupIP(host); err == nil {
+		for _, ip := range ips {
+			if ip.IsLoopback() {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -156,7 +164,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 
 	destAddr, enrolled := p.ResolveTarget(host)
 	if !enrolled {
-		if isLoopback(host) {
+		if isLoopbackDestination(host) {
 			http.Error(w, fmt.Sprintf("unenrolled loopback destination rejected: %s", host), http.StatusForbidden)
 			return
 		}
@@ -196,7 +204,6 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Forward any buffered bytes from client before bidirectional splice
 	if brw != nil && brw.Reader.Buffered() > 0 {
 		buffered := make([]byte, brw.Reader.Buffered())
 		if _, err := io.ReadFull(brw.Reader, buffered); err == nil {
@@ -218,7 +225,7 @@ func (p *Proxy) handlePlainHTTP(w http.ResponseWriter, req *http.Request) {
 
 	destAddr, enrolled := p.ResolveTarget(host)
 	if !enrolled {
-		if isLoopback(host) {
+		if isLoopbackDestination(host) {
 			http.Error(w, fmt.Sprintf("unenrolled loopback destination rejected: %s", host), http.StatusForbidden)
 			return
 		}
@@ -235,11 +242,10 @@ func (p *Proxy) handlePlainHTTP(w http.ResponseWriter, req *http.Request) {
 		Director: func(r *http.Request) {
 			r.URL.Scheme = "http"
 			r.URL.Host = targetURL.Host
-			r.Host = req.Host // Preserve original Host header for virtual hosts
-			// Strip hop-by-hop headers
+			r.Host = req.Host
 			r.Header.Del("Proxy-Connection")
 		},
-		FlushInterval: 10 * time.Millisecond, // Low latency streaming
+		FlushInterval: 10 * time.Millisecond,
 		ErrorHandler: func(rw http.ResponseWriter, r *http.Request, err error) {
 			http.Error(rw, fmt.Sprintf("proxy error: %v", err), http.StatusBadGateway)
 		},
@@ -260,12 +266,16 @@ func spliceSockets(c1, c2 net.Conn) {
 
 	copyHalf := func(dst, src net.Conn) {
 		defer wg.Done()
-		defer dst.Close()
 		_, _ = io.Copy(dst, src)
+		if tc, ok := dst.(*net.TCPConn); ok {
+			_ = tc.CloseWrite()
+		}
 	}
 
 	go copyHalf(c1, c2)
 	go copyHalf(c2, c1)
 
 	wg.Wait()
+	_ = c1.Close()
+	_ = c2.Close()
 }

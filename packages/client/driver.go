@@ -98,20 +98,22 @@ func (d *CDPDriver) OpenTab(ctx context.Context, params protocol.OpenParams) (*p
 
 	targetID := protocol.TargetID(info.ID)
 
-	if info.WebSocketDebuggerURL != "" {
-		wsConn, err := DialWebSocket(ctx, info.WebSocketDebuggerURL)
-		if err == nil {
-			client := NewCDPClient(wsConn)
-			_, _ = client.Call(ctx, "Page.enable", nil)
-			_, _ = client.Call(ctx, "Runtime.enable", nil)
-			_, _ = client.Call(ctx, "DOM.enable", nil)
-
-			d.mu.Lock()
-			d.targets[targetID] = client
-			d.activeTarget = targetID
-			d.mu.Unlock()
-		}
+	if info.WebSocketDebuggerURL == "" {
+		return nil, fmt.Errorf("no webSocketDebuggerUrl returned for target %s", info.ID)
 	}
+	wsConn, err := DialWebSocket(ctx, info.WebSocketDebuggerURL)
+	if err != nil {
+		return nil, fmt.Errorf("connect cdp websocket for target %s: %w", info.ID, err)
+	}
+	client := NewCDPClient(wsConn)
+	_, _ = client.Call(ctx, "Page.enable", nil)
+	_, _ = client.Call(ctx, "Runtime.enable", nil)
+	_, _ = client.Call(ctx, "DOM.enable", nil)
+
+	d.mu.Lock()
+	d.targets[targetID] = client
+	d.activeTarget = targetID
+	d.mu.Unlock()
 
 	return &protocol.OpenResult{
 		TargetID: targetID,
@@ -133,9 +135,16 @@ func (d *CDPDriver) CloseTab(ctx context.Context, params protocol.CloseParams) e
 	if params.CloseAll {
 		for tid, client := range d.targets {
 			_ = client.Close()
-			delete(d.targets, tid)
-			delete(d.refTables, tid)
+			endpoint := fmt.Sprintf("%s/json/close/%s", d.browserURL, tid)
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+			if err == nil {
+				if resp, err := d.httpClient.Do(req); err == nil {
+					_ = resp.Body.Close()
+				}
+			}
 		}
+		d.targets = make(map[protocol.TargetID]*CDPClient)
+		d.refTables = make(map[protocol.TargetID]map[string]int64)
 		d.activeTarget = ""
 		return nil
 	}
@@ -544,43 +553,84 @@ func (d *CDPDriver) Press(ctx context.Context, params protocol.PressParams) erro
 		}
 	}
 
+	var vkCode int
+	var keyText string
+	switch key {
+	case "Enter":
+		vkCode = 13
+		keyText = "\r"
+	case "Tab":
+		vkCode = 9
+		keyText = "\t"
+	case "Backspace":
+		vkCode = 8
+	case "Escape":
+		vkCode = 27
+	case "ArrowLeft":
+		vkCode = 37
+	case "ArrowUp":
+		vkCode = 38
+	case "ArrowRight":
+		vkCode = 39
+	case "ArrowDown":
+		vkCode = 40
+	case "Delete":
+		vkCode = 46
+	case "Home":
+		vkCode = 36
+	case "End":
+		vkCode = 35
+	case "PageUp":
+		vkCode = 33
+	case "PageDown":
+		vkCode = 34
+	case "a", "A":
+		vkCode = 65
+	case "c", "C":
+		vkCode = 67
+	case "v", "V":
+		vkCode = 86
+	case "x", "X":
+		vkCode = 88
+	default:
+		if len(key) == 1 {
+			vkCode = int(strings.ToUpper(key)[0])
+			keyText = key
+		}
+	}
+
 	keyDown := map[string]any{
 		"type":                  "rawKeyDown",
 		"key":                   key,
 		"modifiers":             modifiers,
-		"windowsVirtualKeyCode": getVirtualKeyCode(key),
+		"windowsVirtualKeyCode": vkCode,
 	}
 	if _, err := client.Call(ctx, "Input.dispatchKeyEvent", keyDown); err != nil {
 		return fmt.Errorf("key down: %w", err)
 	}
 
+	if keyText != "" && (modifiers&^1 == 0) {
+		charEvt := map[string]any{
+			"type":           "char",
+			"text":           keyText,
+			"unmodifiedText": keyText,
+			"key":            key,
+			"modifiers":      modifiers,
+		}
+		_, _ = client.Call(ctx, "Input.dispatchKeyEvent", charEvt)
+	}
+
 	keyUp := map[string]any{
-		"type":      "keyUp",
-		"key":       key,
-		"modifiers": modifiers,
+		"type":                  "keyUp",
+		"key":                   key,
+		"modifiers":             modifiers,
+		"windowsVirtualKeyCode": vkCode,
 	}
 	if _, err := client.Call(ctx, "Input.dispatchKeyEvent", keyUp); err != nil {
 		return fmt.Errorf("key up: %w", err)
 	}
 
 	return nil
-}
-
-func getVirtualKeyCode(key string) int {
-	switch key {
-	case "Enter":
-		return 13
-	case "Tab":
-		return 9
-	case "Backspace":
-		return 8
-	case "Escape":
-		return 27
-	case "a", "A":
-		return 65
-	default:
-		return 0
-	}
 }
 
 // Hover resolves element bounds and dispatches native mouse move events.
@@ -701,9 +751,22 @@ func (d *CDPDriver) evalRaw(ctx context.Context, client *CDPClient, expression s
 			Type  string `json:"type"`
 			Value any    `json:"value"`
 		} `json:"result"`
+		ExceptionDetails *struct {
+			Text      string `json:"text"`
+			Exception struct {
+				Description string `json:"description"`
+			} `json:"exception"`
+		} `json:"exceptionDetails"`
 	}
 	if err := json.Unmarshal(resp, &out); err != nil {
 		return nil, err
+	}
+	if out.ExceptionDetails != nil {
+		desc := out.ExceptionDetails.Exception.Description
+		if desc == "" {
+			desc = out.ExceptionDetails.Text
+		}
+		return nil, fmt.Errorf("javascript error: %s", desc)
 	}
 	return out.Result.Value, nil
 }
@@ -744,17 +807,23 @@ func (d *CDPDriver) Wait(ctx context.Context, params protocol.WaitParams) error 
 	checkScript := fmt.Sprintf(`
 (function(sel, st) {
 	let el = sel.startsWith('@e') ? (window.__tether_refs ? window.__tether_refs[sel] : null) : document.querySelector(sel);
+	const isAttached = Boolean(el && el.isConnected);
 	if (st === 'attached') {
-		return Boolean(el && el.isConnected);
+		return isAttached;
 	}
-	if (!el || !el.isConnected) return false;
+	if (!isAttached) {
+		return st === 'hidden';
+	}
+	const r = el.getBoundingClientRect();
 	const style = window.getComputedStyle(el);
-	const visible = style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+	const visible = style.display !== 'none' &&
+					style.visibility !== 'hidden' &&
+					style.opacity !== '0' &&
+					(r.width > 0 || r.height > 0);
 	if (st === 'hidden') return !visible;
 	return visible;
 })(%q, %q)
 `, params.Selector, state)
-
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
