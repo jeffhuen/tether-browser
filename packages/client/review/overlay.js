@@ -176,7 +176,13 @@
         const id = input.getAttribute('id') || '';
         const rawType = input.getAttribute('type') || '';
         const tag = input.tagName ? input.tagName.toLowerCase() : '';
-        if (input.type === 'password' || containsSecret(rawType) || containsSecret(name) || containsSecret(id)) {
+        const isSecret = input.type === 'password' ||
+          containsSecret(rawType) ||
+          containsSecret(name) ||
+          containsSecret(id) ||
+          containsSecret(input.value) ||
+          (tag === 'textarea' && containsSecret(input.textContent));
+        if (isSecret) {
           input.value = '[redacted]';
           input.setAttribute('value', '[redacted]');
           if (tag === 'textarea') {
@@ -347,6 +353,18 @@
     const rawAccessibleName = el.getAttribute('aria-label') || el.getAttribute('alt') || (el.innerText ? el.innerText.trim().slice(0, 60) : '');
     const accessibleName = sanitizeText(rawAccessibleName, 80);
 
+    let rawText = el.innerText || el.textContent || '';
+    const tagLower = el.tagName ? el.tagName.toLowerCase() : '';
+    if (tagLower === 'input' || tagLower === 'textarea') {
+      const name = el.getAttribute('name') || '';
+      const id = el.getAttribute('id') || '';
+      const rawType = el.getAttribute('type') || '';
+      if (el.type === 'password' || containsSecret(rawType) || containsSecret(name) || containsSecret(id) || containsSecret(el.value)) {
+        rawText = '[redacted]';
+      }
+    }
+    const textSnippet = sanitizeText(rawText, 120);
+
     return {
       page: {
         sanitizedUrl: sanitizeURL(window.location.href),
@@ -366,7 +384,7 @@
         fullPath: el.tagName.toLowerCase(),
         cssClasses: sanitizeText(el.className || '', 100),
         selectedText: window.getSelection() ? sanitizeText(window.getSelection().toString(), 100) : '',
-        textSnippet: sanitizeText(el.innerText || el.textContent || '', 120),
+        textSnippet: textSnippet,
         htmlSnippet: getHTMLSnippet(el),
         rectViewport: {
           x: Math.round(rect.x),
@@ -656,9 +674,12 @@
         targetEl: this.selectedEl
       };
       try {
-        this.selectedEl.setAttribute('data-tether-pin', note.id);
+        const existingPins = (this.selectedEl.getAttribute('data-tether-pin') || '').split(/\s+/).filter(Boolean);
+        if (!existingPins.includes(note.id)) {
+          existingPins.push(note.id);
+          this.selectedEl.setAttribute('data-tether-pin', existingPins.join(' '));
+        }
       } catch (e) {}
-
       this.notes.push(note);
       this.createBadge(note);
       this.closeModal();
