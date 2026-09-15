@@ -724,6 +724,9 @@
       this.ensureOverlay();
       this.host.style.pointerEvents = 'all';
       this.host.style.cursor = 'crosshair';
+      this.markerElements.forEach(entry => {
+        if (entry && entry.element) entry.element.style.pointerEvents = 'auto';
+      });
       window.addEventListener('mousemove', this.boundOnPointerMove, true);
       window.addEventListener('keydown', this.boundOnKeyDown, true);
       this.startTracking();
@@ -735,6 +738,9 @@
         this.host.style.pointerEvents = 'none';
         this.host.style.cursor = 'default';
       }
+      this.markerElements.forEach(entry => {
+        if (entry && entry.element) entry.element.style.pointerEvents = 'none';
+      });
       window.removeEventListener('mousemove', this.boundOnPointerMove, true);
       window.removeEventListener('keydown', this.boundOnKeyDown, true);
       if (this.reticle) this.reticle.style.display = 'none';
@@ -895,10 +901,11 @@
     createBadge(note) {
       const badge = document.createElement('div');
       badge.className = 'badge';
-      badge.textContent = String(note.index);
       badge.title = 'Pin [' + note.index + ']: ' + (note.comment || note.intent) + ' (click to view/edit)';
+      badge.style.pointerEvents = this.active ? 'auto' : 'none';
       badge.addEventListener('click', (e) => {
         e.stopPropagation();
+        if (!this.active) return;
         this.openExistingModal(note);
       });
       this.shadowRoot.appendChild(badge);
@@ -907,7 +914,7 @@
     }
 
     openExistingModal(note) {
-      if (!note) return;
+      if (!this.active || !note) return;
       this.modalOpen = true;
       this.editingNote = note;
       const card = this.modal;
