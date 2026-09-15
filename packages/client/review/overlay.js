@@ -813,14 +813,19 @@
       }
     }
 
-    isPointInModal(x, y) {
+    isEventInModal(e) {
       if (!this.modalOpen || !this.modal) return false;
+      if (e.target !== this.host && (!this.host || !this.host.contains(e.target))) {
+        return false;
+      }
       const r = this.modal.getBoundingClientRect();
-      return (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom);
+      return (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom);
     }
 
     findBadgeAtPoint(x, y) {
-      for (const entry of this.markerElements.values()) {
+      const entries = Array.from(this.markerElements.values());
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const entry = entries[i];
         if (!entry || !entry.element) continue;
         const r = entry.element.getBoundingClientRect();
         if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
@@ -832,7 +837,7 @@
 
     onClick(e) {
       if (!this.active) return;
-      if (this.isPointInModal(e.clientX, e.clientY)) {
+      if (this.isEventInModal(e)) {
         return;
       }
 
