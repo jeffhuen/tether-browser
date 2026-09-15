@@ -150,9 +150,19 @@ func (b *Broker) handleClient(conn net.Conn) {
 		b.Close()
 		return
 	}
-
 	// Determine session from params or default
 	sessionKey := b.extractSessionKey(req.Params)
+	if sessionKey != "default" && sessionKey != "" {
+		b.mu.Lock()
+		activeTarget, exists := b.sessionTargets[sessionKey]
+		b.mu.Unlock()
+		if (!exists || activeTarget == "") && req.Method != protocol.MethodOpen && req.Method != protocol.MethodStatus {
+			errResp := protocol.NewErrorResponse(req.ID, protocol.CodeTargetNotFound, fmt.Sprintf("session %q has no active target", sessionKey), nil, b.client.NextSeq(), b.client.Epoch())
+			data, _ := json.Marshal(errResp)
+			_, _ = conn.Write(append(data, '\n'))
+			return
+		}
+	}
 
 	// Inject session-specific target ID if omitted
 	modifiedParams := b.injectTargetID(sessionKey, req.Method, req.Params)
@@ -201,9 +211,26 @@ func (b *Broker) extractSessionKey(rawParams json.RawMessage) string {
 }
 
 func extractTimeout(params any) time.Duration {
+	if params == nil {
+		return 0
+	}
 	if m, ok := params.(map[string]any); ok {
 		if ms, ok := m["timeoutMs"].(float64); ok && ms > 0 {
 			return time.Duration(ms) * time.Millisecond
+		}
+		if ms, ok := m["timeoutMs"].(int); ok && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	if raw, ok := params.(json.RawMessage); ok && len(raw) > 0 {
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err == nil {
+			if ms, ok := m["timeoutMs"].(float64); ok && ms > 0 {
+				return time.Duration(ms) * time.Millisecond
+			}
+			if ms, ok := m["timeoutMs"].(int); ok && ms > 0 {
+				return time.Duration(ms) * time.Millisecond
+			}
 		}
 	}
 	return 0

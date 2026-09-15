@@ -90,8 +90,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 
 	params := cmd.Params
-	if cmd.Global.Session != "" {
-		params = injectSession(params, cmd.Global.Session)
+	if cmd.Global.Session != "" || cmd.Global.TimeoutMs > 0 {
+		params = injectSessionAndTimeout(params, cmd.Global.Session, cmd.Global.TimeoutMs)
 	}
 
 	resp, err := client.Call(ctx, cmd.Method, params)
@@ -188,19 +188,23 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func injectSession(params any, session string) any {
-	if params == nil {
-		return map[string]any{"session": session}
-	}
-	data, err := json.Marshal(params)
-	if err != nil {
-		return params
-	}
+func injectSessionAndTimeout(params any, session string, timeoutMs int) any {
 	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil {
-		return params
+	if params != nil {
+		data, err := json.Marshal(params)
+		if err == nil {
+			_ = json.Unmarshal(data, &m)
+		}
 	}
-	m["session"] = session
+	if m == nil {
+		m = make(map[string]any)
+	}
+	if session != "" {
+		m["session"] = session
+	}
+	if timeoutMs > 0 {
+		m["timeoutMs"] = timeoutMs
+	}
 	return m
 }
 

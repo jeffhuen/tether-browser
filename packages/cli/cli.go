@@ -239,7 +239,11 @@ func ParseArgs(args []string) (*Command, error) {
 		p := protocol.WaitParams{
 			TimeoutMs: global.TimeoutMs,
 		}
-		if ms, err := strconv.Atoi(arg); err == nil && ms > 0 {
+		numStr := strings.TrimSuffix(strings.TrimSuffix(arg, "ms"), "s")
+		if ms, err := strconv.Atoi(numStr); err == nil && ms > 0 {
+			if strings.HasSuffix(arg, "s") && !strings.HasSuffix(arg, "ms") {
+				ms *= 1000
+			}
 			p.DurationMs = ms
 		} else {
 			p.Selector = arg
