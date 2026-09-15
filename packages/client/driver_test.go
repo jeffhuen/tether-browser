@@ -51,91 +51,139 @@ func handleMockCDPConn(conn net.Conn, serverAddr string) {
 
 	// Handle /json/new
 	if strings.HasPrefix(req.URL.Path, "/json/new") {
-		resJSON := fmt.Sprintf(`{"id":"tab-mock-1","title":"Test Tab","url":"http://example.com","webSocketDebuggerUrl":"ws://%s/devtools/page/tab-mock-1"}`, serverAddr)
-		resp := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(resJSON), resJSON)
-		_, _ = conn.Write([]byte(resp))
+		resp := targetInfo{
+			ID:                   "tab-mock-1",
+			Type:                 "page",
+			URL:                  "http://example.com",
+			Title:                "Mock Page",
+			WebSocketDebuggerURL: fmt.Sprintf("ws://%s/devtools/page/tab-mock-1", serverAddr),
+		}
+		body, _ := json.Marshal(resp)
+		fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), string(body))
 		return
 	}
 
 	// Handle /json/close
 	if strings.HasPrefix(req.URL.Path, "/json/close") {
-		resp := "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
-		_, _ = conn.Write([]byte(resp))
+		fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 6\r\n\r\nTarget")
 		return
 	}
 
 	// Handle WebSocket Upgrade
 	if strings.ToLower(req.Header.Get("Upgrade")) == "websocket" {
-		secKey := req.Header.Get("Sec-WebSocket-Key")
+		challengeKey := req.Header.Get("Sec-WebSocket-Key")
+		const magicGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 		h := sha1.New()
-		h.Write([]byte(secKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
-		acceptKey := base64.StdEncoding.EncodeToString(h.Sum(nil))
+		h.Write([]byte(challengeKey + magicGUID))
+		accept := base64.StdEncoding.EncodeToString(h.Sum(nil))
 
-		wsUpgradeResp := fmt.Sprintf("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", acceptKey)
-		if _, err := conn.Write([]byte(wsUpgradeResp)); err != nil {
-			return
-		}
+		fmt.Fprintf(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", accept)
 
-		// Read client frames and respond
+		// Process incoming CDP RPC requests over WebSocket
 		for {
 			header := make([]byte, 2)
 			if _, err := io.ReadFull(br, header); err != nil {
 				return
 			}
-
-			payloadLen := uint64(header[1] & 0x7F)
-			if payloadLen == 126 {
+			rawLen := int(header[1] & 0x7F)
+			var payloadLen int
+			if rawLen <= 125 {
+				payloadLen = rawLen
+			} else if rawLen == 126 {
 				ext := make([]byte, 2)
-				_, _ = io.ReadFull(br, ext)
-				payloadLen = uint64(binary.BigEndian.Uint16(ext))
-			} else if payloadLen == 127 {
+				if _, err := io.ReadFull(br, ext); err != nil {
+					return
+				}
+				payloadLen = int(binary.BigEndian.Uint16(ext))
+			} else {
 				ext := make([]byte, 8)
-				_, _ = io.ReadFull(br, ext)
-				payloadLen = binary.BigEndian.Uint64(ext)
+				if _, err := io.ReadFull(br, ext); err != nil {
+					return
+				}
+				payloadLen = int(binary.BigEndian.Uint64(ext))
 			}
 
-			mask := make([]byte, 4)
-			_, _ = io.ReadFull(br, mask)
-
+			maskKey := make([]byte, 4)
+			if _, err := io.ReadFull(br, maskKey); err != nil {
+				return
+			}
 			payload := make([]byte, payloadLen)
-			_, _ = io.ReadFull(br, payload)
-			for i := range payloadLen {
-				payload[i] ^= mask[i%4]
+			if _, err := io.ReadFull(br, payload); err != nil {
+				return
+			}
+			for i := range payload {
+				payload[i] ^= maskKey[i%4]
 			}
 
-			var cdpMsg struct {
-				ID     uint64          `json:"id"`
-				Method string          `json:"method"`
-				Params json.RawMessage `json:"params"`
+			var cdpReq struct {
+				ID     int64          `json:"id"`
+				Method string         `json:"method"`
+				Params map[string]any `json:"params"`
 			}
-			if err := json.Unmarshal(payload, &cdpMsg); err != nil {
-				continue
-			}
+			_ = json.Unmarshal(payload, &cdpReq)
 
-			var resultJSON string
-			switch cdpMsg.Method {
-			case "Page.enable", "Runtime.enable", "DOM.enable":
-				resultJSON = "{}"
-			case "Page.captureScreenshot":
-				resultJSON = `{"data":"mock-screenshot-base64"}`
+			// Construct mock response
+			var result any
+			switch cdpReq.Method {
 			case "Runtime.evaluate":
-				paramStr := string(cdpMsg.Params)
-				if strings.Contains(paramStr, "interactiveOnly") {
-					// Snapshot script
-					snapshotData := `{"title":"Snapshot Page","url":"http://test.local","nodes":[{"ref":"@e1","backendNodeId":1,"role":"button","name":"Submit","isInteractive":true,"rect":{"x":10,"y":10,"width":100,"height":30}}]}`
-					escaped, _ := json.Marshal(snapshotData)
-					resultJSON = fmt.Sprintf(`{"result":{"type":"string","value":%s}}`, string(escaped))
-				} else if strings.Contains(paramStr, "notFound") {
-					resultJSON = `{"result":{"type":"object","value":{"ok":true}}}`
+				expr, _ := cdpReq.Params["expression"].(string)
+				if strings.Contains(expr, "isInteractive") {
+					// Mock snapshot extraction script
+					result = map[string]any{
+						"result": map[string]any{
+							"type": "object",
+							"value": map[string]any{
+								"root": []map[string]any{
+									{
+										"ref":           "@e1",
+										"backendNodeId": 101,
+										"role":          "button",
+										"name":          "Submit",
+										"isInteractive": true,
+									},
+								},
+								"refMap": map[string]any{
+									"@e1": 101,
+								},
+								"title": "Mock Page",
+								"url":   "http://example.com",
+							},
+						},
+					}
+				} else if strings.Contains(expr, "getBoundingClientRect") {
+					// Mock element resolver for click/hover
+					result = map[string]any{
+						"result": map[string]any{
+							"type": "object",
+							"value": map[string]any{
+								"ok": true,
+								"x":  150.0,
+								"y":  250.0,
+							},
+						},
+					}
 				} else {
-					resultJSON = `{"result":{"type":"string","value":"evaluated-ok"}}`
+					result = map[string]any{
+						"result": map[string]any{
+							"type":  "string",
+							"value": "evaluated-ok",
+						},
+					}
+				}
+			case "Page.captureScreenshot":
+				result = map[string]any{
+					"data": "mock-screenshot-base64",
 				}
 			default:
-				resultJSON = "{}"
+				result = map[string]any{}
 			}
 
-			responsePayload := fmt.Sprintf(`{"id":%d,"result":%s}`, cdpMsg.ID, resultJSON)
-			sendServerWSFrame(conn, []byte(responsePayload))
+			respObj := map[string]any{
+				"id":     cdpReq.ID,
+				"result": result,
+			}
+			respBytes, _ := json.Marshal(respObj)
+			sendServerWSFrame(conn, respBytes)
 		}
 	}
 }
@@ -143,7 +191,7 @@ func handleMockCDPConn(conn net.Conn, serverAddr string) {
 func sendServerWSFrame(conn net.Conn, payload []byte) {
 	length := len(payload)
 	var header []byte
-	if length < 126 {
+	if length <= 125 {
 		header = []byte{0x81, byte(length)}
 	} else if length <= 65535 {
 		header = make([]byte, 4)
@@ -171,25 +219,26 @@ func TestCDPDriverFullCycle(t *testing.T) {
 	driver := NewCDPDriver("http://" + serverAddr)
 
 	// OpenTab
-	targetID, err := driver.OpenTab(ctx, "http://example.com")
+	openRes, err := driver.OpenTab(ctx, protocol.OpenParams{URL: "http://example.com"})
 	if err != nil {
 		t.Fatalf("OpenTab: %v", err)
 	}
+	targetID := openRes.TargetID
 	if targetID != "tab-mock-1" {
 		t.Fatalf("expected targetId tab-mock-1, got: %s", targetID)
 	}
 
 	// Eval
-	val, err := driver.Eval(ctx, targetID, "document.title")
+	evalRes, err := driver.Eval(ctx, protocol.EvalParams{TargetID: targetID, Expression: "document.title"})
 	if err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
-	if val != "evaluated-ok" {
-		t.Fatalf("expected evaluated-ok, got: %v", val)
+	if evalRes.Value != "evaluated-ok" {
+		t.Fatalf("expected evaluated-ok, got: %v", evalRes.Value)
 	}
 
 	// Snapshot
-	snap, err := driver.Snapshot(ctx, targetID, true)
+	snap, err := driver.Snapshot(ctx, protocol.SnapshotParams{TargetID: targetID, InteractiveOnly: true})
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -204,37 +253,37 @@ func TestCDPDriverFullCycle(t *testing.T) {
 	}
 
 	// Click
-	if err := driver.Click(ctx, targetID, "@e1"); err != nil {
+	if err := driver.Click(ctx, protocol.ClickParams{TargetID: targetID, Selector: "@e1"}); err != nil {
 		t.Fatalf("Click: %v", err)
 	}
 
 	// Fill
-	if err := driver.Fill(ctx, targetID, "@e1", "test-text"); err != nil {
+	if err := driver.Fill(ctx, protocol.FillParams{TargetID: targetID, Selector: "@e1", Text: "test-text"}); err != nil {
 		t.Fatalf("Fill: %v", err)
 	}
 
 	// Type
-	if err := driver.Type(ctx, targetID, "@e1", "more-text"); err != nil {
+	if err := driver.Type(ctx, protocol.TypeParams{TargetID: targetID, Selector: "@e1", Text: "more-text"}); err != nil {
 		t.Fatalf("Type: %v", err)
 	}
 
 	// Press
-	if err := driver.Press(ctx, targetID, "Enter"); err != nil {
+	if err := driver.Press(ctx, protocol.PressParams{TargetID: targetID, Key: "Enter"}); err != nil {
 		t.Fatalf("Press: %v", err)
 	}
 
 	// Hover
-	if err := driver.Hover(ctx, targetID, "@e1"); err != nil {
+	if err := driver.Hover(ctx, protocol.HoverParams{TargetID: targetID, Selector: "@e1"}); err != nil {
 		t.Fatalf("Hover: %v", err)
 	}
 
 	// Focus
-	if err := driver.Focus(ctx, targetID, "@e1"); err != nil {
+	if err := driver.Focus(ctx, protocol.FocusParams{TargetID: targetID, Selector: "@e1"}); err != nil {
 		t.Fatalf("Focus: %v", err)
 	}
 
 	// Screenshot
-	ss, err := driver.Screenshot(ctx, targetID, false)
+	ss, err := driver.Screenshot(ctx, protocol.ScreenshotParams{TargetID: targetID})
 	if err != nil {
 		t.Fatalf("Screenshot: %v", err)
 	}
@@ -242,18 +291,13 @@ func TestCDPDriverFullCycle(t *testing.T) {
 		t.Fatalf("unexpected screenshot data: %s", ss.Base64)
 	}
 
-	// Review methods
-	if err := driver.StartReview(ctx, targetID); err != nil {
-		t.Fatalf("StartReview: %v", err)
-	}
-
 	// CloseTab
-	if err := driver.CloseTab(ctx, targetID); err != nil {
+	if err := driver.CloseTab(ctx, protocol.CloseParams{TargetID: targetID}); err != nil {
 		t.Fatalf("CloseTab: %v", err)
 	}
 
 	// Eval on closed tab should return ErrTargetNotFound
-	_, err = driver.Eval(ctx, targetID, "1+1")
+	_, err = driver.Eval(ctx, protocol.EvalParams{TargetID: targetID, Expression: "1+1"})
 	if !errors.Is(err, protocol.ErrTargetNotFound) {
 		t.Fatalf("expected ErrTargetNotFound on closed tab, got: %v", err)
 	}

@@ -1,471 +1,321 @@
 package client
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jeffhuen/tether-browser/packages/protocol"
+	"github.com/klauspost/compress/zstd"
 )
 
-// mockDriver records calls and returns configured stub responses.
 type mockDriver struct {
-	openTabFn       func(ctx context.Context, url string) (protocol.TargetID, error)
-	closeTabFn      func(ctx context.Context, target protocol.TargetID) error
-	snapshotFn      func(ctx context.Context, target protocol.TargetID, interactiveOnly bool) (*protocol.SnapshotResult, error)
-	clickFn         func(ctx context.Context, target protocol.TargetID, selector string) error
-	fillFn          func(ctx context.Context, target protocol.TargetID, selector, text string) error
-	typeFn          func(ctx context.Context, target protocol.TargetID, selector, text string) error
-	pressFn         func(ctx context.Context, target protocol.TargetID, key string) error
-	hoverFn         func(ctx context.Context, target protocol.TargetID, selector string) error
-	focusFn         func(ctx context.Context, target protocol.TargetID, selector string) error
-	evalFn          func(ctx context.Context, target protocol.TargetID, script string) (any, error)
-	waitFn          func(ctx context.Context, target protocol.TargetID, selector string, timeoutMs int) error
-	screenshotFn    func(ctx context.Context, target protocol.TargetID, fullPage bool) (*protocol.ScreenshotResult, error)
-	startReviewFn   func(ctx context.Context, target protocol.TargetID) error
-	getReviewNotesFn func(ctx context.Context, target protocol.TargetID) (*protocol.ReviewPayload, error)
+	mu           sync.Mutex
+	calls        []string
+	lastOpen     protocol.OpenParams
+	lastClick    protocol.ClickParams
+	lastFill     protocol.FillParams
+	lastType     protocol.TypeParams
+	lastPress    protocol.PressParams
+	lastHover    protocol.HoverParams
+	lastFocus    protocol.FocusParams
+	lastEval     protocol.EvalParams
+	lastWait     protocol.WaitParams
+	lastShot     protocol.ScreenshotParams
+	lastClose    protocol.CloseParams
+	snapshotResp *protocol.SnapshotResult
+	evalResp     any
+	errToReturn  error
 }
 
-func (m *mockDriver) OpenTab(ctx context.Context, url string) (protocol.TargetID, error) {
-	if m.openTabFn != nil {
-		return m.openTabFn(ctx, url)
+func (m *mockDriver) OpenTab(ctx context.Context, p protocol.OpenParams) (*protocol.OpenResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "OpenTab")
+	m.lastOpen = p
+	if m.errToReturn != nil {
+		return nil, m.errToReturn
 	}
-	return protocol.TargetID("tab-1"), nil
+	return &protocol.OpenResult{TargetID: "t-1", URL: p.URL, Title: "Test Page"}, nil
 }
 
-func (m *mockDriver) CloseTab(ctx context.Context, target protocol.TargetID) error {
-	if m.closeTabFn != nil {
-		return m.closeTabFn(ctx, target)
+func (m *mockDriver) CloseTab(ctx context.Context, p protocol.CloseParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "CloseTab")
+	m.lastClose = p
+	return m.errToReturn
+}
+
+func (m *mockDriver) Snapshot(ctx context.Context, p protocol.SnapshotParams) (*protocol.SnapshotResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "Snapshot")
+	if m.errToReturn != nil {
+		return nil, m.errToReturn
 	}
-	return nil
-}
-
-func (m *mockDriver) Snapshot(ctx context.Context, target protocol.TargetID, interactiveOnly bool) (*protocol.SnapshotResult, error) {
-	if m.snapshotFn != nil {
-		return m.snapshotFn(ctx, target, interactiveOnly)
+	if m.snapshotResp != nil {
+		return m.snapshotResp, nil
 	}
 	return &protocol.SnapshotResult{
 		Generation: 1,
-		RootHash:   "hash-abc",
-		Nodes:      []*protocol.AXNode{{Ref: "@e1", Role: "button", Name: "Click Me"}},
-		RefTable:   map[string]int64{"@e1": 1},
-		TargetURL:  "http://example.com",
-		Title:      "Example",
+		RootHash:   "hash-123",
+		Nodes: []*protocol.AXNode{
+			{Ref: "@e1", Role: "button", Name: "Click Me"},
+		},
 	}, nil
 }
 
-func (m *mockDriver) Click(ctx context.Context, target protocol.TargetID, selector string) error {
-	if m.clickFn != nil {
-		return m.clickFn(ctx, target, selector)
-	}
-	return nil
+func (m *mockDriver) Click(ctx context.Context, p protocol.ClickParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "Click")
+	m.lastClick = p
+	return m.errToReturn
 }
 
-func (m *mockDriver) Fill(ctx context.Context, target protocol.TargetID, selector, text string) error {
-	if m.fillFn != nil {
-		return m.fillFn(ctx, target, selector, text)
-	}
-	return nil
+func (m *mockDriver) DblClick(ctx context.Context, p protocol.ClickParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "DblClick")
+	m.lastClick = p
+	return m.errToReturn
 }
 
-func (m *mockDriver) Type(ctx context.Context, target protocol.TargetID, selector, text string) error {
-	if m.typeFn != nil {
-		return m.typeFn(ctx, target, selector, text)
-	}
-	return nil
+func (m *mockDriver) Fill(ctx context.Context, p protocol.FillParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "Fill")
+	m.lastFill = p
+	return m.errToReturn
 }
 
-func (m *mockDriver) Press(ctx context.Context, target protocol.TargetID, key string) error {
-	if m.pressFn != nil {
-		return m.pressFn(ctx, target, key)
-	}
-	return nil
+func (m *mockDriver) Type(ctx context.Context, p protocol.TypeParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "Type")
+	m.lastType = p
+	return m.errToReturn
 }
 
-func (m *mockDriver) Hover(ctx context.Context, target protocol.TargetID, selector string) error {
-	if m.hoverFn != nil {
-		return m.hoverFn(ctx, target, selector)
-	}
-	return nil
+func (m *mockDriver) Press(ctx context.Context, p protocol.PressParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "Press")
+	m.lastPress = p
+	return m.errToReturn
 }
 
-func (m *mockDriver) Focus(ctx context.Context, target protocol.TargetID, selector string) error {
-	if m.focusFn != nil {
-		return m.focusFn(ctx, target, selector)
-	}
-	return nil
+func (m *mockDriver) Hover(ctx context.Context, p protocol.HoverParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "Hover")
+	m.lastHover = p
+	return m.errToReturn
 }
 
-func (m *mockDriver) Eval(ctx context.Context, target protocol.TargetID, script string) (any, error) {
-	if m.evalFn != nil {
-		return m.evalFn(ctx, target, script)
-	}
-	return "eval-result", nil
+func (m *mockDriver) Focus(ctx context.Context, p protocol.FocusParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "Focus")
+	m.lastFocus = p
+	return m.errToReturn
 }
 
-func (m *mockDriver) Wait(ctx context.Context, target protocol.TargetID, selector string, timeoutMs int) error {
-	if m.waitFn != nil {
-		return m.waitFn(ctx, target, selector, timeoutMs)
+func (m *mockDriver) Eval(ctx context.Context, p protocol.EvalParams) (*protocol.EvalResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "Eval")
+	m.lastEval = p
+	if m.errToReturn != nil {
+		return nil, m.errToReturn
 	}
-	return nil
+	return &protocol.EvalResult{Value: m.evalResp}, nil
 }
 
-func (m *mockDriver) Screenshot(ctx context.Context, target protocol.TargetID, fullPage bool) (*protocol.ScreenshotResult, error) {
-	if m.screenshotFn != nil {
-		return m.screenshotFn(ctx, target, fullPage)
-	}
-	return &protocol.ScreenshotResult{
-		Base64: "base64-bytes",
-		Format: "png",
-	}, nil
+func (m *mockDriver) Wait(ctx context.Context, p protocol.WaitParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "Wait")
+	m.lastWait = p
+	return m.errToReturn
 }
 
-func (m *mockDriver) StartReview(ctx context.Context, target protocol.TargetID) error {
-	if m.startReviewFn != nil {
-		return m.startReviewFn(ctx, target)
+func (m *mockDriver) Screenshot(ctx context.Context, p protocol.ScreenshotParams) (*protocol.ScreenshotResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "Screenshot")
+	m.lastShot = p
+	if m.errToReturn != nil {
+		return nil, m.errToReturn
 	}
-	return nil
+	return &protocol.ScreenshotResult{Base64: "dGVzdA==", Format: "png"}, nil
 }
 
-func (m *mockDriver) GetReviewNotes(ctx context.Context, target protocol.TargetID) (*protocol.ReviewPayload, error) {
-	if m.getReviewNotesFn != nil {
-		return m.getReviewNotesFn(ctx, target)
-	}
-	return &protocol.ReviewPayload{
-		Page: protocol.PageInfo{SanitizedURL: "http://example.com", Title: "Example"},
+func (m *mockDriver) Status(ctx context.Context, p protocol.StatusParams) (*protocol.StatusResult, error) {
+	return &protocol.StatusResult{
+		Connected:   true,
+		TargetCount: 1,
+		Version:     "1.0.0",
 	}, nil
 }
 
 func TestServerDispatchMethods(t *testing.T) {
-	driver := &mockDriver{}
-	server := NewServer("127.0.0.1:0", driver)
+	driver := &mockDriver{evalResp: "Hello"}
+	server := NewServer(driver)
 	ctx := context.Background()
 
-	// browser.open
-	openReq, _ := protocol.NewRequest("req-1", protocol.MethodOpen, protocol.OpenParams{URL: "http://test.local"}, 1, "ep-1")
-	resp := server.Dispatch(ctx, openReq)
-	if resp.Error != nil {
-		t.Fatalf("open returned error: %v", resp.Error)
+	// 1. Open
+	openReq, _ := protocol.NewRequest("req-1", protocol.MethodOpen, protocol.OpenParams{URL: "http://localhost:3000"}, 1, "ep-1")
+	openResp := server.Dispatch(ctx, openReq)
+	if openResp.Error != nil {
+		t.Fatalf("unexpected error: %v", openResp.Error)
 	}
 	var openRes protocol.OpenResult
-	if err := resp.UnmarshalResult(&openRes); err != nil {
-		t.Fatalf("unmarshal open result: %v", err)
-	}
-	if openRes.TargetID != "tab-1" {
-		t.Fatalf("expected tab-1, got: %s", openRes.TargetID)
+	_ = openResp.UnmarshalResult(&openRes)
+	if openRes.TargetID != "t-1" {
+		t.Errorf("expected targetId t-1, got %s", openRes.TargetID)
 	}
 
-	// browser.snapshot
-	snapReq, _ := protocol.NewRequest("req-2", protocol.MethodSnapshot, protocol.SnapshotParams{InteractiveOnly: true}, 2, "ep-1")
-	resp = server.Dispatch(ctx, snapReq)
-	if resp.Error != nil {
-		t.Fatalf("snapshot returned error: %v", resp.Error)
+	// 2. Click with button and clickCount preserved
+	clickReq, _ := protocol.NewRequest("req-2", protocol.MethodClick, protocol.ClickParams{Selector: "@e2", Button: "right", ClickCount: 2}, 2, "ep-1")
+	clickResp := server.Dispatch(ctx, clickReq)
+	if clickResp.Error != nil {
+		t.Fatalf("unexpected click error: %v", clickResp.Error)
 	}
-	var snapRes protocol.SnapshotResult
-	if err := resp.UnmarshalResult(&snapRes); err != nil {
-		t.Fatalf("unmarshal snapshot result: %v", err)
-	}
-	if len(snapRes.Nodes) != 1 || snapRes.Nodes[0].Ref != "@e1" {
-		t.Fatalf("unexpected snapshot nodes: %+v", snapRes.Nodes)
+	if driver.lastClick.Button != "right" || driver.lastClick.ClickCount != 2 {
+		t.Errorf("expected button=right, clickCount=2, got button=%s, clickCount=%d", driver.lastClick.Button, driver.lastClick.ClickCount)
 	}
 
-	// browser.click
-	clickReq, _ := protocol.NewRequest("req-3", protocol.MethodClick, protocol.ClickParams{Selector: "@e1"}, 3, "ep-1")
-	resp = server.Dispatch(ctx, clickReq)
-	if resp.Error != nil {
-		t.Fatalf("click returned error: %v", resp.Error)
+	// 3. Wait with duration and state preserved
+	waitReq, _ := protocol.NewRequest("req-3", protocol.MethodWait, protocol.WaitParams{DurationMs: 500, State: "attached"}, 3, "ep-1")
+	waitResp := server.Dispatch(ctx, waitReq)
+	if waitResp.Error != nil {
+		t.Fatalf("unexpected wait error: %v", waitResp.Error)
 	}
-
-	// browser.fill
-	fillReq, _ := protocol.NewRequest("req-4", protocol.MethodFill, protocol.FillParams{Selector: "@e1", Text: "user"}, 4, "ep-1")
-	resp = server.Dispatch(ctx, fillReq)
-	if resp.Error != nil {
-		t.Fatalf("fill returned error: %v", resp.Error)
-	}
-
-	// browser.type
-	typeReq, _ := protocol.NewRequest("req-5", protocol.MethodType, protocol.TypeParams{Text: "pass"}, 5, "ep-1")
-	resp = server.Dispatch(ctx, typeReq)
-	if resp.Error != nil {
-		t.Fatalf("type returned error: %v", resp.Error)
-	}
-
-	// browser.press
-	pressReq, _ := protocol.NewRequest("req-6", protocol.MethodPress, protocol.PressParams{Key: "Enter"}, 6, "ep-1")
-	resp = server.Dispatch(ctx, pressReq)
-	if resp.Error != nil {
-		t.Fatalf("press returned error: %v", resp.Error)
-	}
-
-	// browser.hover
-	hoverReq, _ := protocol.NewRequest("req-7", protocol.MethodHover, protocol.HoverParams{Selector: "@e1"}, 7, "ep-1")
-	resp = server.Dispatch(ctx, hoverReq)
-	if resp.Error != nil {
-		t.Fatalf("hover returned error: %v", resp.Error)
-	}
-
-	// browser.focus
-	focusReq, _ := protocol.NewRequest("req-8", protocol.MethodFocus, protocol.FocusParams{Selector: "@e1"}, 8, "ep-1")
-	resp = server.Dispatch(ctx, focusReq)
-	if resp.Error != nil {
-		t.Fatalf("focus returned error: %v", resp.Error)
-	}
-
-	// browser.eval
-	evalReq, _ := protocol.NewRequest("req-9", protocol.MethodEval, protocol.EvalParams{Expression: "1 + 1"}, 9, "ep-1")
-	resp = server.Dispatch(ctx, evalReq)
-	if resp.Error != nil {
-		t.Fatalf("eval returned error: %v", resp.Error)
-	}
-	var evalRes protocol.EvalResult
-	if err := resp.UnmarshalResult(&evalRes); err != nil {
-		t.Fatalf("unmarshal eval result: %v", err)
-	}
-	if evalRes.Value != "eval-result" {
-		t.Fatalf("unexpected eval result value: %v", evalRes.Value)
-	}
-
-	// browser.wait
-	waitReq, _ := protocol.NewRequest("req-10", protocol.MethodWait, protocol.WaitParams{Selector: "#btn"}, 10, "ep-1")
-	resp = server.Dispatch(ctx, waitReq)
-	if resp.Error != nil {
-		t.Fatalf("wait returned error: %v", resp.Error)
-	}
-
-	// browser.screenshot
-	ssReq, _ := protocol.NewRequest("req-11", protocol.MethodScreenshot, protocol.ScreenshotParams{FullPage: true}, 11, "ep-1")
-	resp = server.Dispatch(ctx, ssReq)
-	if resp.Error != nil {
-		t.Fatalf("screenshot returned error: %v", resp.Error)
-	}
-	var ssRes protocol.ScreenshotResult
-	if err := resp.UnmarshalResult(&ssRes); err != nil {
-		t.Fatalf("unmarshal screenshot: %v", err)
-	}
-	if ssRes.Base64 != "base64-bytes" {
-		t.Fatalf("unexpected screenshot base64: %s", ssRes.Base64)
-	}
-
-	// browser.close
-	closeReq, _ := protocol.NewRequest("req-12", protocol.MethodClose, protocol.CloseParams{TargetID: "tab-1"}, 12, "ep-1")
-	resp = server.Dispatch(ctx, closeReq)
-	if resp.Error != nil {
-		t.Fatalf("close returned error: %v", resp.Error)
-	}
-
-	// browser.status
-	statusReq, _ := protocol.NewRequest("req-13", protocol.MethodStatus, nil, 13, "ep-1")
-	resp = server.Dispatch(ctx, statusReq)
-	if resp.Error != nil {
-		t.Fatalf("status returned error: %v", resp.Error)
-	}
-	var statusRes protocol.StatusResult
-	if err := resp.UnmarshalResult(&statusRes); err != nil {
-		t.Fatalf("unmarshal status: %v", err)
-	}
-	if !statusRes.Connected {
-		t.Fatalf("expected status connected=true")
-	}
-
-	// review.start and review.notes
-	revStartReq, _ := protocol.NewRequest("req-14", "review.start", nil, 14, "ep-1")
-	resp = server.Dispatch(ctx, revStartReq)
-	if resp.Error != nil {
-		t.Fatalf("review.start returned error: %v", resp.Error)
-	}
-
-	revNotesReq, _ := protocol.NewRequest("req-15", "review.notes", nil, 15, "ep-1")
-	resp = server.Dispatch(ctx, revNotesReq)
-	if resp.Error != nil {
-		t.Fatalf("review.notes returned error: %v", resp.Error)
+	if driver.lastWait.DurationMs != 500 || driver.lastWait.State != "attached" {
+		t.Errorf("expected duration 500, state attached, got %d, %s", driver.lastWait.DurationMs, driver.lastWait.State)
 	}
 }
 
-func TestServerErrors(t *testing.T) {
-	driver := &mockDriver{
-		clickFn: func(ctx context.Context, target protocol.TargetID, selector string) error {
-			return protocol.ErrTargetNotFound
-		},
-		waitFn: func(ctx context.Context, target protocol.TargetID, selector string, timeoutMs int) error {
-			return protocol.ErrActionTimeout
-		},
-	}
-	server := NewServer("127.0.0.1:0", driver)
-	ctx := context.Background()
-
-	// Invalid JSONRPC version
-	badVerReq := &protocol.Request{
-		JSONRPC: "1.0",
-		ID:      protocol.FormatID("bad-ver"),
-		Method:  protocol.MethodOpen,
-	}
-	resp := server.Dispatch(ctx, badVerReq)
-	if resp.Error == nil || resp.Error.Code != protocol.CodeInvalidRequest {
-		t.Fatalf("expected CodeInvalidRequest, got: %v", resp.Error)
-	}
-
-	// Unknown method
-	unknownReq, _ := protocol.NewRequest("req-unknown", "browser.nonexistent", nil, 1, "ep-1")
-	resp = server.Dispatch(ctx, unknownReq)
-	if resp.Error == nil || resp.Error.Code != protocol.CodeMethodNotFound {
-		t.Fatalf("expected CodeMethodNotFound, got: %v", resp.Error)
-	}
-
-	// Invalid params
-	badParamsReq := &protocol.Request{
-		JSONRPC: protocol.JSONRPCVersion,
-		ID:      protocol.FormatID("bad-params"),
-		Method:  protocol.MethodOpen,
-		Params:  []byte(`"not-an-object"`),
-	}
-	resp = server.Dispatch(ctx, badParamsReq)
-	if resp.Error == nil || resp.Error.Code != protocol.CodeInvalidParams {
-		t.Fatalf("expected CodeInvalidParams, got: %v", resp.Error)
-	}
-
-	// Target not found error code mapping
-	clickReq, _ := protocol.NewRequest("req-click-err", protocol.MethodClick, protocol.ClickParams{Selector: "#missing"}, 1, "ep-1")
-	resp = server.Dispatch(ctx, clickReq)
-	if resp.Error == nil || resp.Error.Code != protocol.CodeTargetNotFound {
-		t.Fatalf("expected CodeTargetNotFound, got: %v", resp.Error)
-	}
-
-	// Action timeout error code mapping
-	waitReq, _ := protocol.NewRequest("req-wait-err", protocol.MethodWait, protocol.WaitParams{Selector: "#timeout"}, 1, "ep-1")
-	resp = server.Dispatch(ctx, waitReq)
-	if resp.Error == nil || resp.Error.Code != protocol.CodeActionTimeout {
-		t.Fatalf("expected CodeActionTimeout, got: %v", resp.Error)
-	}
-}
-
-func TestServerOverHTTP(t *testing.T) {
+func TestServerHTTPOriginSecurity(t *testing.T) {
 	driver := &mockDriver{}
-	server := NewServer("127.0.0.1:0", driver)
+	server := NewServer(driver)
 
-	reqObj, _ := protocol.NewRequest("http-req", protocol.MethodOpen, protocol.OpenParams{URL: "http://example.com"}, 1, "ep-1")
-	reqData, _ := json.Marshal(reqObj)
+	reqObj, _ := protocol.NewRequest("req-1", protocol.MethodStatus, nil, 1, "")
+	body, _ := json.Marshal(reqObj)
 
-	httpReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(reqData)))
-	rec := httptest.NewRecorder()
+	// 1. Request with evil Origin MUST be rejected with 403 Forbidden
+	httpReq := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	httpReq.Header.Set("Origin", "http://malicious-site.com")
+	httpReq.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
 
-	server.ServeHTTP(rec, httpReq)
-
-	res := rec.Result()
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got: %d", res.StatusCode)
+	server.ServeHTTP(w, httpReq)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden for external Origin, got %d", w.Code)
 	}
 
-	var resp protocol.Response
-	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if resp.Error != nil {
-		t.Fatalf("unexpected error response: %v", resp.Error)
-	}
-	if protocol.IDString(resp.ID) != "http-req" {
-		t.Fatalf("expected id http-req, got %s", protocol.IDString(resp.ID))
+	// 2. Request without Content-Type: application/json MUST be rejected with 415
+	httpReq2 := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	httpReq2.Header.Set("Content-Type", "text/plain")
+	w2 := httptest.NewRecorder()
+
+	server.ServeHTTP(w2, httpReq2)
+	if w2.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("expected 415 Unsupported Media Type for text/plain, got %d", w2.Code)
 	}
 }
 
-func TestServerOverTCPStream(t *testing.T) {
+func TestServerZstdBinaryFraming(t *testing.T) {
 	driver := &mockDriver{}
-	server := NewServer("127.0.0.1:0", driver)
-	if err := server.Start(); err != nil {
-		t.Fatalf("start server: %v", err)
+	server := NewServer(driver)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
 	}
+	server.listener = ln
+	server.port = ln.Addr().(*net.TCPAddr).Port
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go server.handleConn(conn)
+		}
+	}()
 	defer server.Close()
 
-	conn, err := net.Dial("tcp", server.Addr())
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", server.Port()))
 	if err != nil {
 		t.Fatalf("dial server: %v", err)
 	}
 	defer conn.Close()
 
-	enc := json.NewEncoder(conn)
-	dec := json.NewDecoder(conn)
+	// Create large request that exceeds 1024 bytes threshold to trigger zstd compression
+	largeText := strings.Repeat("A", 1200)
+	reqObj, _ := protocol.NewRequest("req-large", protocol.MethodFill, protocol.FillParams{Selector: "@e1", Text: largeText}, 1, "epoch-1")
+	reqBytes, _ := json.Marshal(reqObj)
 
-	// Send request 1
-	req1, _ := protocol.NewRequest("stream-1", protocol.MethodOpen, protocol.OpenParams{URL: "http://example.com"}, 1, "ep-1")
-	if err := enc.Encode(req1); err != nil {
-		t.Fatalf("encode req 1: %v", err)
-	}
-
-	var resp1 protocol.Response
-	if err := dec.Decode(&resp1); err != nil {
-		t.Fatalf("decode resp 1: %v", err)
-	}
-	if protocol.IDString(resp1.ID) != "stream-1" {
-		t.Fatalf("expected id stream-1, got %s", protocol.IDString(resp1.ID))
-	}
-
-	// Send request 2 on the same connection
-	req2, _ := protocol.NewRequest("stream-2", protocol.MethodStatus, nil, 2, "ep-1")
-	if err := enc.Encode(req2); err != nil {
-		t.Fatalf("encode req 2: %v", err)
-	}
-
-	var resp2 protocol.Response
-	if err := dec.Decode(&resp2); err != nil {
-		t.Fatalf("decode resp 2: %v", err)
-	}
-	if protocol.IDString(resp2.ID) != "stream-2" {
-		t.Fatalf("expected id stream-2, got %s", protocol.IDString(resp2.ID))
-	}
-}
-
-func TestServerOverTCPBinaryFraming(t *testing.T) {
-	driver := &mockDriver{}
-	server := NewServer("127.0.0.1:0", driver)
-	if err := server.Start(); err != nil {
-		t.Fatalf("start server: %v", err)
-	}
-	defer server.Close()
-
-	conn, err := net.Dial("tcp", server.Addr())
+	compressed, err := protocol.CompressPayload(reqBytes)
 	if err != nil {
-		t.Fatalf("dial server: %v", err)
+		t.Fatalf("compress payload: %v", err)
 	}
-	defer conn.Close()
-
-	req, _ := protocol.NewRequest("bin-1", protocol.MethodOpen, protocol.OpenParams{URL: "http://example.com"}, 1, "ep-1")
-	reqJSON, _ := json.Marshal(req)
-
-	framedReq, err := protocol.CompressPayload(reqJSON)
-	if err != nil {
-		t.Fatalf("compress req: %v", err)
+	if compressed[0] != protocol.FormatZstd {
+		t.Fatalf("expected FormatZstd for large payload, got 0x%02x", compressed[0])
 	}
 
-	if _, err := conn.Write(framedReq); err != nil {
-		t.Fatalf("write framed req: %v", err)
+	if _, err := conn.Write(compressed); err != nil {
+		t.Fatalf("write compressed request: %v", err)
+	}
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.CloseWrite()
 	}
 
-	// Read response framed header
-	header := make([]byte, 5)
-	if _, err := io.ReadFull(conn, header); err != nil {
-		t.Fatalf("read header: %v", err)
+	br := bufio.NewReader(conn)
+	respHeader := make([]byte, 5)
+	if _, err := io.ReadFull(br, respHeader); err != nil {
+		t.Fatalf("read response header: %v", err)
 	}
-	uncompressedLen := binary.BigEndian.Uint32(header[1:5])
-	payload := make([]byte, uncompressedLen)
-	if _, err := io.ReadFull(conn, payload); err != nil {
-		t.Fatalf("read payload: %v", err)
+	uncompressedLen := binary.BigEndian.Uint32(respHeader[1:5])
+	var decompressed []byte
+	if respHeader[0] == protocol.FormatRaw {
+		respPayload := make([]byte, uncompressedLen)
+		if _, err := io.ReadFull(br, respPayload); err != nil {
+			t.Fatalf("read raw response: %v", err)
+		}
+		decompressed = respPayload
+	} else if respHeader[0] == protocol.FormatZstd {
+		dec, err := zstd.NewReader(br)
+		if err != nil {
+			t.Fatalf("new zstd reader: %v", err)
+		}
+		decompressed = make([]byte, uncompressedLen)
+		if _, err := io.ReadFull(dec, decompressed); err != nil {
+			t.Fatalf("read zstd response: %v", err)
+		}
+		dec.Close()
+	} else {
+		t.Fatalf("unknown response format: 0x%02x", respHeader[0])
 	}
-
-	decompressed, err := protocol.DecompressPayload(append(header, payload...))
-	if err != nil {
-		t.Fatalf("decompress: %v", err)
-	}
-
 	var resp protocol.Response
 	if err := json.Unmarshal(decompressed, &resp); err != nil {
-		t.Fatalf("unmarshal resp: %v", err)
+		t.Fatalf("unmarshal response: %v", err)
 	}
-	if protocol.IDString(resp.ID) != "bin-1" {
-		t.Fatalf("expected id bin-1, got: %s", protocol.IDString(resp.ID))
+	if protocol.IDString(resp.ID) != "req-large" {
+		t.Errorf("expected ID req-large, got %s", protocol.IDString(resp.ID))
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -11,25 +12,34 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
-// WSConn represents a low-level RFC 6455 WebSocket connection.
+// MaxWebSocketPayload caps the maximum allowed frame/message size (64 MiB).
+const MaxWebSocketPayload uint64 = 64 * 1024 * 1024
+
+var (
+	ErrWebSocketPayloadTooLarge = errors.New("websocket message exceeds 64 MiB limit")
+)
+
+// WSConn represents a minimal raw RFC 6455 WebSocket client connection.
 type WSConn struct {
 	conn    net.Conn
 	reader  *bufio.Reader
 	writeMu sync.Mutex
-	closed  atomic.Bool
+	closed  bool
 }
 
-// DialWebSocket connects to a WebSocket endpoint and completes the handshake.
-func DialWebSocket(ctx context.Context, rawURL string) (*WSConn, error) {
-	u, err := url.Parse(rawURL)
+// DialWebSocket connects to a WebSocket server with context deadline support.
+func DialWebSocket(ctx context.Context, endpoint string) (*WSConn, error) {
+	u, err := url.Parse(endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("invalid websocket url: %w", err)
+		return nil, fmt.Errorf("invalid websocket URL: %w", err)
 	}
 
 	host := u.Host
@@ -44,52 +54,67 @@ func DialWebSocket(ctx context.Context, rawURL string) (*WSConn, error) {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", host)
 	if err != nil {
-		return nil, fmt.Errorf("dial websocket tcp: %w", err)
+		return nil, fmt.Errorf("dial tcp %s: %w", host, err)
 	}
 
-	reqURI := u.RequestURI()
-	if reqURI == "" {
-		reqURI = "/"
+	if tc, ok := conn.(*net.TCPConn); ok {
+		_ = tc.SetNoDelay(true)
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
 	}
 
 	keyBytes := make([]byte, 16)
 	if _, err := rand.Read(keyBytes); err != nil {
-		_ = conn.Close()
+		conn.Close()
 		return nil, err
 	}
-	secKey := base64.StdEncoding.EncodeToString(keyBytes)
+	challengeKey := base64.StdEncoding.EncodeToString(keyBytes)
 
-	req := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n",
-		reqURI, u.Host, secKey)
+	reqPath := u.Path
+	if reqPath == "" {
+		reqPath = "/"
+	}
+	if u.RawQuery != "" {
+		reqPath += "?" + u.RawQuery
+	}
 
-	if _, err := conn.Write([]byte(req)); err != nil {
-		_ = conn.Close()
+	handshake := fmt.Sprintf(
+		"GET %s HTTP/1.1\r\n"+
+			"Host: %s\r\n"+
+			"Upgrade: websocket\r\n"+
+			"Connection: Upgrade\r\n"+
+			"Sec-WebSocket-Key: %s\r\n"+
+			"Sec-WebSocket-Version: 13\r\n\r\n",
+		reqPath, u.Host, challengeKey,
+	)
+
+	if _, err := conn.Write([]byte(handshake)); err != nil {
+		conn.Close()
 		return nil, fmt.Errorf("write handshake: %w", err)
 	}
 
 	reader := bufio.NewReader(conn)
-	statusLine, err := reader.ReadString('\n')
+	resp, err := http.ReadResponse(reader, &http.Request{Method: "GET"})
 	if err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("read handshake status: %w", err)
+		conn.Close()
+		return nil, fmt.Errorf("read handshake response: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		conn.Close()
+		return nil, fmt.Errorf("unexpected handshake status: %d %s", resp.StatusCode, resp.Status)
 	}
 
-	if !strings.Contains(statusLine, "101") {
-		_ = conn.Close()
-		return nil, fmt.Errorf("websocket handshake failed with status: %s", strings.TrimSpace(statusLine))
+	expectedAccept := computeWebSocketAccept(challengeKey)
+	if resp.Header.Get("Sec-WebSocket-Accept") != expectedAccept {
+		conn.Close()
+		return nil, errors.New("sec-websocket-accept mismatch")
 	}
 
-	// Consume remaining HTTP headers until empty line
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			_ = conn.Close()
-			return nil, fmt.Errorf("read handshake headers: %w", err)
-		}
-		if strings.TrimSpace(line) == "" {
-			break
-		}
-	}
+	_ = conn.SetDeadline(time.Time{})
 
 	return &WSConn{
 		conn:   conn,
@@ -97,29 +122,39 @@ func DialWebSocket(ctx context.Context, rawURL string) (*WSConn, error) {
 	}, nil
 }
 
-// WriteTextMessage sends a masked text frame (client to server).
-func (ws *WSConn) WriteTextMessage(data []byte) error {
-	if ws.closed.Load() {
-		return errors.New("websocket connection closed")
-	}
+func computeWebSocketAccept(key string) string {
+	const magicGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	h := sha1.New()
+	h.Write([]byte(key + magicGUID))
+	return base64.StdEncoding.EncodeToString(h.Sum(nil))
+}
 
+// WriteTextMessage sends a masked text frame to the server.
+func (ws *WSConn) WriteTextMessage(text []byte) error {
+	return ws.writeFrame(1, text)
+}
+
+func (ws *WSConn) writeFrame(opcode byte, data []byte) error {
 	ws.writeMu.Lock()
 	defer ws.writeMu.Unlock()
 
+	if ws.closed {
+		return errors.New("connection closed")
+	}
+
 	length := len(data)
 	var header []byte
-	if length < 126 {
-		header = make([]byte, 2)
-		header[0] = 0x81 // FIN | Text
-		header[1] = 0x80 | byte(length)
+
+	if length <= 125 {
+		header = []byte{0x80 | opcode, 0x80 | byte(length)}
 	} else if length <= 65535 {
 		header = make([]byte, 4)
-		header[0] = 0x81
+		header[0] = 0x80 | opcode
 		header[1] = 0x80 | 126
 		binary.BigEndian.PutUint16(header[2:4], uint16(length))
 	} else {
 		header = make([]byte, 10)
-		header[0] = 0x81
+		header[0] = 0x80 | opcode
 		header[1] = 0x80 | 127
 		binary.BigEndian.PutUint64(header[2:10], uint64(length))
 	}
@@ -130,7 +165,7 @@ func (ws *WSConn) WriteTextMessage(data []byte) error {
 	}
 
 	masked := make([]byte, length)
-	for i := range length {
+	for i := range data {
 		masked[i] = data[i] ^ maskKey[i%4]
 	}
 
@@ -140,36 +175,48 @@ func (ws *WSConn) WriteTextMessage(data []byte) error {
 	if _, err := ws.conn.Write(maskKey); err != nil {
 		return err
 	}
-	if _, err := ws.conn.Write(masked); err != nil {
-		return err
-	}
-	return nil
+	_, err := ws.conn.Write(masked)
+	return err
 }
 
-// ReadMessage reads the next WebSocket message, responding to pings automatically.
+// ReadMessage reads the next complete message, accumulating continuation frames.
 func (ws *WSConn) ReadMessage() (int, []byte, error) {
+	var accumulated []byte
+	firstOpcode := -1
+
 	for {
 		header := make([]byte, 2)
 		if _, err := io.ReadFull(ws.reader, header); err != nil {
 			return 0, nil, err
 		}
 
+		fin := (header[0] & 0x80) != 0
 		opcode := int(header[0] & 0x0F)
 		masked := (header[1] & 0x80) != 0
-		payloadLen := uint64(header[1] & 0x7F)
+		rawLen := uint64(header[1] & 0x7F)
 
-		if payloadLen == 126 {
+		var payloadLen uint64
+		if rawLen <= 125 {
+			payloadLen = rawLen
+		} else if rawLen == 126 {
 			ext := make([]byte, 2)
 			if _, err := io.ReadFull(ws.reader, ext); err != nil {
 				return 0, nil, err
 			}
 			payloadLen = uint64(binary.BigEndian.Uint16(ext))
-		} else if payloadLen == 127 {
+		} else if rawLen == 127 {
 			ext := make([]byte, 8)
 			if _, err := io.ReadFull(ws.reader, ext); err != nil {
 				return 0, nil, err
 			}
 			payloadLen = binary.BigEndian.Uint64(ext)
+			if payloadLen&(1<<63) != 0 {
+				return 0, nil, errors.New("websocket MSB non-zero in 64-bit length")
+			}
+		}
+
+		if payloadLen > MaxWebSocketPayload || uint64(len(accumulated))+payloadLen > MaxWebSocketPayload {
+			return 0, nil, ErrWebSocketPayloadTooLarge
 		}
 
 		var maskKey []byte
@@ -186,7 +233,7 @@ func (ws *WSConn) ReadMessage() (int, []byte, error) {
 		}
 
 		if masked {
-			for i := uint64(0); i < payloadLen; i++ {
+			for i := range payload {
 				payload[i] ^= maskKey[i%4]
 			}
 		}
@@ -196,12 +243,19 @@ func (ws *WSConn) ReadMessage() (int, []byte, error) {
 			_ = ws.Close()
 			return opcode, nil, io.EOF
 		case 9: // Ping
-			ws.writeControl(10, payload) // Respond with Pong
+			ws.writeControl(10, payload)
 			continue
 		case 10: // Pong
 			continue
-		default:
-			return opcode, payload, nil
+		}
+
+		if firstOpcode == -1 {
+			firstOpcode = opcode
+		}
+		accumulated = append(accumulated, payload...)
+
+		if fin {
+			return firstOpcode, accumulated, nil
 		}
 	}
 }
@@ -224,15 +278,18 @@ func (ws *WSConn) writeControl(opcode byte, data []byte) {
 	_, _ = ws.conn.Write(masked)
 }
 
-// Close terminates the underlying network connection.
+// Close terminates the WebSocket connection.
 func (ws *WSConn) Close() error {
-	if ws.closed.CompareAndSwap(false, true) {
-		return ws.conn.Close()
+	ws.writeMu.Lock()
+	defer ws.writeMu.Unlock()
+	if ws.closed {
+		return nil
 	}
-	return nil
+	ws.closed = true
+	return ws.conn.Close()
 }
 
-// CDPClient coordinates JSON-RPC communication over a WebSocket connection.
+// CDPClient manages bidirectional JSON-RPC calls over a WebSocket connection to Chrome.
 type CDPClient struct {
 	ws        *WSConn
 	nextID    atomic.Uint64
@@ -283,76 +340,74 @@ func (c *CDPClient) readPump() {
 	}()
 
 	for {
-		_, payload, err := c.ws.ReadMessage()
+		_, msg, err := c.ws.ReadMessage()
 		if err != nil {
 			return
 		}
 
-		var in cdpIncoming
-		if err := json.Unmarshal(payload, &in); err != nil {
+		var incoming cdpIncoming
+		if err := json.Unmarshal(msg, &incoming); err != nil {
 			continue
 		}
 
-		if in.ID != nil {
+		if incoming.ID != nil {
 			c.mu.Lock()
-			ch, ok := c.pending[*in.ID]
-			if ok {
-				delete(c.pending, *in.ID)
+			ch, exists := c.pending[*incoming.ID]
+			if exists {
+				delete(c.pending, *incoming.ID)
 			}
 			c.mu.Unlock()
 
-			if ok {
-				if in.Error != nil {
-					ch <- cdpResult{err: fmt.Errorf("cdp error %d: %s", in.Error.Code, in.Error.Message)}
-				} else {
-					ch <- cdpResult{result: in.Result}
+			if exists {
+				var resErr error
+				if incoming.Error != nil {
+					resErr = fmt.Errorf("cdp error %d: %s", incoming.Error.Code, incoming.Error.Message)
 				}
+				ch <- cdpResult{result: incoming.Result, err: resErr}
 			}
-		} else if in.Method != "" {
+		} else if incoming.Method != "" {
 			c.mu.Lock()
-			listeners := make([]func(string, json.RawMessage), len(c.listeners))
-			copy(listeners, c.listeners)
+			listeners := append([]func(string, json.RawMessage){}, c.listeners...)
 			c.mu.Unlock()
-
 			for _, fn := range listeners {
-				fn(in.Method, in.Params)
+				fn(incoming.Method, incoming.Params)
 			}
 		}
 	}
 }
 
-// Call sends a CDP command and waits for the typed response.
+// Call sends a CDP command and waits for its result.
 func (c *CDPClient) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	id := c.nextID.Add(1)
 
 	var rawParams json.RawMessage
 	if params != nil {
-		data, err := json.Marshal(params)
+		d, err := json.Marshal(params)
 		if err != nil {
 			return nil, fmt.Errorf("marshal cdp params: %w", err)
 		}
-		rawParams = data
+		rawParams = d
 	}
 
 	req := map[string]any{
 		"id":     id,
 		"method": method,
 	}
-	if len(rawParams) > 0 {
+	if rawParams != nil {
 		req["params"] = rawParams
 	}
 
-	rawReq, err := json.Marshal(req)
+	reqBytes, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal cdp request: %w", err)
 	}
 
-	ch := make(chan cdpResult, 1)
+	resChan := make(chan cdpResult, 1)
 	c.mu.Lock()
-	c.pending[id] = ch
+	c.pending[id] = resChan
 	c.mu.Unlock()
 
-	if err := c.ws.WriteTextMessage(rawReq); err != nil {
+	if err := c.ws.WriteTextMessage(reqBytes); err != nil {
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
@@ -366,17 +421,10 @@ func (c *CDPClient) Call(ctx context.Context, method string, params any) (json.R
 		c.mu.Unlock()
 		return nil, ctx.Err()
 	case <-c.closed:
-		return nil, errors.New("cdp connection closed")
-	case res := <-ch:
+		return nil, errors.New("cdp client closed")
+	case res := <-resChan:
 		return res.result, res.err
 	}
-}
-
-// OnEvent registers a listener callback for CDP notifications.
-func (c *CDPClient) OnEvent(fn func(method string, params json.RawMessage)) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.listeners = append(c.listeners, fn)
 }
 
 // Close closes the underlying WebSocket connection.
