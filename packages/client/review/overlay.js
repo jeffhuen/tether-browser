@@ -569,16 +569,32 @@
     }
 
     clear() {
+      // Remove data-tether-pin from all target elements before clearing notes array
+      this.notes.forEach(note => {
+        if (note && note.targetEl && typeof note.targetEl.removeAttribute === 'function') {
+          try {
+            note.targetEl.removeAttribute('data-tether-pin');
+          } catch (e) {}
+        }
+      });
       this.notes = [];
+
       this.markerElements.forEach(item => {
         if (item && item.element && typeof item.element.remove === 'function') {
           item.element.remove();
         }
+        if (item && item.note && item.note.targetEl && typeof item.note.targetEl.removeAttribute === 'function') {
+          try {
+            item.note.targetEl.removeAttribute('data-tether-pin');
+          } catch (e) {}
+        }
       });
       this.markerElements.clear();
+
       try {
         document.querySelectorAll('[data-tether-pin]').forEach(el => el.removeAttribute('data-tether-pin'));
       } catch (e) {}
+
       this.closeModal();
     }
 
