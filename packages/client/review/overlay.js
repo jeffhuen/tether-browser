@@ -37,6 +37,25 @@
     }
     return s;
   }
+  function sanitizeURL(rawURL) {
+    if (!rawURL) return '';
+    try {
+      const u = new URL(rawURL);
+      u.hash = '';
+      const params = new URLSearchParams(u.search);
+      const toDelete = [];
+      params.forEach((val, key) => {
+        if (containsSecret(key) || containsSecret(val)) {
+          toDelete.push(key);
+        }
+      });
+      toDelete.forEach(k => params.delete(k));
+      u.search = params.toString();
+      return u.toString();
+    } catch (e) {
+      return rawURL.split('#')[0];
+    }
+  }
 
   // --- 1. Universal DOM Baseline Extractor ---
 
@@ -141,11 +160,29 @@
 
   function getHTMLSnippet(el) {
     try {
-      let html = el.outerHTML;
-      if (!html) return '';
-      if (containsSecret(html)) {
-        html = html.replace(/([a-zA-Z_-]+)=["'][^"']*?(?:secret|token|password|key)[^"']*?["']/gi, '$1="[redacted]"');
+      const clone = el.cloneNode(true);
+      const pwdInputs = clone.querySelectorAll ? clone.querySelectorAll('input[type="password"]') : [];
+      pwdInputs.forEach(input => {
+        input.value = '[redacted]';
+        input.setAttribute('value', '[redacted]');
+      });
+      if (clone.tagName && clone.tagName.toLowerCase() === 'input' && clone.type === 'password') {
+        clone.value = '[redacted]';
+        clone.setAttribute('value', '[redacted]');
       }
+
+      const allEls = clone.querySelectorAll ? [clone, ...clone.querySelectorAll('*')] : [clone];
+      allEls.forEach(elem => {
+        if (!elem.attributes) return;
+        for (let i = 0; i < elem.attributes.length; i++) {
+          const attr = elem.attributes[i];
+          if (containsSecret(attr.name) || containsSecret(attr.value)) {
+            elem.setAttribute(attr.name, '[redacted]');
+          }
+        }
+      });
+
+      let html = clone.outerHTML || '';
       if (html.length > 2048) {
         html = html.slice(0, 2048) + '...';
       }
@@ -293,11 +330,12 @@
     const scrollY = window.scrollY || window.pageYOffset || 0;
 
     const role = el.getAttribute('role') || el.tagName.toLowerCase();
-    const accessibleName = el.getAttribute('aria-label') || el.getAttribute('alt') || (el.innerText ? el.innerText.trim().slice(0, 60) : '');
+    const rawAccessibleName = el.getAttribute('aria-label') || el.getAttribute('alt') || (el.innerText ? el.innerText.trim().slice(0, 60) : '');
+    const accessibleName = sanitizeText(rawAccessibleName, 80);
 
     return {
       page: {
-        sanitizedUrl: window.location.href.split('#')[0],
+        sanitizedUrl: sanitizeURL(window.location.href),
         title: document.title || '',
         viewportWidth: window.innerWidth,
         viewportHeight: window.innerHeight,
@@ -500,7 +538,11 @@
 
     clear() {
       this.notes = [];
-      this.markerElements.forEach(el => el.remove());
+      this.markerElements.forEach(item => {
+        if (item && item.element && typeof item.element.remove === 'function') {
+          item.element.remove();
+        }
+      });
       this.markerElements.clear();
       this.closeModal();
     }
