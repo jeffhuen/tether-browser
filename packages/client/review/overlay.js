@@ -46,7 +46,9 @@
   function sanitizeURL(rawURL) {
     if (!rawURL) return '';
     try {
-      const u = new URL(rawURL);
+      const base = document.baseURI || window.location.href;
+      const isRelative = !rawURL.includes('://');
+      const u = new URL(rawURL, base);
       u.hash = '';
       const params = new URLSearchParams(u.search);
       const toDelete = [];
@@ -57,9 +59,62 @@
       });
       toDelete.forEach(k => params.delete(k));
       u.search = params.toString();
+      if (isRelative) {
+        return u.pathname + (u.search ? u.search : '');
+      }
       return u.toString();
     } catch (e) {
-      return rawURL.split('#')[0];
+      return rawURL.split('#')[0].split('?')[0];
+    }
+  }
+
+  function extractSanitizedText(elem) {
+    if (!elem) return '';
+    try {
+      const clone = elem.cloneNode(true);
+      const allInputs = clone.querySelectorAll ? Array.from(clone.querySelectorAll('input, textarea')) : [];
+      if (clone.tagName && (clone.tagName.toLowerCase() === 'input' || clone.tagName.toLowerCase() === 'textarea')) {
+        allInputs.push(clone);
+      }
+      allInputs.forEach(input => {
+        const name = input.getAttribute('name') || '';
+        const id = input.getAttribute('id') || '';
+        const rawType = (input.getAttribute('type') || '').toLowerCase();
+        const tag = input.tagName ? input.tagName.toLowerCase() : '';
+        const isSecret = rawType === 'password' ||
+          containsSecret(rawType) ||
+          containsSecret(name) ||
+          containsSecret(id) ||
+          containsSecret(input.value) ||
+          (tag === 'textarea' && containsSecret(input.textContent));
+        if (isSecret) {
+          if (rawType === 'file' || input.type === 'file') {
+            input.value = '';
+          } else {
+            input.value = '[redacted]';
+            input.setAttribute('value', '[redacted]');
+          }
+          if (tag === 'textarea') {
+            input.textContent = '[redacted]';
+          }
+        }
+      });
+
+      const allEls = clone.querySelectorAll ? [clone, ...clone.querySelectorAll('*')] : [clone];
+      allEls.forEach(el => {
+        if (!el.attributes) return;
+        for (let i = 0; i < el.attributes.length; i++) {
+          const attr = el.attributes[i];
+          if (containsSecret(attr.name) || containsSecret(attr.value)) {
+            el.setAttribute(attr.name, '[redacted]');
+          }
+        }
+      });
+
+      const text = clone.innerText || clone.textContent || '';
+      return sanitizeText(text, 120);
+    } catch (e) {
+      return '[redacted]';
     }
   }
 
@@ -85,11 +140,12 @@
       }
     }
     const parent = el.parentElement;
-    if (!parent || parent === document.body || parent === document.documentElement) {
-      return sel;
-    }
+    if (!parent) return sel;
     const siblings = Array.from(parent.children).filter(c => c.tagName === el.tagName);
     const index = siblings.indexOf(el) + 1;
+    if (parent === document.documentElement) {
+      return tag + ':nth-of-type(' + index + ')';
+    }
     const parentSel = buildSelector(parent);
     if (parentSel) {
       return parentSel + ' > ' + tag + ':nth-of-type(' + index + ')';
@@ -367,35 +423,6 @@
     const rawAccessibleName = el.getAttribute('aria-label') || el.getAttribute('alt') || (el.innerText ? el.innerText.trim().slice(0, 60) : '');
     const accessibleName = sanitizeText(rawAccessibleName, 80);
 
-    function extractSanitizedText(elem) {
-      try {
-        const clone = elem.cloneNode(true);
-        const allInputs = clone.querySelectorAll ? Array.from(clone.querySelectorAll('input, textarea')) : [];
-        if (clone.tagName && (clone.tagName.toLowerCase() === 'input' || clone.tagName.toLowerCase() === 'textarea')) {
-          allInputs.push(clone);
-        }
-        allInputs.forEach(input => {
-          const name = input.getAttribute('name') || '';
-          const id = input.getAttribute('id') || '';
-          const rawType = input.getAttribute('type') || '';
-          const isSecret = input.type === 'password' ||
-            containsSecret(rawType) ||
-            containsSecret(name) ||
-            containsSecret(id) ||
-            containsSecret(input.value) ||
-            containsSecret(input.textContent);
-          if (isSecret) {
-            input.value = '[redacted]';
-            input.setAttribute('value', '[redacted]');
-            input.textContent = '[redacted]';
-          }
-        });
-        const text = clone.innerText || clone.textContent || '';
-        return sanitizeText(text, 120);
-      } catch (e) {
-        return sanitizeText(elem.innerText || elem.textContent || '', 120);
-      }
-    }
     const textSnippet = extractSanitizedText(el);
 
     return {
