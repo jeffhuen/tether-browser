@@ -119,6 +119,21 @@
   }
 
   // --- 1. Universal DOM Baseline Extractor ---
+  function looksHashy(value) {
+    return /^[A-Za-z0-9_-]{12,}$/.test(value) && /\d/.test(value) && /[A-Z]/.test(value);
+  }
+
+  function getStableClasses(el, maxCount = 2) {
+    if (!el || !el.classList) return [];
+    const result = [];
+    for (let i = 0; i < el.classList.length && result.length < maxCount; i++) {
+      const cls = el.classList[i];
+      if (!cls || cls.length > 60 || containsSecret(cls)) continue;
+      if (/^css-[a-z0-9]+$/i.test(cls) || looksHashy(cls)) continue;
+      result.push(cls);
+    }
+    return result;
+  }
 
   function buildSelector(el) {
     if (!el || el.nodeType !== Node.ELEMENT_NODE) return '';
@@ -130,14 +145,12 @@
     }
     const tag = el.tagName.toLowerCase();
     let sel = tag;
-    if (el.className && typeof el.className === 'string') {
-      const classes = el.className.trim().split(/\s+/).filter(c => c && !c.includes(':') && !containsSecret(c));
-      if (classes.length > 0) {
-        sel = tag + '.' + classes.map(c => CSS.escape(c)).slice(0, 3).join('.');
-        try {
-          if (document.querySelectorAll(sel).length === 1) return sel;
-        } catch (e) {}
-      }
+    const classes = getStableClasses(el, 2);
+    if (classes.length > 0) {
+      sel = tag + '.' + classes.map(c => CSS.escape(c)).join('.');
+      try {
+        if (document.querySelectorAll(sel).length === 1) return sel;
+      } catch (e) {}
     }
     const parent = el.parentElement;
     if (!parent) return sel;
@@ -151,6 +164,53 @@
       return parentSel + ' > ' + tag + ':nth-of-type(' + index + ')';
     }
     return tag + ':nth-of-type(' + index + ')';
+  }
+
+  function getAccessibility(el) {
+    const role = el.getAttribute('role') || el.tagName.toLowerCase();
+    const ariaLabel = el.getAttribute('aria-label');
+    const ariaLabelledBy = el.getAttribute('aria-labelledby');
+    let accessibleName = '';
+
+    if (ariaLabel) {
+      accessibleName = ariaLabel;
+    } else if (ariaLabelledBy) {
+      const ids = ariaLabelledBy.trim().split(/\s+/);
+      const names = [];
+      for (const id of ids) {
+        const ref = document.getElementById(id);
+        if (ref) {
+          const text = ref.innerText || ref.textContent;
+          if (text) names.push(text.trim());
+        }
+      }
+      if (names.length > 0) {
+        accessibleName = names.join(' ');
+      }
+    } else if (el.getAttribute('title')) {
+      accessibleName = el.getAttribute('title');
+    } else if (el.getAttribute('alt')) {
+      accessibleName = el.getAttribute('alt');
+    } else if (el.innerText) {
+      accessibleName = el.innerText.trim().slice(0, 60);
+    }
+
+    return {
+      role: role,
+      accessibleName: sanitizeText(accessibleName, 80)
+    };
+  }
+
+  function getAncestorPath(el) {
+    const path = [];
+    let curr = el.parentElement;
+    while (curr && curr !== document.documentElement && path.length < 8) {
+      const tag = curr.tagName.toLowerCase();
+      const role = curr.getAttribute('role');
+      path.push(role ? tag + '[role=' + role + ']' : tag);
+      curr = curr.parentElement;
+    }
+    return path;
   }
 
   function buildElementPath(el) {
@@ -468,7 +528,7 @@
       },
       nearbyText: getNearbyText(el),
       nearbyElements: getNearbyElements(el),
-      ancestorPath: []
+      ancestorPath: getAncestorPath(el)
     };
   }
 
@@ -498,7 +558,7 @@
 
       const host = document.createElement('div');
       host.setAttribute('data-tether-annotation-overlay', '');
-      host.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;overflow:hidden;';
+      host.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:all;overflow:hidden;cursor:crosshair;';
       const shadow = host.attachShadow({ mode: 'closed' });
 
       const style = document.createElement('style');
@@ -616,6 +676,8 @@
     start() {
       this.active = true;
       this.ensureOverlay();
+      this.host.style.pointerEvents = 'all';
+      this.host.style.cursor = 'crosshair';
       window.addEventListener('mousemove', this.boundOnPointerMove, true);
       window.addEventListener('click', this.boundOnClick, true);
       window.addEventListener('keydown', this.boundOnKeyDown, true);
@@ -624,6 +686,10 @@
 
     stop() {
       this.active = false;
+      if (this.host) {
+        this.host.style.pointerEvents = 'none';
+        this.host.style.cursor = 'default';
+      }
       window.removeEventListener('mousemove', this.boundOnPointerMove, true);
       window.removeEventListener('click', this.boundOnClick, true);
       window.removeEventListener('keydown', this.boundOnKeyDown, true);
@@ -631,7 +697,6 @@
       if (this.tooltip) this.tooltip.style.display = 'none';
       this.closeModal();
     }
-
     clear() {
       // Remove data-tether-pin from all target elements before clearing notes array
       this.notes.forEach(note => {
@@ -662,11 +727,26 @@
       this.closeModal();
     }
 
+    getElementUnderPointer(x, y) {
+      if (typeof document.elementsFromPoint === 'function') {
+        const els = document.elementsFromPoint(x, y);
+        for (let i = 0; i < els.length; i++) {
+          const el = els[i];
+          if (el && el !== this.host && !this.host.contains(el)) {
+            return el;
+          }
+        }
+      }
+      return null;
+    }
+
     onPointerMove(e) {
       if (!this.active || this.modalOpen) return;
 
-      const target = document.elementFromPoint(e.clientX, e.clientY);
-      if (!target || target === this.host || this.host.contains(target)) {
+      const target = this.getElementUnderPointer(e.clientX, e.clientY);
+      if (!target) {
+        if (this.reticle) this.reticle.style.display = 'none';
+        if (this.tooltip) this.tooltip.style.display = 'none';
         return;
       }
 
@@ -694,19 +774,19 @@
 
     onClick(e) {
       if (!this.active) return;
-      if (this.modalOpen && this.modal.contains(e.target)) return;
-
-      const target = document.elementFromPoint(e.clientX, e.clientY);
-      if (!target || target === this.host || this.host.contains(target)) return;
+      if (this.modalOpen && this.modal && this.modal.contains(e.target)) return;
 
       e.preventDefault();
       e.stopPropagation();
+      e.stopImmediatePropagation();
+
+      const target = this.getElementUnderPointer(e.clientX, e.clientY);
+      if (!target) return;
 
       this.selectedEl = target;
       this.pendingPayload = extractPayload(target);
       this.openModal(e.clientX, e.clientY);
     }
-
     onKeyDown(e) {
       if (e.key === 'Escape') {
         if (this.modalOpen) {
@@ -729,6 +809,7 @@
       meta.textContent = `${cName} • ${sLoc}`;
       card.querySelector('#card-comment').value = '';
 
+      if (this.host) this.host.style.cursor = 'default';
       card.style.display = 'block';
       card.style.left = Math.max(20, Math.min(window.innerWidth - 340, clickX + 10)) + 'px';
       card.style.top = Math.max(20, Math.min(window.innerHeight - 300, clickY + 10)) + 'px';
@@ -738,6 +819,7 @@
 
     closeModal() {
       this.modalOpen = false;
+      if (this.host) this.host.style.cursor = this.active ? 'crosshair' : 'default';
       if (this.modal) this.modal.style.display = 'none';
       this.selectedEl = null;
       this.pendingPayload = null;
