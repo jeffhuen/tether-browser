@@ -189,6 +189,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprint(stdout, out)
 
+	case "review":
+		out, err := FormatReview(cmd.BrokerSubcmd, resp, cmd.Global.JSON)
+		if err != nil {
+			fmt.Fprintf(stderr, "Error: %v\n", err)
+			return 1
+		}
+		fmt.Fprint(stdout, out)
+
 	default:
 		fmt.Fprintf(stderr, "Unknown command: %s\n", cmd.Name)
 		return 1

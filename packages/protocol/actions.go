@@ -17,8 +17,12 @@ const (
 	MethodPDF        = "browser.pdf"
 	MethodClose      = "browser.close"
 	MethodStatus     = "browser.status"
-	MethodAttach     = "browser.attach"
-	MethodDetach     = "browser.detach"
+	MethodAttach      = "browser.attach"
+	MethodDetach      = "browser.detach"
+	MethodReviewStart = "browser.review.start"
+	MethodReviewList  = "browser.review.list"
+	MethodReviewClear = "browser.review.clear"
+	MethodReviewSend  = "browser.review.send"
 )
 
 // TargetID is an opaque identifier representing an active browser tab.
@@ -147,4 +151,23 @@ type StatusResult struct {
 	Version        string   `json:"version"`
 	Mode           string   `json:"mode"` // "managed", "daily-chrome", "extension"
 	DaemonUptimeS  int64    `json:"daemonUptimeS"`
+}
+
+// ReviewParams specifies target and options for Tether Review.
+type ReviewParams struct {
+	TargetID TargetID `json:"targetId,omitempty"`
+}
+
+// ReviewListResult returns active pinned review notes.
+type ReviewListResult struct {
+	Notes    []*ReviewNote `json:"notes"`
+	PageURL  string        `json:"pageUrl"`
+	Viewport string        `json:"viewport"`
+}
+
+// ReviewSendResult returns the formatted markdown design feedback report.
+type ReviewSendResult struct {
+	Markdown string        `json:"markdown"`
+	Notes    []*ReviewNote `json:"notes"`
+	PageURL  string        `json:"pageUrl"`
 }
