@@ -249,8 +249,12 @@
           containsSecret(input.value) ||
           (tag === 'textarea' && containsSecret(input.textContent));
         if (isSecret) {
-          input.value = '[redacted]';
-          input.setAttribute('value', '[redacted]');
+          if (input.type === 'file' || rawType.toLowerCase() === 'file') {
+            input.value = '';
+          } else {
+            input.value = '[redacted]';
+            input.setAttribute('value', '[redacted]');
+          }
           if (tag === 'textarea') {
             input.textContent = '[redacted]';
           }
