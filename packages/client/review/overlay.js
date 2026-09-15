@@ -693,14 +693,13 @@
 
       host.addEventListener('click', (e) => {
         if (!this.active) return;
+        e.preventDefault();
+        e.stopPropagation();
+
         if (this.modalOpen) {
           this.closeModal();
           return;
         }
-
-        e.preventDefault();
-        e.stopPropagation();
-
         const target = this.getElementUnderPointer(e.clientX, e.clientY);
         if (!target) return;
 
