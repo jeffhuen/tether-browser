@@ -66,6 +66,7 @@ func runDaemon(args []string) int {
 		return 1
 	}
 	defer proxyLn.Close()
+	actualProxyPort := proxyLn.Addr().(*net.TCPAddr).Port
 
 	proxy := client.NewProxy()
 	enrollRoutes(proxy, *enroll)
@@ -80,7 +81,7 @@ func runDaemon(args []string) int {
 	cdpURL := *chromeURL
 
 	if !*noChrome && cdpURL == "" {
-		proc, err := client.LaunchChrome(ctx, *workspace, proxy.Port())
+		proc, err := client.LaunchChrome(ctx, *workspace, actualProxyPort)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error launching Chrome: %v\n", err)
 			return 1
@@ -96,9 +97,7 @@ func runDaemon(args []string) int {
 
 	driver := client.NewCDPDriver(cdpURL)
 	server := client.NewServer(driver)
-
-	fmt.Printf("Tether daemon listening on 127.0.0.1:%d (Mode A proxy on 127.0.0.1:%d)\n", *port, proxy.Port())
-
+	fmt.Printf("Tether daemon listening on 127.0.0.1:%d (Mode A proxy on 127.0.0.1:%d)\n", *port, actualProxyPort)
 	serverErrChan := make(chan error, 1)
 	go func() {
 		serverErrChan <- server.ListenAndServe(*port)
