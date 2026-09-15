@@ -555,6 +555,10 @@ func (d *CDPDriver) Press(ctx context.Context, params protocol.PressParams) erro
 
 	var vkCode int
 	var keyText string
+	if len(key) == 1 {
+		keyText = key
+	}
+
 	switch key {
 	case "Enter":
 		vkCode = 13
@@ -595,7 +599,6 @@ func (d *CDPDriver) Press(ctx context.Context, params protocol.PressParams) erro
 	default:
 		if len(key) == 1 {
 			vkCode = int(strings.ToUpper(key)[0])
-			keyText = key
 		}
 	}
 
@@ -609,10 +612,9 @@ func (d *CDPDriver) Press(ctx context.Context, params protocol.PressParams) erro
 		return fmt.Errorf("key down: %w", err)
 	}
 
-	if keyText != "" && (modifiers&^1 == 0) {
+	hasNonTextModifiers := (modifiers & (2 | 1 | 4)) != 0
+	if keyText != "" && !hasNonTextModifiers {
 		charEvt := map[string]any{
-			"type":           "char",
-			"text":           keyText,
 			"unmodifiedText": keyText,
 			"key":            key,
 			"modifiers":      modifiers,
