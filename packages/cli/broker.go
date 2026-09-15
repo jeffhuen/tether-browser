@@ -30,7 +30,7 @@ type Broker struct {
 	daemonAddr     string
 	listener       net.Listener
 	client         *Client
-	activeTargetID protocol.TargetID
+	sessionTargets map[string]protocol.TargetID
 	mu             sync.Mutex
 	shutdownChan   chan struct{}
 }
@@ -44,10 +44,11 @@ func NewBroker(socketPath, daemonAddr string) *Broker {
 		daemonAddr = DefaultDaemonAddr
 	}
 	return &Broker{
-		socketPath:   socketPath,
-		daemonAddr:   daemonAddr,
-		client:       NewClient(daemonAddr),
-		shutdownChan: make(chan struct{}),
+		socketPath:     socketPath,
+		daemonAddr:     daemonAddr,
+		client:         NewClient(daemonAddr),
+		sessionTargets: make(map[string]protocol.TargetID),
+		shutdownChan:   make(chan struct{}),
 	}
 }
 
@@ -66,7 +67,6 @@ func IsBrokerAlive(socketPath string) bool {
 
 // Run starts the broker socket listener in the foreground and serves requests until stopped.
 func (b *Broker) Run(ctx context.Context) error {
-	// Clean up stale socket if present
 	if _, err := os.Stat(b.socketPath); err == nil {
 		if IsBrokerAlive(b.socketPath) {
 			return fmt.Errorf("broker already running on %s", b.socketPath)
@@ -142,10 +142,28 @@ func (b *Broker) handleClient(conn net.Conn) {
 		return
 	}
 
-	// Inject active target ID into params if omitted
-	modifiedParams := b.injectTargetID(req.Method, req.Params)
+	// Graceful remote shutdown command
+	if req.Method == "broker.shutdown" {
+		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
+		data, _ := json.Marshal(resp)
+		_, _ = conn.Write(append(data, '\n'))
+		b.Close()
+		return
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Determine session from params or default
+	sessionKey := b.extractSessionKey(req.Params)
+
+	// Inject session-specific target ID if omitted
+	modifiedParams := b.injectTargetID(sessionKey, req.Method, req.Params)
+
+	// Derive timeout from request parameters if specified
+	timeout := 60 * time.Second
+	if t := extractTimeout(modifiedParams); t > 0 {
+		timeout = t
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	resp, err := b.client.Call(ctx, req.Method, modifiedParams)
@@ -156,8 +174,11 @@ func (b *Broker) handleClient(conn net.Conn) {
 		return
 	}
 
-	// Update active target tracking on open or close
-	b.updateState(req.Method, resp)
+	// Update session-specific active target tracking on open or close
+	b.updateSessionState(sessionKey, req.Method, resp)
+
+	// MUST preserve the caller's request ID!
+	resp.ID = req.ID
 
 	data, err := json.Marshal(resp)
 	if err != nil {
@@ -166,10 +187,32 @@ func (b *Broker) handleClient(conn net.Conn) {
 	_, _ = conn.Write(append(data, '\n'))
 }
 
-// injectTargetID adds active target ID to request params if missing.
-func (b *Broker) injectTargetID(method string, rawParams json.RawMessage) any {
+func (b *Broker) extractSessionKey(rawParams json.RawMessage) string {
+	if len(rawParams) == 0 {
+		return "default"
+	}
+	var m map[string]any
+	if err := json.Unmarshal(rawParams, &m); err == nil {
+		if s, ok := m["session"].(string); ok && s != "" {
+			return s
+		}
+	}
+	return "default"
+}
+
+func extractTimeout(params any) time.Duration {
+	if m, ok := params.(map[string]any); ok {
+		if ms, ok := m["timeoutMs"].(float64); ok && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return 0
+}
+
+// injectTargetID adds session target ID to request params if missing.
+func (b *Broker) injectTargetID(sessionKey string, method string, rawParams json.RawMessage) any {
 	b.mu.Lock()
-	activeTarget := b.activeTargetID
+	activeTarget := b.sessionTargets[sessionKey]
 	b.mu.Unlock()
 
 	if activeTarget == "" || method == protocol.MethodOpen || method == protocol.MethodStatus {
@@ -190,8 +233,8 @@ func (b *Broker) injectTargetID(method string, rawParams json.RawMessage) any {
 	return m
 }
 
-// updateState updates tracked active target ID based on method responses.
-func (b *Broker) updateState(method string, resp *protocol.Response) {
+// updateSessionState updates tracked active target ID based on method responses.
+func (b *Broker) updateSessionState(sessionKey string, method string, resp *protocol.Response) {
 	if resp == nil || resp.Error != nil {
 		return
 	}
@@ -203,10 +246,10 @@ func (b *Broker) updateState(method string, resp *protocol.Response) {
 	case protocol.MethodOpen:
 		var res protocol.OpenResult
 		if err := resp.UnmarshalResult(&res); err == nil && res.TargetID != "" {
-			b.activeTargetID = res.TargetID
+			b.sessionTargets[sessionKey] = res.TargetID
 		}
 	case protocol.MethodClose:
-		b.activeTargetID = ""
+		delete(b.sessionTargets, sessionKey)
 	}
 }
 
@@ -248,13 +291,34 @@ func StartBackgroundBroker() error {
 	return errors.New("timed out waiting for broker process to start")
 }
 
-// StopBroker stops any running broker instance on the socket.
+// StopBroker sends a shutdown request over the socket and waits for the broker process to exit.
 func StopBroker() error {
 	socketPath := DefaultBrokerSocket()
 	if !IsBrokerAlive(socketPath) {
 		_ = os.Remove(socketPath)
 		return nil
 	}
+
+	conn, err := net.DialTimeout("unix", socketPath, 1*time.Second)
+	if err != nil {
+		_ = os.Remove(socketPath)
+		return nil
+	}
+	defer conn.Close()
+
+	req, _ := protocol.NewRequest("shutdown", "broker.shutdown", nil, 0, "")
+	reqBytes, _ := json.Marshal(req)
+	_, _ = conn.Write(append(reqBytes, '\n'))
+
+	// Wait for socket to close
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !IsBrokerAlive(socketPath) {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
 	_ = os.Remove(socketPath)
 	return nil
 }
@@ -262,10 +326,14 @@ func StopBroker() error {
 // HandleBrokerCommand executes broker subcommands (run, start, stop, status).
 func HandleBrokerCommand(subcmd string, stdout, stderr io.Writer) int {
 	socketPath := DefaultBrokerSocket()
+	daemonAddr := os.Getenv("TETHER_DAEMON_ADDR")
+	if daemonAddr == "" {
+		daemonAddr = DefaultDaemonAddr
+	}
 
 	switch subcmd {
 	case "run":
-		broker := NewBroker(socketPath, DefaultDaemonAddr)
+		broker := NewBroker(socketPath, daemonAddr)
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 
@@ -277,11 +345,15 @@ func HandleBrokerCommand(subcmd string, stdout, stderr io.Writer) int {
 		return 0
 
 	case "start":
+		if IsBrokerAlive(socketPath) {
+			fmt.Fprintln(stdout, "Broker already running")
+			return 0
+		}
 		if err := StartBackgroundBroker(); err != nil {
 			fmt.Fprintf(stderr, "Failed to start broker: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "Broker started on %s\n", socketPath)
+		fmt.Fprintln(stdout, "Broker started successfully")
 		return 0
 
 	case "stop":
@@ -289,19 +361,19 @@ func HandleBrokerCommand(subcmd string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "Failed to stop broker: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "Broker stopped\n")
+		fmt.Fprintln(stdout, "Broker stopped")
 		return 0
 
 	case "status":
 		if IsBrokerAlive(socketPath) {
-			fmt.Fprintf(stdout, "Broker is running on %s\n", socketPath)
+			fmt.Fprintln(stdout, "Broker status: running")
 		} else {
-			fmt.Fprintf(stdout, "Broker is not running\n")
+			fmt.Fprintln(stdout, "Broker status: stopped")
 		}
 		return 0
 
 	default:
-		fmt.Fprintf(stderr, "Unknown broker command %q. Use start, stop, status, or run.\n", subcmd)
+		fmt.Fprintf(stderr, "Unknown broker subcommand: %s (valid: run, start, stop, status)\n", subcmd)
 		return 1
 	}
 }
