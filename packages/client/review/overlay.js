@@ -691,10 +691,6 @@
         }
       });
 
-      host.addEventListener('wheel', (e) => {
-        window.scrollBy({ left: e.deltaX, top: e.deltaY, behavior: 'auto' });
-      }, { passive: true });
-
       host.addEventListener('click', (e) => {
         if (!this.active) return;
         if (this.modalOpen) {
