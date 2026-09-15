@@ -1,0 +1,307 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/jeffhuen/tether-browser/packages/protocol"
+)
+
+// DefaultBrokerSocket returns the default unix socket path for the session broker.
+func DefaultBrokerSocket() string {
+	tmp := os.TempDir()
+	return filepath.Join(tmp, "tether-broker.sock")
+}
+
+// Broker manages a persistent connection to the tether daemon and brokers CLI requests.
+type Broker struct {
+	socketPath     string
+	daemonAddr     string
+	listener       net.Listener
+	client         *Client
+	activeTargetID protocol.TargetID
+	mu             sync.Mutex
+	shutdownChan   chan struct{}
+}
+
+// NewBroker creates a Broker instance.
+func NewBroker(socketPath, daemonAddr string) *Broker {
+	if socketPath == "" {
+		socketPath = DefaultBrokerSocket()
+	}
+	if daemonAddr == "" {
+		daemonAddr = DefaultDaemonAddr
+	}
+	return &Broker{
+		socketPath:   socketPath,
+		daemonAddr:   daemonAddr,
+		client:       NewClient(daemonAddr),
+		shutdownChan: make(chan struct{}),
+	}
+}
+
+// IsBrokerAlive checks whether the broker unix socket is responding.
+func IsBrokerAlive(socketPath string) bool {
+	if socketPath == "" {
+		socketPath = DefaultBrokerSocket()
+	}
+	conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// Run starts the broker socket listener in the foreground and serves requests until stopped.
+func (b *Broker) Run(ctx context.Context) error {
+	// Clean up stale socket if present
+	if _, err := os.Stat(b.socketPath); err == nil {
+		if IsBrokerAlive(b.socketPath) {
+			return fmt.Errorf("broker already running on %s", b.socketPath)
+		}
+		_ = os.Remove(b.socketPath)
+	}
+
+	listener, err := net.Listen("unix", b.socketPath)
+	if err != nil {
+		return fmt.Errorf("listen on unix socket %s: %w", b.socketPath, err)
+	}
+	b.listener = listener
+	defer func() {
+		_ = listener.Close()
+		_ = os.Remove(b.socketPath)
+	}()
+
+	errChan := make(chan error, 1)
+
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				select {
+				case <-b.shutdownChan:
+					errChan <- nil
+					return
+				case <-ctx.Done():
+					errChan <- ctx.Err()
+					return
+				default:
+					errChan <- err
+					return
+				}
+			}
+			go b.handleClient(conn)
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		b.Close()
+		return ctx.Err()
+	case <-b.shutdownChan:
+		return nil
+	case err := <-errChan:
+		return err
+	}
+}
+
+// Close closes the broker listener and releases resources.
+func (b *Broker) Close() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	select {
+	case <-b.shutdownChan:
+	default:
+		close(b.shutdownChan)
+	}
+	if b.listener != nil {
+		_ = b.listener.Close()
+	}
+}
+
+// handleClient handles an incoming CLI command connection over the unix socket.
+func (b *Broker) handleClient(conn net.Conn) {
+	defer conn.Close()
+
+	decoder := json.NewDecoder(conn)
+	var req protocol.Request
+	if err := decoder.Decode(&req); err != nil {
+		return
+	}
+
+	// Inject active target ID into params if omitted
+	modifiedParams := b.injectTargetID(req.Method, req.Params)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	resp, err := b.client.Call(ctx, req.Method, modifiedParams)
+	if err != nil {
+		errResp := protocol.NewErrorResponse(req.ID, protocol.CodeInternalError, err.Error(), nil, b.client.NextSeq(), b.client.Epoch())
+		data, _ := json.Marshal(errResp)
+		_, _ = conn.Write(append(data, '\n'))
+		return
+	}
+
+	// Update active target tracking on open or close
+	b.updateState(req.Method, resp)
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return
+	}
+	_, _ = conn.Write(append(data, '\n'))
+}
+
+// injectTargetID adds active target ID to request params if missing.
+func (b *Broker) injectTargetID(method string, rawParams json.RawMessage) any {
+	b.mu.Lock()
+	activeTarget := b.activeTargetID
+	b.mu.Unlock()
+
+	if activeTarget == "" || method == protocol.MethodOpen || method == protocol.MethodStatus {
+		return rawParams
+	}
+
+	var m map[string]any
+	if len(rawParams) > 0 {
+		_ = json.Unmarshal(rawParams, &m)
+	}
+	if m == nil {
+		m = make(map[string]any)
+	}
+
+	if tid, exists := m["targetId"]; !exists || tid == "" {
+		m["targetId"] = string(activeTarget)
+	}
+	return m
+}
+
+// updateState updates tracked active target ID based on method responses.
+func (b *Broker) updateState(method string, resp *protocol.Response) {
+	if resp == nil || resp.Error != nil {
+		return
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	switch method {
+	case protocol.MethodOpen:
+		var res protocol.OpenResult
+		if err := resp.UnmarshalResult(&res); err == nil && res.TargetID != "" {
+			b.activeTargetID = res.TargetID
+		}
+	case protocol.MethodClose:
+		b.activeTargetID = ""
+	}
+}
+
+// StartBackgroundBroker launches the broker as a background process.
+func StartBackgroundBroker() error {
+	socketPath := DefaultBrokerSocket()
+	if IsBrokerAlive(socketPath) {
+		return nil
+	}
+
+	bin, err := os.Executable()
+	if err != nil {
+		bin = "tether"
+	}
+
+	cmd := exec.Command(bin, "broker", "run")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	logPath := filepath.Join(os.TempDir(), "tether-broker.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err == nil {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start broker background process: %w", err)
+	}
+
+	// Wait up to 2 seconds for broker to listen
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if IsBrokerAlive(socketPath) {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	return errors.New("timed out waiting for broker process to start")
+}
+
+// StopBroker stops any running broker instance on the socket.
+func StopBroker() error {
+	socketPath := DefaultBrokerSocket()
+	if !IsBrokerAlive(socketPath) {
+		_ = os.Remove(socketPath)
+		return nil
+	}
+	_ = os.Remove(socketPath)
+	return nil
+}
+
+// HandleBrokerCommand executes broker subcommands (run, start, stop, status).
+func HandleBrokerCommand(subcmd string, stdout, stderr io.Writer) int {
+	socketPath := DefaultBrokerSocket()
+
+	switch subcmd {
+	case "run":
+		broker := NewBroker(socketPath, DefaultDaemonAddr)
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+
+		fmt.Fprintf(stdout, "Broker listening on %s\n", socketPath)
+		if err := broker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			fmt.Fprintf(stderr, "Broker error: %v\n", err)
+			return 1
+		}
+		return 0
+
+	case "start":
+		if err := StartBackgroundBroker(); err != nil {
+			fmt.Fprintf(stderr, "Failed to start broker: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "Broker started on %s\n", socketPath)
+		return 0
+
+	case "stop":
+		if err := StopBroker(); err != nil {
+			fmt.Fprintf(stderr, "Failed to stop broker: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "Broker stopped\n")
+		return 0
+
+	case "status":
+		if IsBrokerAlive(socketPath) {
+			fmt.Fprintf(stdout, "Broker is running on %s\n", socketPath)
+		} else {
+			fmt.Fprintf(stdout, "Broker is not running\n")
+		}
+		return 0
+
+	default:
+		fmt.Fprintf(stderr, "Unknown broker command %q. Use start, stop, status, or run.\n", subcmd)
+		return 1
+	}
+}
