@@ -615,6 +615,8 @@ func (d *CDPDriver) Press(ctx context.Context, params protocol.PressParams) erro
 	hasNonTextModifiers := (modifiers & (2 | 1 | 4)) != 0
 	if keyText != "" && !hasNonTextModifiers {
 		charEvt := map[string]any{
+			"type":           "char",
+			"text":           keyText,
 			"unmodifiedText": keyText,
 			"key":            key,
 			"modifiers":      modifiers,
