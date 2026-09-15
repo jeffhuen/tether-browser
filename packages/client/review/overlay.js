@@ -8,6 +8,12 @@
   const SECRET_PATTERNS = [
     /access_token/i,
     /auth_token/i,
+    /refresh_token/i,
+    /id_token/i,
+    /\btoken\b/i,
+    /\bcode\b/i,
+    /\bstate\b/i,
+    /\bnonce\b/i,
     /api_key/i,
     /apikey/i,
     /client_secret/i,
@@ -161,15 +167,18 @@
   function getHTMLSnippet(el) {
     try {
       const clone = el.cloneNode(true);
-      const pwdInputs = clone.querySelectorAll ? clone.querySelectorAll('input[type="password"]') : [];
-      pwdInputs.forEach(input => {
-        input.value = '[redacted]';
-        input.setAttribute('value', '[redacted]');
-      });
-      if (clone.tagName && clone.tagName.toLowerCase() === 'input' && clone.type === 'password') {
-        clone.value = '[redacted]';
-        clone.setAttribute('value', '[redacted]');
+      const allInputs = clone.querySelectorAll ? Array.from(clone.querySelectorAll('input, textarea')) : [];
+      if (clone.tagName && (clone.tagName.toLowerCase() === 'input' || clone.tagName.toLowerCase() === 'textarea')) {
+        allInputs.push(clone);
       }
+      allInputs.forEach(input => {
+        const name = input.getAttribute('name') || '';
+        const id = input.getAttribute('id') || '';
+        if (input.type === 'password' || containsSecret(name) || containsSecret(id)) {
+          input.value = '[redacted]';
+          input.setAttribute('value', '[redacted]');
+        }
+      });
 
       const allEls = clone.querySelectorAll ? [clone, ...clone.querySelectorAll('*')] : [clone];
       allEls.forEach(elem => {

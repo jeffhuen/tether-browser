@@ -133,7 +133,111 @@ func (rc *ReviewController) GetNotes(ctx context.Context, client *CDPClient) ([]
 			return nil, fmt.Errorf("unmarshal review notes: %w", err)
 		}
 	}
+
+	// Enrich framework metadata from main world for components that weren't detected via standard DOM attributes
+	for _, note := range notes {
+		if note == nil || note.Payload == nil {
+			continue
+		}
+		if note.Payload.Target.Framework.Name == "" || note.Payload.Target.Framework.Name == "Static" {
+			selector := note.Payload.Target.Selector
+			if selector != "" {
+				if fw := rc.probeMainWorldFramework(ctx, client, selector); fw != nil {
+					note.Payload.Target.Framework = *fw
+				}
+			}
+		}
+	}
+
 	return notes, nil
+}
+
+func (rc *ReviewController) probeMainWorldFramework(ctx context.Context, client *CDPClient, selector string) *protocol.FrameworkInfo {
+	probeScript := fmt.Sprintf(`
+(function(sel) {
+	const el = document.querySelector(sel);
+	if (!el) return null;
+
+	// 1. React Fiber probe in main world
+	try {
+		for (const k of Object.keys(el)) {
+			if (k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')) {
+				let fiber = el[k];
+				const components = [];
+				let sourceLoc = '';
+				let depth = 0;
+				while (fiber && depth < 30) {
+					const type = fiber.type || fiber.elementType;
+					if (type && typeof type !== 'string') {
+						const name = type.displayName || type.name;
+						if (name && !/^(Fragment|Root|Provider|Consumer|Suspense)$/.test(name) && !components.includes(name)) {
+							components.push(name);
+						}
+					}
+					if (!sourceLoc && fiber._debugSource) {
+						sourceLoc = fiber._debugSource.fileName + ':' + fiber._debugSource.lineNumber;
+					}
+					fiber = fiber.return;
+					depth++;
+				}
+				return {
+					name: 'React',
+					component: components.length > 0 ? components.slice(0, 4).reverse().map(c => '<' + c + '>').join(' ') : '',
+					sourceLocation: sourceLoc,
+					provenance: sourceLoc ? 'exact' : 'inferred'
+				};
+			}
+		}
+	} catch (e) {}
+
+	// 2. Vue probe in main world
+	try {
+		if (el.__vueParentComponent) {
+			const vnode = el.__vueParentComponent;
+			const compName = vnode.type?.__name || vnode.type?.name || '';
+			return {
+				name: 'Vue',
+				component: compName ? '<' + compName + '>' : '',
+				provenance: 'inferred'
+			};
+		}
+	} catch (e) {}
+
+	// 3. Svelte probe in main world
+	try {
+		if (el.__svelte_meta && el.__svelte_meta.loc) {
+			const loc = el.__svelte_meta.loc;
+			return {
+				name: 'Svelte',
+				sourceLocation: loc.file + ':' + loc.line,
+				provenance: 'exact'
+			};
+		}
+	} catch (e) {}
+
+	return null;
+})(%q)
+`, selector)
+
+	// Execute in main world (WITHOUT contextId) to access DOM expando properties
+	call := map[string]any{
+		"expression":    probeScript,
+		"returnByValue": true,
+	}
+	resp, err := client.Call(ctx, "Runtime.evaluate", call)
+	if err != nil {
+		return nil
+	}
+
+	var evalOut struct {
+		Result struct {
+			Value *protocol.FrameworkInfo `json:"value"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(resp, &evalOut); err == nil {
+		return evalOut.Result.Value
+	}
+	return nil
 }
 
 // Clear removes all pinned notes and badges from the page.
