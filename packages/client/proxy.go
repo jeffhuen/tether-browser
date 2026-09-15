@@ -155,6 +155,9 @@ func resolveAndValidateDestination(hostPort string) (string, error) {
 		if port != "" {
 			return net.JoinHostPort(ip.String(), port), nil
 		}
+		if strings.Contains(ip.String(), ":") {
+			return "[" + ip.String() + "]", nil
+		}
 		return ip.String(), nil
 	}
 
@@ -172,6 +175,9 @@ func resolveAndValidateDestination(hostPort string) (string, error) {
 	validatedIP := ips[0].String()
 	if port != "" {
 		return net.JoinHostPort(validatedIP, port), nil
+	}
+	if strings.Contains(validatedIP, ":") {
+		return "[" + validatedIP + "]", nil
 	}
 	return validatedIP, nil
 }
