@@ -12,85 +12,40 @@ When `${HERDR_ENV:-0}` equals `1`, you run inside a Herdr pane. Use the `herdr` 
 - **Worktree lifecycle**: Herdr owns creation and teardown. To create a worktree, run `herdr worktree create`. To remove a worktree, run `herdr worktree remove --workspace <ID>`. Outside Herdr, use native `git worktree add` and `git worktree remove`.
 - **Interactive panes and supervision**: Herdr owns panes, tabs, splits, and observable agent runs. Use `herdr pane split` to arrange panes. Use `herdr agent start`, `herdr agent prompt`, and `herdr agent wait` to run and observe workers.
 - **In-turn tools and subagents**: OMP owns the cognitive tool loop. Use OMP for file tools (`read`, `edit`, `write`), in-kernel execution (`eval`), turn-scoped headless subagents (`task`), and background services (`hub start`, `hub ps`, `hub logs`).
-- **Delivery and review**: `docs/agent-workflows/delivery.md` owns the branch lifecycle, parallel manifests, and independent review. Read [Agent execution policy](docs/agent-workflows/execution-policy.md) before you run project commands or change files.
+- **Delivery and review**: `docs/agent-workflows/delivery.md` owns the branch lifecycle, parallel manifests, and independent review. Read [Agent Execution Policy](docs/agent-workflows/execution-policy.md) before you run project commands or change files.
 - **Architecture and Roadmap**: Read [README.md](README.md) before implementing components.
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
-## Beads Issue Tracker
+## Codebase Discovery
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+Use the tool that matches the scope of your question. Do not query both graphs for one question.
 
-### Quick Reference
+<!-- codebase-memory-mcp:start -->
+### Code Intelligence with codebase-memory-mcp
 
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
-```
+Use `codebase-memory-mcp` for code structure, definitions, and call paths. Prefer MCP graph tools over text search for code symbols:
 
-### Rules
+1. `search_graph`: Find functions, classes, routes, and variables.
+2. `trace_path`: Trace callers, callees, and data flow.
+3. `get_code_snippet`: Read source code for a specific symbol.
+4. `check_index_coverage`: Verify file indexing before you make negative claims.
+5. `query_graph`: Run Cypher queries for multi-hop code patterns.
+6. `get_architecture`: Inspect project structure and entry points.
+<!-- codebase-memory-mcp:end -->
 
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+### Architecture and Concepts with Graphify
 
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
+Use Graphify for high-level architecture, concepts, and documentation relationships.
 
-## Agent Context Profiles
+1. Inspect `graphify-out/` to review community clusters, system boundaries, and document links.
+2. Read `graphify-out/GRAPH_REPORT.md` only for broad project review.
+3. To refresh the architectural graph after you make structural changes, run `graphify update .`. Do not run updates for documentation or configuration edits.
 
-The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
+### Exact Text and Configuration
 
-- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
-- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
-- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
+Use direct text search for string literals, configuration values, scripts, and documentation.
 
-## Session Completion
+## Architecture Invariants
 
-This protocol applies when ending a Beads implementation workflow. It is subordinate to explicit user, repository, and orchestrator instructions.
-
-1. **File issues for remaining work** - Create beads for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **Handle git/sync by active profile**:
-   ```bash
-   # Conservative/minimal/default: report status and proposed commands; wait for approval.
-   git status
-
-   # Team-maintainer opt-in only, unless current instructions forbid it:
-   git pull --rebase
-   bd dolt push
-   git push
-   git status
-   ```
-5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
-
-**Critical rules:**
-- Explicit user or orchestrator instructions override this Beads block.
-- Do not commit or push without clear authority from the active profile or the current user request.
-- If a required sync or push is blocked, stop and report the exact command and error.
-<!-- END BEADS INTEGRATION -->
-
-<!-- BEGIN BEADS CODEX SETUP: generated by bd setup codex -->
-## Beads Issue Tracker
-
-Use Beads (`bd`) for durable task tracking in repositories that include it. Use the `beads` skill at `.agents/skills/beads/SKILL.md` (project install) or `~/.agents/skills/beads/SKILL.md` (global install) for Beads workflow guidance, then use the `bd` CLI for issue operations.
-
-### Quick Reference
-
-```bash
-bd ready                # Find available work
-bd show <id>            # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>           # Complete work
-bd prime                # Refresh Beads context
-```
-
-### Rules
-
-- Use `bd` for all task tracking; do not create markdown TODO lists.
-- Run `bd prime` when Beads context is missing or stale. Codex 0.129.0+ can load Beads context automatically through native hooks; use `/hooks` to inspect or toggle them.
-- Keep persistent project memory in Beads via `bd remember`; do not create ad hoc memory files.
-
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
-<!-- END BEADS CODEX SETUP -->
+1. **Deterministic Core**: Keep business logic pure. Isolate side effects at the call boundary.
+2. **Surgical & Debloat**: Touch only files required for the task. Keep diffs minimal.
+3. **No Dead Scaffolding**: Never create speculative abstractions or unused helpers.
