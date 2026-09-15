@@ -56,10 +56,10 @@ func init() {
 
 // CompressPayload wraps a byte slice with framing headers and optional zstd compression.
 func CompressPayload(data []byte) ([]byte, error) {
-	uncompressedLen := uint32(len(data))
-	if uncompressedLen > MaxFramePayload {
+	if len(data) > int(MaxFramePayload) {
 		return nil, ErrPayloadTooLarge
 	}
+	uncompressedLen := uint32(len(data))
 
 	if len(data) < CompressionThreshold {
 		buf := make([]byte, 5+len(data))
@@ -97,7 +97,7 @@ func DecompressPayload(framed []byte) ([]byte, error) {
 
 	switch format {
 	case FormatRaw:
-		if uint32(len(payload)) != uncompressedLen {
+		if len(payload) != int(uncompressedLen) {
 			return nil, fmt.Errorf("length mismatch: header %d, actual %d", uncompressedLen, len(payload))
 		}
 		out := make([]byte, len(payload))
