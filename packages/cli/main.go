@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -11,41 +12,44 @@ import (
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
-const usageText = `Usage: tether [global flags] <command> [args...]
+const usageText = `tether - remote browser automation for AI coding agents
 
-Global flags:
-  --json             Output raw JSON instead of formatted text
-  --timeout <ms>     Timeout in milliseconds
-  --session <name>   Browser session identifier
+Usage: tether <command> [args] [options]
 
 Commands:
-  open <url>                              Navigate to a URL
-  snapshot [-i] [-c] [-d depth] [-s sel]  Capture accessibility tree snapshot
-  click <sel>                             Click an element by selector or ref
-  dblclick <sel>                          Double-click an element
-  fill <sel> <text>                       Fill a form field with text
-  type <sel> <text>                       Type text into a field
-  press <key>                             Send a key event (Enter, Tab, Escape)
-  hover <sel>                             Hover over an element
-  focus <sel>                             Focus an element
-  eval <expr>                             Evaluate a JavaScript expression
-  wait <sel|ms>                           Wait for selector or duration in ms
-  screenshot [path]                       Capture viewport screenshot
-  close [--all]                           Close current tab or all tabs
-  status                                  Show daemon connectivity status
-  broker [start|stop|status|run]          Manage persistent session broker
+  open <url>                 Navigate to URL
+  snapshot                   Accessibility tree with [@eN] refs
+  click <sel>                Click element by selector or @eN ref
+  dblclick <sel>             Double-click element
+  fill <sel> <text>          Clear and fill form field
+  type <sel> <text>          Type text into element
+  press <key>                Press key (Enter, Tab, Control+a)
+  hover <sel>                Hover over element
+  focus <sel>                Focus element
+  eval <js>                  Run JavaScript expression
+  wait <sel|ms>              Wait for element or duration
+  screenshot [path]          Capture screenshot
+  close [--all]              Close active tab or all tabs
+  status                     Show daemon and target connectivity
+  broker [run|start|stop]    Manage session broker daemon
+
+Snapshot Options:
+  -i, --interactive          Interactive elements only
+  -c, --compact              Remove empty structural elements
+  -d, --depth <n>            Limit tree depth
+  -s, --selector <sel>       Scope tree to CSS selector
+
+Global Options:
+  --json                     Output JSON instead of formatted text
+  --timeout <ms>             Command timeout in milliseconds
+  --session <name>           Target isolated browser session
 `
 
-func main() {
-	code := Run(os.Args[1:], os.Stdout, os.Stderr)
-	os.Exit(code)
-}
-
-// Run executes the CLI with the given arguments, writing output to stdout and stderr.
+// Run parses arguments, executes commands, and prints results to stdout/stderr.
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprint(stderr, usageText)
-		return 1
+		fmt.Fprint(stdout, usageText)
+		return 0
 	}
 
 	if args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
@@ -63,13 +67,17 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return HandleBrokerCommand(cmd.BrokerSubcmd, stdout, stderr)
 	}
 
-	// Select transport: broker socket if active, otherwise direct daemon TCP
+	daemonAddr := os.Getenv("TETHER_DAEMON_ADDR")
+	if daemonAddr == "" {
+		daemonAddr = DefaultDaemonAddr
+	}
+
 	var client *Client
 	socketPath := DefaultBrokerSocket()
 	if IsBrokerAlive(socketPath) {
 		client = NewClient("unix:" + socketPath)
 	} else {
-		client = NewClient(DefaultDaemonAddr)
+		client = NewClient(daemonAddr)
 	}
 
 	timeout := 30 * time.Second
@@ -81,7 +89,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	resp, err := client.Call(ctx, cmd.Method, cmd.Params)
+	params := cmd.Params
+	if cmd.Global.Session != "" {
+		params = injectSession(params, cmd.Global.Session)
+	}
+
+	resp, err := client.Call(ctx, cmd.Method, params)
 	if err != nil {
 		fmt.Fprintf(stderr, "%v\n", err)
 		return 1
@@ -126,14 +139,28 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "Error: %v\n", err)
 			return 1
 		}
+		if res.Error != "" {
+			fmt.Fprint(stderr, out)
+			return 1
+		}
 		fmt.Fprint(stdout, out)
 
 	case "screenshot":
 		var res protocol.ScreenshotResult
 		_ = resp.UnmarshalResult(&res)
-		if cmd.ScreenshotPath != "" && len(res.Base64) > 0 {
-			if data, err := base64.StdEncoding.DecodeString(res.Base64); err == nil {
-				_ = os.WriteFile(cmd.ScreenshotPath, data, 0644)
+		if cmd.ScreenshotPath != "" {
+			if len(res.Base64) == 0 {
+				fmt.Fprintln(stderr, "Error: empty screenshot data received")
+				return 1
+			}
+			data, err := base64.StdEncoding.DecodeString(res.Base64)
+			if err != nil {
+				fmt.Fprintf(stderr, "Error: failed to decode screenshot base64: %v\n", err)
+				return 1
+			}
+			if err := os.WriteFile(cmd.ScreenshotPath, data, 0644); err != nil {
+				fmt.Fprintf(stderr, "Error: failed to write screenshot to %s: %v\n", cmd.ScreenshotPath, err)
+				return 1
 			}
 		}
 		out, err := FormatScreenshot(&res, cmd.ScreenshotPath, cmd.Global.JSON)
@@ -154,8 +181,30 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, out)
 
 	default:
-		fmt.Fprintf(stdout, "%s\n", string(resp.Result))
+		fmt.Fprintf(stderr, "Unknown command: %s\n", cmd.Name)
+		return 1
 	}
 
 	return 0
+}
+
+func injectSession(params any, session string) any {
+	if params == nil {
+		return map[string]any{"session": session}
+	}
+	data, err := json.Marshal(params)
+	if err != nil {
+		return params
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return params
+	}
+	m["session"] = session
+	return m
+}
+
+func main() {
+	code := Run(os.Args[1:], os.Stdout, os.Stderr)
+	os.Exit(code)
 }

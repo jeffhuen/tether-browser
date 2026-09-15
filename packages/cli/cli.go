@@ -35,10 +35,22 @@ func ParseArgs(args []string) (*Command, error) {
 
 	var global GlobalFlags
 	var cmdTokens []string
+	inEndOptions := false
 
-	// Extract global flags and command tokens
+	// Extract global flags and command tokens, honoring "--" delimiter
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+
+		if !inEndOptions && arg == "--" {
+			inEndOptions = true
+			continue
+		}
+
+		if inEndOptions {
+			cmdTokens = append(cmdTokens, arg)
+			continue
+		}
+
 		switch {
 		case arg == "--json":
 			global.JSON = true
@@ -82,13 +94,13 @@ func ParseArgs(args []string) (*Command, error) {
 	cmd := &Command{
 		Name:    cmdName,
 		Global:  global,
-		RawArgs: cmdTokens,
+		RawArgs: args,
 	}
 
 	switch cmdName {
 	case "open":
-		if len(cmdArgs) < 1 {
-			return nil, errors.New("command 'open' requires a url")
+		if len(cmdArgs) == 0 {
+			return nil, errors.New("usage: tether open <url>")
 		}
 		cmd.Method = protocol.MethodOpen
 		cmd.Params = protocol.OpenParams{
@@ -97,41 +109,49 @@ func ParseArgs(args []string) (*Command, error) {
 		}
 
 	case "snapshot":
-		params := protocol.SnapshotParams{}
+		p := protocol.SnapshotParams{}
 		for i := 0; i < len(cmdArgs); i++ {
-			switch cmdArgs[i] {
+			a := cmdArgs[i]
+			switch a {
 			case "-i", "--interactive":
-				params.InteractiveOnly = true
+				p.InteractiveOnly = true
 			case "-c", "--compact":
-				params.Compact = true
+				p.Compact = true
 			case "-d", "--depth":
 				if i+1 >= len(cmdArgs) {
-					return nil, errors.New("flag -d requires a depth value")
+					return nil, fmt.Errorf("flag %s requires an argument", a)
 				}
 				i++
 				depth, err := strconv.Atoi(cmdArgs[i])
 				if err != nil {
 					return nil, fmt.Errorf("invalid depth value %q: %w", cmdArgs[i], err)
 				}
-				params.MaxDepth = depth
+				p.MaxDepth = depth
 			case "-s", "--selector":
 				if i+1 >= len(cmdArgs) {
-					return nil, errors.New("flag -s requires a selector value")
+					return nil, fmt.Errorf("flag %s requires an argument", a)
 				}
 				i++
-				params.Selector = cmdArgs[i]
+				p.Selector = cmdArgs[i]
 			default:
-				if strings.HasPrefix(cmdArgs[i], "-") {
-					return nil, fmt.Errorf("unknown snapshot flag: %s", cmdArgs[i])
+				if strings.HasPrefix(a, "-d=") || strings.HasPrefix(a, "--depth=") {
+					val := strings.TrimPrefix(strings.TrimPrefix(a, "--depth="), "-d=")
+					depth, err := strconv.Atoi(val)
+					if err != nil {
+						return nil, fmt.Errorf("invalid depth value %q: %w", val, err)
+					}
+					p.MaxDepth = depth
+				} else if strings.HasPrefix(a, "-s=") || strings.HasPrefix(a, "--selector=") {
+					p.Selector = strings.TrimPrefix(strings.TrimPrefix(a, "--selector="), "-s=")
 				}
 			}
 		}
 		cmd.Method = protocol.MethodSnapshot
-		cmd.Params = params
+		cmd.Params = p
 
 	case "click":
-		if len(cmdArgs) < 1 {
-			return nil, errors.New("command 'click' requires a selector")
+		if len(cmdArgs) == 0 {
+			return nil, errors.New("usage: tether click <selector>")
 		}
 		cmd.Method = protocol.MethodClick
 		cmd.Params = protocol.ClickParams{
@@ -140,8 +160,8 @@ func ParseArgs(args []string) (*Command, error) {
 		}
 
 	case "dblclick":
-		if len(cmdArgs) < 1 {
-			return nil, errors.New("command 'dblclick' requires a selector")
+		if len(cmdArgs) == 0 {
+			return nil, errors.New("usage: tether dblclick <selector>")
 		}
 		cmd.Method = protocol.MethodDblClick
 		cmd.Params = protocol.ClickParams{
@@ -152,19 +172,19 @@ func ParseArgs(args []string) (*Command, error) {
 
 	case "fill":
 		if len(cmdArgs) < 2 {
-			return nil, errors.New("command 'fill' requires a selector and text")
+			return nil, errors.New("usage: tether fill <selector> <text>")
 		}
 		cmd.Method = protocol.MethodFill
 		cmd.Params = protocol.FillParams{
 			Selector:   cmdArgs[0],
 			Text:       strings.Join(cmdArgs[1:], " "),
 			ClearFirst: true,
-			TimeoutMs:  global.TimeoutMs,
+			TimeoutMs: global.TimeoutMs,
 		}
 
 	case "type":
 		if len(cmdArgs) < 2 {
-			return nil, errors.New("command 'type' requires a selector and text")
+			return nil, errors.New("usage: tether type <selector> <text>")
 		}
 		cmd.Method = protocol.MethodType
 		cmd.Params = protocol.TypeParams{
@@ -174,8 +194,8 @@ func ParseArgs(args []string) (*Command, error) {
 		}
 
 	case "press":
-		if len(cmdArgs) < 1 {
-			return nil, errors.New("command 'press' requires a key")
+		if len(cmdArgs) == 0 {
+			return nil, errors.New("usage: tether press <key>")
 		}
 		cmd.Method = protocol.MethodPress
 		cmd.Params = protocol.PressParams{
@@ -183,8 +203,8 @@ func ParseArgs(args []string) (*Command, error) {
 		}
 
 	case "hover":
-		if len(cmdArgs) < 1 {
-			return nil, errors.New("command 'hover' requires a selector")
+		if len(cmdArgs) == 0 {
+			return nil, errors.New("usage: tether hover <selector>")
 		}
 		cmd.Method = protocol.MethodHover
 		cmd.Params = protocol.HoverParams{
@@ -193,8 +213,8 @@ func ParseArgs(args []string) (*Command, error) {
 		}
 
 	case "focus":
-		if len(cmdArgs) < 1 {
-			return nil, errors.New("command 'focus' requires a selector")
+		if len(cmdArgs) == 0 {
+			return nil, errors.New("usage: tether focus <selector>")
 		}
 		cmd.Method = protocol.MethodFocus
 		cmd.Params = protocol.FocusParams{
@@ -202,8 +222,8 @@ func ParseArgs(args []string) (*Command, error) {
 		}
 
 	case "eval":
-		if len(cmdArgs) < 1 {
-			return nil, errors.New("command 'eval' requires an expression")
+		if len(cmdArgs) == 0 {
+			return nil, errors.New("usage: tether eval <expression>")
 		}
 		cmd.Method = protocol.MethodEval
 		cmd.Params = protocol.EvalParams{
@@ -212,57 +232,60 @@ func ParseArgs(args []string) (*Command, error) {
 		}
 
 	case "wait":
-		if len(cmdArgs) < 1 {
-			return nil, errors.New("command 'wait' requires a selector or duration")
+		if len(cmdArgs) == 0 {
+			return nil, errors.New("usage: tether wait <selector|durationMs>")
 		}
 		arg := cmdArgs[0]
-		params := protocol.WaitParams{
+		p := protocol.WaitParams{
 			TimeoutMs: global.TimeoutMs,
 		}
-		trimmed := strings.TrimSuffix(arg, "ms")
-		if ms, err := strconv.Atoi(trimmed); err == nil {
-			params.DurationMs = ms
+		if ms, err := strconv.Atoi(arg); err == nil && ms > 0 {
+			p.DurationMs = ms
 		} else {
-			params.Selector = arg
-			params.State = "visible"
+			p.Selector = arg
+			p.State = "visible"
 		}
 		cmd.Method = protocol.MethodWait
-		cmd.Params = params
+		cmd.Params = p
 
 	case "screenshot":
-		cmd.Method = protocol.MethodScreenshot
-		cmd.Params = protocol.ScreenshotParams{
+		p := protocol.ScreenshotParams{
+			Format:    "png",
 			TimeoutMs: global.TimeoutMs,
 		}
-		if len(cmdArgs) > 0 && !strings.HasPrefix(cmdArgs[0], "-") {
-			cmd.ScreenshotPath = cmdArgs[0]
+		for _, a := range cmdArgs {
+			if a == "--full" || a == "-f" {
+				p.FullPage = true
+			} else if !strings.HasPrefix(a, "-") {
+				cmd.ScreenshotPath = a
+			}
 		}
+		cmd.Method = protocol.MethodScreenshot
+		cmd.Params = p
 
 	case "close":
-		closeAll := false
-		for _, arg := range cmdArgs {
-			if arg == "--all" {
-				closeAll = true
+		p := protocol.CloseParams{}
+		for _, a := range cmdArgs {
+			if a == "--all" {
+				p.CloseAll = true
 			}
 		}
 		cmd.Method = protocol.MethodClose
-		cmd.Params = protocol.CloseParams{
-			CloseAll: closeAll,
-		}
+		cmd.Params = p
 
 	case "status":
 		cmd.Method = protocol.MethodStatus
 		cmd.Params = protocol.StatusParams{}
 
 	case "broker":
-		subcmd := "status"
+		subcmd := "run"
 		if len(cmdArgs) > 0 {
 			subcmd = cmdArgs[0]
 		}
 		cmd.BrokerSubcmd = subcmd
 
 	default:
-		return nil, fmt.Errorf("unknown command %q", cmdName)
+		return nil, fmt.Errorf("unknown command: %q", cmdName)
 	}
 
 	return cmd, nil
