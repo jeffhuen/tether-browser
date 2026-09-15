@@ -1,9 +1,11 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 )
 
 // JSONRPCVersion is the supported protocol version.
@@ -39,9 +41,10 @@ var (
 )
 
 // Request represents a JSON-RPC 2.0 request with session tracking.
+// ID can be a JSON string, number, or null.
 type Request struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      string          `json:"id"`
+	ID      json.RawMessage `json:"id"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
 	Seq     uint64          `json:"seq,omitempty"`
@@ -49,9 +52,10 @@ type Request struct {
 }
 
 // Response represents a JSON-RPC 2.0 response with session tracking.
+// For successful responses, Result is never omitted (emits "null" if nil).
 type Response struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      string          `json:"id"`
+	ID      json.RawMessage `json:"id"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *RPCError       `json:"error,omitempty"`
 	Seq     uint64          `json:"seq,omitempty"`
@@ -82,8 +86,51 @@ func (e *RPCError) Error() string {
 	return fmt.Sprintf("rpc error %d: %s", e.Code, e.Message)
 }
 
+// FormatID formats a string, int, or raw bytes into a JSON-RPC raw ID.
+func FormatID(id any) json.RawMessage {
+	if id == nil {
+		return json.RawMessage("null")
+	}
+	switch v := id.(type) {
+	case string:
+		if v == "" || v == "null" {
+			return json.RawMessage("null")
+		}
+		return json.RawMessage(strconv.Quote(v))
+	case int:
+		return json.RawMessage(strconv.Itoa(v))
+	case int64:
+		return json.RawMessage(strconv.FormatInt(v, 10))
+	case uint64:
+		return json.RawMessage(strconv.FormatUint(v, 10))
+	case json.RawMessage:
+		if len(v) == 0 {
+			return json.RawMessage("null")
+		}
+		return v
+	default:
+		d, err := json.Marshal(v)
+		if err != nil {
+			return json.RawMessage("null")
+		}
+		return d
+	}
+}
+
+// IDString extracts the string representation of an ID.
+func IDString(raw json.RawMessage) string {
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return string(raw)
+}
+
 // NewRequest creates a typed request with automatic JSON marshaling of params.
-func NewRequest(id, method string, params any, seq uint64, epoch string) (*Request, error) {
+func NewRequest(id any, method string, params any, seq uint64, epoch string) (*Request, error) {
 	var raw json.RawMessage
 	if params != nil {
 		data, err := json.Marshal(params)
@@ -94,7 +141,7 @@ func NewRequest(id, method string, params any, seq uint64, epoch string) (*Reque
 	}
 	return &Request{
 		JSONRPC: JSONRPCVersion,
-		ID:      id,
+		ID:      FormatID(id),
 		Method:  method,
 		Params:  raw,
 		Seq:     seq,
@@ -103,8 +150,9 @@ func NewRequest(id, method string, params any, seq uint64, epoch string) (*Reque
 }
 
 // NewResponse creates a successful response with automatic JSON marshaling of result.
-func NewResponse(id string, result any, seq uint64, epoch string) (*Response, error) {
-	var raw json.RawMessage
+// If result is nil, it serializes as literal JSON null per JSON-RPC 2.0 spec.
+func NewResponse(id any, result any, seq uint64, epoch string) (*Response, error) {
+	raw := json.RawMessage("null")
 	if result != nil {
 		data, err := json.Marshal(result)
 		if err != nil {
@@ -114,7 +162,7 @@ func NewResponse(id string, result any, seq uint64, epoch string) (*Response, er
 	}
 	return &Response{
 		JSONRPC: JSONRPCVersion,
-		ID:      id,
+		ID:      FormatID(id),
 		Result:  raw,
 		Seq:     seq,
 		Epoch:   epoch,
@@ -122,7 +170,8 @@ func NewResponse(id string, result any, seq uint64, epoch string) (*Response, er
 }
 
 // NewErrorResponse creates an error response for a failed request.
-func NewErrorResponse(id string, code int, message string, data any, seq uint64, epoch string) *Response {
+// Per JSON-RPC 2.0, Result is omitted on error responses.
+func NewErrorResponse(id any, code int, message string, data any, seq uint64, epoch string) *Response {
 	var rawData json.RawMessage
 	if data != nil {
 		if d, err := json.Marshal(data); err == nil {
@@ -131,7 +180,7 @@ func NewErrorResponse(id string, code int, message string, data any, seq uint64,
 	}
 	return &Response{
 		JSONRPC: JSONRPCVersion,
-		ID:      id,
+		ID:      FormatID(id),
 		Error: &RPCError{
 			Code:    code,
 			Message: message,
@@ -158,7 +207,7 @@ func (r *Response) UnmarshalResult(dest any) error {
 	if r.Error != nil {
 		return r.Error
 	}
-	if len(r.Result) == 0 {
+	if len(r.Result) == 0 || bytes.Equal(r.Result, []byte("null")) {
 		return nil
 	}
 	if err := json.Unmarshal(r.Result, dest); err != nil {
