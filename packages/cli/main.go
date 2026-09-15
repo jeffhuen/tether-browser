@@ -31,7 +31,7 @@ Commands:
   screenshot [path]          Capture screenshot
   close [--all]              Close active tab or all tabs
   status                     Show daemon and target connectivity
-  review [start|list|send]   In-page developer review inspector
+  review [start|list|clear|send] In-page developer review inspector
   broker [run|start|stop]    Manage session broker daemon
 
 Snapshot Options:
