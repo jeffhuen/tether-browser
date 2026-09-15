@@ -32,6 +32,9 @@ type BrowserDriver interface {
 	Wait(ctx context.Context, params protocol.WaitParams) error
 	Screenshot(ctx context.Context, params protocol.ScreenshotParams) (*protocol.ScreenshotResult, error)
 	Status(ctx context.Context, params protocol.StatusParams) (*protocol.StatusResult, error)
+	StartReview(ctx context.Context, params protocol.ReviewParams) error
+	GetReviewNotes(ctx context.Context, params protocol.ReviewParams) ([]*protocol.ReviewNote, error)
+	ClearReview(ctx context.Context, params protocol.ReviewParams) error
 }
 
 // CDPDriver implements BrowserDriver by communicating with Chrome over CDP.
@@ -896,4 +899,34 @@ func (d *CDPDriver) Status(ctx context.Context, params protocol.StatusParams) (*
 		Mode:           "managed",
 		DaemonUptimeS:  int64(time.Since(d.startTime).Seconds()),
 	}, nil
+}
+
+// StartReview activates the in-page Tether Review inspector on the target tab.
+func (d *CDPDriver) StartReview(ctx context.Context, params protocol.ReviewParams) error {
+	client, _, err := d.getTargetClient(params.TargetID)
+	if err != nil {
+		return err
+	}
+	rc := &ReviewController{}
+	return rc.Start(ctx, client)
+}
+
+// GetReviewNotes returns all pinned review notes from the target tab.
+func (d *CDPDriver) GetReviewNotes(ctx context.Context, params protocol.ReviewParams) ([]*protocol.ReviewNote, error) {
+	client, _, err := d.getTargetClient(params.TargetID)
+	if err != nil {
+		return nil, err
+	}
+	rc := &ReviewController{}
+	return rc.GetNotes(ctx, client)
+}
+
+// ClearReview clears all review notes and badge pins from the target tab.
+func (d *CDPDriver) ClearReview(ctx context.Context, params protocol.ReviewParams) error {
+	client, _, err := d.getTargetClient(params.TargetID)
+	if err != nil {
+		return err
+	}
+	rc := &ReviewController{}
+	return rc.Clear(ctx, client)
 }

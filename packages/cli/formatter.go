@@ -182,3 +182,42 @@ func FormatStatus(res *protocol.StatusResult, jsonOutput bool) (string, error) {
 	return fmt.Sprintf("Daemon Status: %s\nVersion: %s\nMode: %s\nTargets: %d\nActive Target: %s\nUptime: %ds\n",
 		statusStr, res.Version, res.Mode, res.TargetCount, res.ActiveTargetID, res.DaemonUptimeS), nil
 }
+
+// FormatReview formats the response of a review subcommand.
+func FormatReview(subcmd string, resp *protocol.Response, jsonOutput bool) (string, error) {
+	if resp == nil {
+		return "", nil
+	}
+	if jsonOutput {
+		return string(resp.Result) + "\n", nil
+	}
+
+	switch subcmd {
+	case "start":
+		return "Tether Review activated in browser. Move cursor to inspect elements, click to add notes.\n", nil
+	case "clear":
+		return "Tether Review notes cleared.\n", nil
+	case "list":
+		var res protocol.ReviewListResult
+		_ = resp.UnmarshalResult(&res)
+		if len(res.Notes) == 0 {
+			return "No active review notes. Run 'tether review start' to begin.\n", nil
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Active Review Notes (%d):\n", len(res.Notes)))
+		for _, n := range res.Notes {
+			target := n.Payload.Target
+			sb.WriteString(fmt.Sprintf("[%d] %s (%s): %s\n", n.Index, target.TagName, target.Selector, n.Comment))
+		}
+		return sb.String(), nil
+	case "send":
+		var res protocol.ReviewSendResult
+		_ = resp.UnmarshalResult(&res)
+		if res.Markdown == "" {
+			return "No review notes to send.\n", nil
+		}
+		return res.Markdown + "\n", nil
+	default:
+		return string(resp.Result) + "\n", nil
+	}
+}

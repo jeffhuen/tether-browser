@@ -170,6 +170,43 @@ func (m *mockDriver) Status(ctx context.Context, p protocol.StatusParams) (*prot
 	}, nil
 }
 
+func (m *mockDriver) StartReview(ctx context.Context, p protocol.ReviewParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "StartReview")
+	return m.errToReturn
+}
+
+func (m *mockDriver) GetReviewNotes(ctx context.Context, p protocol.ReviewParams) ([]*protocol.ReviewNote, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "GetReviewNotes")
+	if m.errToReturn != nil {
+		return nil, m.errToReturn
+	}
+	return []*protocol.ReviewNote{
+		{
+			ID:      "note-1",
+			Index:   1,
+			Intent:  "design_fix",
+			Comment: "Fix button padding",
+			Payload: &protocol.ReviewPayload{
+				Target: protocol.TargetInfo{
+					TagName:  "button",
+					Selector: "button.submit",
+				},
+			},
+		},
+	}, nil
+}
+
+func (m *mockDriver) ClearReview(ctx context.Context, p protocol.ReviewParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "ClearReview")
+	return m.errToReturn
+}
+
 func TestServerDispatchMethods(t *testing.T) {
 	driver := &mockDriver{evalResp: "Hello"}
 	server := NewServer(driver)
@@ -205,6 +242,25 @@ func TestServerDispatchMethods(t *testing.T) {
 	}
 	if driver.lastWait.DurationMs != 500 || driver.lastWait.State != "attached" {
 		t.Errorf("expected duration 500, state attached, got %d, %s", driver.lastWait.DurationMs, driver.lastWait.State)
+	}
+
+	// 4. Review Start
+	revStartReq, _ := protocol.NewRequest("req-4", protocol.MethodReviewStart, protocol.ReviewParams{}, 4, "ep-1")
+	revStartResp := server.Dispatch(ctx, revStartReq)
+	if revStartResp.Error != nil {
+		t.Fatalf("unexpected review start error: %v", revStartResp.Error)
+	}
+
+	// 5. Review Send
+	revSendReq, _ := protocol.NewRequest("req-5", protocol.MethodReviewSend, protocol.ReviewParams{}, 5, "ep-1")
+	revSendResp := server.Dispatch(ctx, revSendReq)
+	if revSendResp.Error != nil {
+		t.Fatalf("unexpected review send error: %v", revSendResp.Error)
+	}
+	var revSendRes protocol.ReviewSendResult
+	_ = revSendResp.UnmarshalResult(&revSendRes)
+	if !strings.Contains(revSendRes.Markdown, "Fix button padding") {
+		t.Errorf("expected markdown to contain feedback comment, got: %s", revSendRes.Markdown)
 	}
 }
 

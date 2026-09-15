@@ -305,6 +305,29 @@ func ParseArgs(args []string) (*Command, error) {
 		}
 		cmd.BrokerSubcmd = subcmd
 
+	case "review":
+		subcmd := "start"
+		if len(allArgs) > 0 {
+			subcmd = allArgs[0]
+		}
+		cmd.BrokerSubcmd = subcmd
+		switch subcmd {
+		case "start":
+			cmd.Method = protocol.MethodReviewStart
+			cmd.Params = protocol.ReviewParams{}
+		case "list":
+			cmd.Method = protocol.MethodReviewList
+			cmd.Params = protocol.ReviewParams{}
+		case "clear":
+			cmd.Method = protocol.MethodReviewClear
+			cmd.Params = protocol.ReviewParams{}
+		case "send":
+			cmd.Method = protocol.MethodReviewSend
+			cmd.Params = protocol.ReviewParams{}
+		default:
+			return nil, fmt.Errorf("unknown review subcommand: %q (valid: start, list, clear, send)", subcmd)
+		}
+
 	default:
 		return nil, fmt.Errorf("unknown command: %q", cmdName)
 	}
