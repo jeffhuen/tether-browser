@@ -156,8 +156,8 @@ func (rc *ReviewController) probeMainWorldFramework(ctx context.Context, client 
 	let el = null;
 	if (pinId) {
 		el = document.querySelector('[data-tether-pin~="' + pinId + '"]');
-	}
-	if (!el && sel) {
+		if (!el) return null;
+	} else if (sel) {
 		el = document.querySelector(sel);
 	}
 	if (!el) return null;

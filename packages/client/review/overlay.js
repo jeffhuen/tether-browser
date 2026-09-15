@@ -353,17 +353,36 @@
     const rawAccessibleName = el.getAttribute('aria-label') || el.getAttribute('alt') || (el.innerText ? el.innerText.trim().slice(0, 60) : '');
     const accessibleName = sanitizeText(rawAccessibleName, 80);
 
-    let rawText = el.innerText || el.textContent || '';
-    const tagLower = el.tagName ? el.tagName.toLowerCase() : '';
-    if (tagLower === 'input' || tagLower === 'textarea') {
-      const name = el.getAttribute('name') || '';
-      const id = el.getAttribute('id') || '';
-      const rawType = el.getAttribute('type') || '';
-      if (el.type === 'password' || containsSecret(rawType) || containsSecret(name) || containsSecret(id) || containsSecret(el.value)) {
-        rawText = '[redacted]';
+    function extractSanitizedText(elem) {
+      try {
+        const clone = elem.cloneNode(true);
+        const allInputs = clone.querySelectorAll ? Array.from(clone.querySelectorAll('input, textarea')) : [];
+        if (clone.tagName && (clone.tagName.toLowerCase() === 'input' || clone.tagName.toLowerCase() === 'textarea')) {
+          allInputs.push(clone);
+        }
+        allInputs.forEach(input => {
+          const name = input.getAttribute('name') || '';
+          const id = input.getAttribute('id') || '';
+          const rawType = input.getAttribute('type') || '';
+          const isSecret = input.type === 'password' ||
+            containsSecret(rawType) ||
+            containsSecret(name) ||
+            containsSecret(id) ||
+            containsSecret(input.value) ||
+            containsSecret(input.textContent);
+          if (isSecret) {
+            input.value = '[redacted]';
+            input.setAttribute('value', '[redacted]');
+            input.textContent = '[redacted]';
+          }
+        });
+        const text = clone.innerText || clone.textContent || '';
+        return sanitizeText(text, 120);
+      } catch (e) {
+        return sanitizeText(elem.innerText || elem.textContent || '', 120);
       }
     }
-    const textSnippet = sanitizeText(rawText, 120);
+    const textSnippet = extractSanitizedText(el);
 
     return {
       page: {
