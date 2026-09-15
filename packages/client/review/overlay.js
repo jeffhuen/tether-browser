@@ -844,8 +844,8 @@
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
-
-      const hitNote = this.findBadgeAtPoint(e.clientX, e.clientY);
+      const isOverlayTarget = e.target === this.host || (this.host && this.host.contains(e.target));
+      const hitNote = isOverlayTarget ? this.findBadgeAtPoint(e.clientX, e.clientY) : null;
       if (hitNote) {
         this.openExistingModal(hitNote);
         return;
