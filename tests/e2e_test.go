@@ -340,6 +340,7 @@ func TestModeAForwardProxyStreaming(t *testing.T) {
 		select {
 		case <-chunk1Received:
 		case <-time.After(3 * time.Second):
+			panic("timeout waiting for client to receive first chunk: proxy is buffering instead of streaming")
 		}
 
 		// Send remaining chunks
