@@ -141,10 +141,8 @@ func (rc *ReviewController) GetNotes(ctx context.Context, client *CDPClient) ([]
 		}
 		if note.Payload.Target.Framework.Name == "" || note.Payload.Target.Framework.Name == "Static" {
 			selector := note.Payload.Target.Selector
-			if selector != "" {
-				if fw := rc.probeMainWorldFramework(ctx, client, selector); fw != nil {
-					note.Payload.Target.Framework = *fw
-				}
+			if fw := rc.probeMainWorldFramework(ctx, client, note.ID, selector); fw != nil {
+				note.Payload.Target.Framework = *fw
 			}
 		}
 	}
@@ -152,12 +150,17 @@ func (rc *ReviewController) GetNotes(ctx context.Context, client *CDPClient) ([]
 	return notes, nil
 }
 
-func (rc *ReviewController) probeMainWorldFramework(ctx context.Context, client *CDPClient, selector string) *protocol.FrameworkInfo {
+func (rc *ReviewController) probeMainWorldFramework(ctx context.Context, client *CDPClient, pinID, selector string) *protocol.FrameworkInfo {
 	probeScript := fmt.Sprintf(`
-(function(sel) {
-	const el = document.querySelector(sel);
+(function(pinId, sel) {
+	let el = null;
+	if (pinId) {
+		el = document.querySelector('[data-tether-pin="' + pinId + '"]');
+	}
+	if (!el && sel) {
+		el = document.querySelector(sel);
+	}
 	if (!el) return null;
-
 	// 1. React Fiber probe in main world
 	try {
 		for (const k of Object.keys(el)) {
@@ -216,8 +219,8 @@ func (rc *ReviewController) probeMainWorldFramework(ctx context.Context, client 
 	} catch (e) {}
 
 	return null;
-})(%q)
-`, selector)
+})(%q, %q)
+`, pinID, selector)
 
 	// Execute in main world (WITHOUT contextId) to access DOM expando properties
 	call := map[string]any{
