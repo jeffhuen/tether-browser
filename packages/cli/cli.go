@@ -34,10 +34,11 @@ func ParseArgs(args []string) (*Command, error) {
 	}
 
 	var global GlobalFlags
-	var cmdTokens []string
+	var optionTokens []string
+	var literalTokens []string
 	inEndOptions := false
 
-	// Extract global flags and command tokens, honoring "--" delimiter
+	// Extract global flags and tokens, honoring "--" delimiter
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 
@@ -47,7 +48,7 @@ func ParseArgs(args []string) (*Command, error) {
 		}
 
 		if inEndOptions {
-			cmdTokens = append(cmdTokens, arg)
+			literalTokens = append(literalTokens, arg)
 			continue
 		}
 
@@ -80,16 +81,26 @@ func ParseArgs(args []string) (*Command, error) {
 		case strings.HasPrefix(arg, "--session="):
 			global.Session = strings.TrimPrefix(arg, "--session=")
 		default:
-			cmdTokens = append(cmdTokens, arg)
+			optionTokens = append(optionTokens, arg)
 		}
 	}
 
-	if len(cmdTokens) == 0 {
+	var cmdName string
+	var optionsArgs []string
+	var literalArgs = literalTokens
+
+	if len(optionTokens) > 0 {
+		cmdName = optionTokens[0]
+		optionsArgs = optionTokens[1:]
+	} else if len(literalTokens) > 0 {
+		cmdName = literalTokens[0]
+		literalArgs = literalTokens[1:]
+	} else {
 		return nil, errors.New("no command specified")
 	}
 
-	cmdName := cmdTokens[0]
-	cmdArgs := cmdTokens[1:]
+	// All positional arguments combined in order
+	allArgs := append(append([]string{}, optionsArgs...), literalArgs...)
 
 	cmd := &Command{
 		Name:    cmdName,
@@ -99,40 +110,41 @@ func ParseArgs(args []string) (*Command, error) {
 
 	switch cmdName {
 	case "open":
-		if len(cmdArgs) == 0 {
+		if len(allArgs) == 0 {
 			return nil, errors.New("usage: tether open <url>")
 		}
 		cmd.Method = protocol.MethodOpen
 		cmd.Params = protocol.OpenParams{
-			URL:       cmdArgs[0],
+			URL:       allArgs[0],
 			TimeoutMs: global.TimeoutMs,
 		}
 
 	case "snapshot":
 		p := protocol.SnapshotParams{}
-		for i := 0; i < len(cmdArgs); i++ {
-			a := cmdArgs[i]
+		// Flags are scanned only from optionsArgs before the delimiter
+		for i := 0; i < len(optionsArgs); i++ {
+			a := optionsArgs[i]
 			switch a {
 			case "-i", "--interactive":
 				p.InteractiveOnly = true
 			case "-c", "--compact":
 				p.Compact = true
 			case "-d", "--depth":
-				if i+1 >= len(cmdArgs) {
+				if i+1 >= len(optionsArgs) {
 					return nil, fmt.Errorf("flag %s requires an argument", a)
 				}
 				i++
-				depth, err := strconv.Atoi(cmdArgs[i])
+				depth, err := strconv.Atoi(optionsArgs[i])
 				if err != nil {
-					return nil, fmt.Errorf("invalid depth value %q: %w", cmdArgs[i], err)
+					return nil, fmt.Errorf("invalid depth value %q: %w", optionsArgs[i], err)
 				}
 				p.MaxDepth = depth
 			case "-s", "--selector":
-				if i+1 >= len(cmdArgs) {
+				if i+1 >= len(optionsArgs) {
 					return nil, fmt.Errorf("flag %s requires an argument", a)
 				}
 				i++
-				p.Selector = cmdArgs[i]
+				p.Selector = optionsArgs[i]
 			default:
 				if strings.HasPrefix(a, "-d=") || strings.HasPrefix(a, "--depth=") {
 					val := strings.TrimPrefix(strings.TrimPrefix(a, "--depth="), "-d=")
@@ -150,92 +162,92 @@ func ParseArgs(args []string) (*Command, error) {
 		cmd.Params = p
 
 	case "click":
-		if len(cmdArgs) == 0 {
+		if len(allArgs) == 0 {
 			return nil, errors.New("usage: tether click <selector>")
 		}
 		cmd.Method = protocol.MethodClick
 		cmd.Params = protocol.ClickParams{
-			Selector:  cmdArgs[0],
+			Selector:  allArgs[0],
 			TimeoutMs: global.TimeoutMs,
 		}
 
 	case "dblclick":
-		if len(cmdArgs) == 0 {
+		if len(allArgs) == 0 {
 			return nil, errors.New("usage: tether dblclick <selector>")
 		}
 		cmd.Method = protocol.MethodDblClick
 		cmd.Params = protocol.ClickParams{
-			Selector:   cmdArgs[0],
+			Selector:   allArgs[0],
 			ClickCount: 2,
 			TimeoutMs:  global.TimeoutMs,
 		}
 
 	case "fill":
-		if len(cmdArgs) < 2 {
+		if len(allArgs) < 2 {
 			return nil, errors.New("usage: tether fill <selector> <text>")
 		}
 		cmd.Method = protocol.MethodFill
 		cmd.Params = protocol.FillParams{
-			Selector:   cmdArgs[0],
-			Text:       strings.Join(cmdArgs[1:], " "),
+			Selector:   allArgs[0],
+			Text:       strings.Join(allArgs[1:], " "),
 			ClearFirst: true,
-			TimeoutMs: global.TimeoutMs,
+			TimeoutMs:  global.TimeoutMs,
 		}
 
 	case "type":
-		if len(cmdArgs) < 2 {
+		if len(allArgs) < 2 {
 			return nil, errors.New("usage: tether type <selector> <text>")
 		}
 		cmd.Method = protocol.MethodType
 		cmd.Params = protocol.TypeParams{
-			Selector:  cmdArgs[0],
-			Text:      strings.Join(cmdArgs[1:], " "),
+			Selector:  allArgs[0],
+			Text:      strings.Join(allArgs[1:], " "),
 			TimeoutMs: global.TimeoutMs,
 		}
 
 	case "press":
-		if len(cmdArgs) == 0 {
+		if len(allArgs) == 0 {
 			return nil, errors.New("usage: tether press <key>")
 		}
 		cmd.Method = protocol.MethodPress
 		cmd.Params = protocol.PressParams{
-			Key: cmdArgs[0],
+			Key: allArgs[0],
 		}
 
 	case "hover":
-		if len(cmdArgs) == 0 {
+		if len(allArgs) == 0 {
 			return nil, errors.New("usage: tether hover <selector>")
 		}
 		cmd.Method = protocol.MethodHover
 		cmd.Params = protocol.HoverParams{
-			Selector:  cmdArgs[0],
+			Selector:  allArgs[0],
 			TimeoutMs: global.TimeoutMs,
 		}
 
 	case "focus":
-		if len(cmdArgs) == 0 {
+		if len(allArgs) == 0 {
 			return nil, errors.New("usage: tether focus <selector>")
 		}
 		cmd.Method = protocol.MethodFocus
 		cmd.Params = protocol.FocusParams{
-			Selector: cmdArgs[0],
+			Selector: allArgs[0],
 		}
 
 	case "eval":
-		if len(cmdArgs) == 0 {
+		if len(allArgs) == 0 {
 			return nil, errors.New("usage: tether eval <expression>")
 		}
 		cmd.Method = protocol.MethodEval
 		cmd.Params = protocol.EvalParams{
-			Expression:   strings.Join(cmdArgs, " "),
+			Expression:   strings.Join(allArgs, " "),
 			AwaitPromise: true,
 		}
 
 	case "wait":
-		if len(cmdArgs) == 0 {
+		if len(allArgs) == 0 {
 			return nil, errors.New("usage: tether wait <selector|durationMs>")
 		}
-		arg := cmdArgs[0]
+		arg := allArgs[0]
 		p := protocol.WaitParams{
 			TimeoutMs: global.TimeoutMs,
 		}
@@ -257,19 +269,22 @@ func ParseArgs(args []string) (*Command, error) {
 			Format:    "png",
 			TimeoutMs: global.TimeoutMs,
 		}
-		for _, a := range cmdArgs {
-			if a == "--full" || a == "-f" {
-				p.FullPage = true
-			} else if !strings.HasPrefix(a, "-") {
+		for _, a := range optionsArgs {
+			if !strings.HasPrefix(a, "-") {
 				cmd.ScreenshotPath = a
 			}
+		}
+		// Positional literal arguments take precedence for path
+		if len(literalArgs) > 0 {
+			cmd.ScreenshotPath = literalArgs[0]
 		}
 		cmd.Method = protocol.MethodScreenshot
 		cmd.Params = p
 
 	case "close":
 		p := protocol.CloseParams{}
-		for _, a := range cmdArgs {
+		// Flags are scanned only from optionsArgs before "--"
+		for _, a := range optionsArgs {
 			if a == "--all" {
 				p.CloseAll = true
 			}
@@ -283,8 +298,8 @@ func ParseArgs(args []string) (*Command, error) {
 
 	case "broker":
 		subcmd := "run"
-		if len(cmdArgs) > 0 {
-			subcmd = cmdArgs[0]
+		if len(allArgs) > 0 {
+			subcmd = allArgs[0]
 		}
 		cmd.BrokerSubcmd = subcmd
 

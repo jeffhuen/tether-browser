@@ -150,24 +150,31 @@ func (b *Broker) handleClient(conn net.Conn) {
 		b.Close()
 		return
 	}
-	// Determine session from params or default
+
 	sessionKey := b.extractSessionKey(req.Params)
+
+	// Single atomic lookup and validation of session target
+	var targetToInject protocol.TargetID
+	b.mu.Lock()
 	if sessionKey != "default" && sessionKey != "" {
-		b.mu.Lock()
-		activeTarget, exists := b.sessionTargets[sessionKey]
-		b.mu.Unlock()
-		if (!exists || activeTarget == "") && req.Method != protocol.MethodOpen && req.Method != protocol.MethodStatus {
+		tid, exists := b.sessionTargets[sessionKey]
+		if (!exists || tid == "") && req.Method != protocol.MethodOpen && req.Method != protocol.MethodStatus {
+			b.mu.Unlock()
 			errResp := protocol.NewErrorResponse(req.ID, protocol.CodeTargetNotFound, fmt.Sprintf("session %q has no active target", sessionKey), nil, b.client.NextSeq(), b.client.Epoch())
 			data, _ := json.Marshal(errResp)
 			_, _ = conn.Write(append(data, '\n'))
 			return
 		}
+		targetToInject = tid
+	} else {
+		targetToInject = b.sessionTargets["default"]
 	}
+	b.mu.Unlock()
 
-	// Inject session-specific target ID if omitted
-	modifiedParams := b.injectTargetID(sessionKey, req.Method, req.Params)
+	// Inject target ID into params
+	modifiedParams := b.injectTarget(targetToInject, req.Method, req.Params)
 
-	// Derive timeout from request parameters if specified
+	// Derive timeout from request parameters
 	timeout := 60 * time.Second
 	if t := extractTimeout(modifiedParams); t > 0 {
 		timeout = t
@@ -187,7 +194,7 @@ func (b *Broker) handleClient(conn net.Conn) {
 	// Update session-specific active target tracking on open or close
 	b.updateSessionState(sessionKey, req.Method, resp)
 
-	// MUST preserve the caller's request ID!
+	// Preserve the caller's request ID
 	resp.ID = req.ID
 
 	data, err := json.Marshal(resp)
@@ -236,13 +243,8 @@ func extractTimeout(params any) time.Duration {
 	return 0
 }
 
-// injectTargetID adds session target ID to request params if missing.
-func (b *Broker) injectTargetID(sessionKey string, method string, rawParams json.RawMessage) any {
-	b.mu.Lock()
-	activeTarget := b.sessionTargets[sessionKey]
-	b.mu.Unlock()
-
-	if activeTarget == "" || method == protocol.MethodOpen || method == protocol.MethodStatus {
+func (b *Broker) injectTarget(target protocol.TargetID, method string, rawParams json.RawMessage) any {
+	if target == "" || method == protocol.MethodOpen || method == protocol.MethodStatus {
 		return rawParams
 	}
 
@@ -255,12 +257,11 @@ func (b *Broker) injectTargetID(sessionKey string, method string, rawParams json
 	}
 
 	if tid, exists := m["targetId"]; !exists || tid == "" {
-		m["targetId"] = string(activeTarget)
+		m["targetId"] = string(target)
 	}
 	return m
 }
 
-// updateSessionState updates tracked active target ID based on method responses.
 func (b *Broker) updateSessionState(sessionKey string, method string, resp *protocol.Response) {
 	if resp == nil || resp.Error != nil {
 		return
@@ -306,7 +307,6 @@ func StartBackgroundBroker() error {
 		return fmt.Errorf("start broker background process: %w", err)
 	}
 
-	// Wait up to 2 seconds for broker to listen
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if IsBrokerAlive(socketPath) {
@@ -337,7 +337,6 @@ func StopBroker() error {
 	reqBytes, _ := json.Marshal(req)
 	_, _ = conn.Write(append(reqBytes, '\n'))
 
-	// Wait for socket to close
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if !IsBrokerAlive(socketPath) {
