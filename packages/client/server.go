@@ -10,126 +10,108 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/jeffhuen/tether-browser/packages/protocol"
+	"github.com/klauspost/compress/zstd"
 )
 
-// DefaultServerAddr is the default local daemon RPC listening address.
-const DefaultServerAddr = "127.0.0.1:9333"
-
-// Server handles JSON-RPC 2.0 requests over TCP and HTTP.
+// Server receives JSON-RPC commands from the remote CLI and dispatches them to BrowserDriver.
 type Server struct {
-	addr      string
-	driver    BrowserDriver
-	listener  net.Listener
-	mu        sync.Mutex
-	closed    atomic.Bool
-	startTime time.Time
+	driver   BrowserDriver
+	listener net.Listener
+	port     int
+	mu       sync.Mutex
+	closed   bool
 }
 
-// NewServer creates a new daemon RPC server.
-func NewServer(addr string, driver BrowserDriver) *Server {
-	if addr == "" {
-		addr = DefaultServerAddr
-	}
+// NewServer creates a new daemon RPC server bound to a driver.
+func NewServer(driver BrowserDriver) *Server {
 	return &Server{
-		addr:      addr,
-		driver:    driver,
-		startTime: time.Now(),
+		driver: driver,
 	}
 }
 
-// Start begins listening for RPC requests.
-func (s *Server) Start() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.listener != nil {
-		return nil
-	}
-
-	ln, err := net.Listen("tcp", s.addr)
+// ListenAndServe binds to 127.0.0.1 on the specified port (or 0 for ephemeral).
+func (s *Server) ListenAndServe(port int) error {
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("server listen on %s: %w", s.addr, err)
+		return fmt.Errorf("server listen on %s: %w", addr, err)
 	}
 	s.listener = ln
+	s.port = ln.Addr().(*net.TCPAddr).Port
 
-	go s.acceptLoop(ln)
-	return nil
-}
-
-// Port returns the bound port number.
-func (s *Server) Port() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.listener == nil {
-		return 0
-	}
-	return s.listener.Addr().(*net.TCPAddr).Port
-}
-
-// Addr returns the listener address string.
-func (s *Server) Addr() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.listener == nil {
-		return ""
-	}
-	return s.listener.Addr().String()
-}
-
-// Close stops the server and closes the listener.
-func (s *Server) Close() error {
-	if s.closed.CompareAndSwap(false, true) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if s.listener != nil {
-			return s.listener.Close()
-		}
-	}
-	return nil
-}
-
-func (s *Server) acceptLoop(ln net.Listener) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			if s.closed.Load() {
-				return
+			s.mu.Lock()
+			closed := s.closed
+			s.mu.Unlock()
+			if closed {
+				return nil
 			}
-			continue
+			return err
 		}
 		go s.handleConn(conn)
 	}
 }
 
+// Port returns the server listening port.
+func (s *Server) Port() int {
+	return s.port
+}
+
+// Close gracefully closes the server listener.
+func (s *Server) Close() error {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+
+	if s.listener != nil {
+		return s.listener.Close()
+	}
+	return nil
+}
+
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
+	setTCPNoDelay(conn, true)
+
 	br := bufio.NewReader(conn)
+	var streamDec *json.Decoder
 
 	for {
 		peek, err := br.Peek(1)
 		if err != nil {
 			return
 		}
-
 		firstByte := peek[0]
-		// HTTP request detection (GET, POST, HEAD, OPTIONS)
+
+		// HTTP request detection (POST, GET, etc.)
 		if firstByte == 'P' || firstByte == 'G' || firstByte == 'H' || firstByte == 'O' {
 			req, err := http.ReadRequest(br)
 			if err != nil {
 				return
 			}
 
-			if req.Method != http.MethodPost {
-				res := "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n"
+			// Reject unauthorized cross-origin requests from websites
+			origin := req.Header.Get("Origin")
+			if origin != "" && !isAuthorizedOrigin(origin) {
+				res := "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"
 				_, _ = conn.Write([]byte(res))
 				return
+			}
+
+			// Enforce Content-Type for POST
+			if req.Method == http.MethodPost {
+				ct := req.Header.Get("Content-Type")
+				if !strings.HasPrefix(ct, "application/json") {
+					res := "HTTP/1.1 415 Unsupported Media Type\r\nContent-Length: 0\r\n\r\n"
+					_, _ = conn.Write([]byte(res))
+					return
+				}
 			}
 
 			body, err := io.ReadAll(req.Body)
@@ -157,7 +139,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			continue
 		}
 
-		// FormatRaw binary framing
+		// Binary framing (FormatRaw or FormatZstd)
 		if firstByte == protocol.FormatRaw {
 			header := make([]byte, 5)
 			if _, err := io.ReadFull(br, header); err != nil {
@@ -192,10 +174,49 @@ func (s *Server) handleConn(conn net.Conn) {
 			continue
 		}
 
-		// JSON-RPC stream / newline-delimited JSON
-		dec := json.NewDecoder(br)
+		if firstByte == protocol.FormatZstd {
+			header := make([]byte, 5)
+			if _, err := io.ReadFull(br, header); err != nil {
+				return
+			}
+			uncompressedLen := binary.BigEndian.Uint32(header[1:5])
+			if uncompressedLen > protocol.MaxFramePayload {
+				return
+			}
+			dec, err := zstd.NewReader(br)
+			if err != nil {
+				return
+			}
+			decompressed := make([]byte, uncompressedLen)
+			if _, err := io.ReadFull(dec, decompressed); err != nil {
+				dec.Close()
+				return
+			}
+			dec.Close()
+
+			var req protocol.Request
+			if err := json.Unmarshal(decompressed, &req); err != nil {
+				return
+			}
+			resp := s.Dispatch(context.Background(), &req)
+			respJSON, _ := json.Marshal(resp)
+			respFramed, err := protocol.CompressPayload(respJSON)
+			if err != nil {
+				return
+			}
+			if _, err := conn.Write(respFramed); err != nil {
+				return
+			}
+			continue
+		}
+
+		// Reusable JSON-RPC stream decoder (preserves read-ahead buffer)
+		if streamDec == nil {
+			streamDec = json.NewDecoder(br)
+		}
+
 		var req protocol.Request
-		if err := dec.Decode(&req); err != nil {
+		if err := streamDec.Decode(&req); err != nil {
 			return
 		}
 		resp := s.Dispatch(context.Background(), &req)
@@ -210,10 +231,29 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 }
 
+func isAuthorizedOrigin(origin string) bool {
+	oLower := strings.ToLower(origin)
+	return strings.HasPrefix(oLower, "http://localhost") ||
+		strings.HasPrefix(oLower, "http://127.0.0.1") ||
+		strings.HasPrefix(oLower, "chrome-extension://")
+}
+
 // ServeHTTP implements http.Handler for standard HTTP servers and testing.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	origin := r.Header.Get("Origin")
+	if origin != "" && !isAuthorizedOrigin(origin) {
+		http.Error(w, "forbidden origin", http.StatusForbidden)
+		return
+	}
+
+	ct := r.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "application/json") {
+		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
 		return
 	}
 
@@ -248,13 +288,9 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		if err := req.UnmarshalParams(&p); err != nil {
 			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
 		}
-		targetID, err := s.driver.OpenTab(ctx, p.URL)
+		res, err := s.driver.OpenTab(ctx, p)
 		if err != nil {
 			return mapDriverError(req, err)
-		}
-		res := protocol.OpenResult{
-			TargetID: targetID,
-			URL:      p.URL,
 		}
 		resp, _ := protocol.NewResponse(req.ID, res, req.Seq, req.Epoch)
 		return resp
@@ -264,7 +300,7 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		if err := req.UnmarshalParams(&p); err != nil {
 			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
 		}
-		if err := s.driver.CloseTab(ctx, p.TargetID); err != nil {
+		if err := s.driver.CloseTab(ctx, p); err != nil {
 			return mapDriverError(req, err)
 		}
 		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
@@ -275,7 +311,7 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		if err := req.UnmarshalParams(&p); err != nil {
 			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
 		}
-		res, err := s.driver.Snapshot(ctx, p.TargetID, p.InteractiveOnly)
+		res, err := s.driver.Snapshot(ctx, p)
 		if err != nil {
 			return mapDriverError(req, err)
 		}
@@ -287,7 +323,18 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		if err := req.UnmarshalParams(&p); err != nil {
 			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
 		}
-		if err := s.driver.Click(ctx, p.TargetID, p.Selector); err != nil {
+		if err := s.driver.Click(ctx, p); err != nil {
+			return mapDriverError(req, err)
+		}
+		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
+		return resp
+
+	case protocol.MethodDblClick:
+		var p protocol.ClickParams
+		if err := req.UnmarshalParams(&p); err != nil {
+			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
+		}
+		if err := s.driver.DblClick(ctx, p); err != nil {
 			return mapDriverError(req, err)
 		}
 		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
@@ -298,7 +345,7 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		if err := req.UnmarshalParams(&p); err != nil {
 			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
 		}
-		if err := s.driver.Fill(ctx, p.TargetID, p.Selector, p.Text); err != nil {
+		if err := s.driver.Fill(ctx, p); err != nil {
 			return mapDriverError(req, err)
 		}
 		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
@@ -309,7 +356,7 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		if err := req.UnmarshalParams(&p); err != nil {
 			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
 		}
-		if err := s.driver.Type(ctx, p.TargetID, p.Selector, p.Text); err != nil {
+		if err := s.driver.Type(ctx, p); err != nil {
 			return mapDriverError(req, err)
 		}
 		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
@@ -320,7 +367,7 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		if err := req.UnmarshalParams(&p); err != nil {
 			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
 		}
-		if err := s.driver.Press(ctx, p.TargetID, p.Key); err != nil {
+		if err := s.driver.Press(ctx, p); err != nil {
 			return mapDriverError(req, err)
 		}
 		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
@@ -331,7 +378,7 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		if err := req.UnmarshalParams(&p); err != nil {
 			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
 		}
-		if err := s.driver.Hover(ctx, p.TargetID, p.Selector); err != nil {
+		if err := s.driver.Hover(ctx, p); err != nil {
 			return mapDriverError(req, err)
 		}
 		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
@@ -342,7 +389,7 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		if err := req.UnmarshalParams(&p); err != nil {
 			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
 		}
-		if err := s.driver.Focus(ctx, p.TargetID, p.Selector); err != nil {
+		if err := s.driver.Focus(ctx, p); err != nil {
 			return mapDriverError(req, err)
 		}
 		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
@@ -353,11 +400,11 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		if err := req.UnmarshalParams(&p); err != nil {
 			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
 		}
-		val, err := s.driver.Eval(ctx, p.TargetID, p.Expression)
+		res, err := s.driver.Eval(ctx, p)
 		if err != nil {
 			return mapDriverError(req, err)
 		}
-		resp, _ := protocol.NewResponse(req.ID, protocol.EvalResult{Value: val}, req.Seq, req.Epoch)
+		resp, _ := protocol.NewResponse(req.ID, res, req.Seq, req.Epoch)
 		return resp
 
 	case protocol.MethodWait:
@@ -365,11 +412,7 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		if err := req.UnmarshalParams(&p); err != nil {
 			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
 		}
-		timeout := p.TimeoutMs
-		if timeout == 0 && p.DurationMs > 0 {
-			timeout = p.DurationMs
-		}
-		if err := s.driver.Wait(ctx, p.TargetID, p.Selector, timeout); err != nil {
+		if err := s.driver.Wait(ctx, p); err != nil {
 			return mapDriverError(req, err)
 		}
 		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
@@ -380,7 +423,7 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		if err := req.UnmarshalParams(&p); err != nil {
 			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
 		}
-		res, err := s.driver.Screenshot(ctx, p.TargetID, p.FullPage)
+		res, err := s.driver.Screenshot(ctx, p)
 		if err != nil {
 			return mapDriverError(req, err)
 		}
@@ -388,33 +431,8 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		return resp
 
 	case protocol.MethodStatus:
-		uptime := int64(time.Since(s.startTime).Seconds())
-		res := protocol.StatusResult{
-			Connected:     true,
-			Version:       "1.0.0",
-			Mode:          "managed",
-			DaemonUptimeS: uptime,
-		}
-		resp, _ := protocol.NewResponse(req.ID, res, req.Seq, req.Epoch)
-		return resp
-
-	case "browser.review.start", "review.start":
-		var p struct {
-			TargetID protocol.TargetID `json:"targetId"`
-		}
-		_ = req.UnmarshalParams(&p)
-		if err := s.driver.StartReview(ctx, p.TargetID); err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
-		return resp
-
-	case "browser.review.notes", "review.notes":
-		var p struct {
-			TargetID protocol.TargetID `json:"targetId"`
-		}
-		_ = req.UnmarshalParams(&p)
-		res, err := s.driver.GetReviewNotes(ctx, p.TargetID)
+		var p protocol.StatusParams
+		res, err := s.driver.Status(ctx, p)
 		if err != nil {
 			return mapDriverError(req, err)
 		}
@@ -422,29 +440,22 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		return resp
 
 	default:
-		return protocol.NewErrorResponse(req.ID, protocol.CodeMethodNotFound, fmt.Sprintf("method %q not found", req.Method), nil, req.Seq, req.Epoch)
+		return protocol.NewErrorResponse(req.ID, protocol.CodeMethodNotFound, "method not found: "+req.Method, nil, req.Seq, req.Epoch)
 	}
 }
 
 func mapDriverError(req *protocol.Request, err error) *protocol.Response {
-	var rpcErr *protocol.RPCError
-	if errors.As(err, &rpcErr) {
-		return protocol.NewErrorResponse(req.ID, rpcErr.Code, rpcErr.Message, rpcErr.Data, req.Seq, req.Epoch)
-	}
-	switch {
-	case errors.Is(err, protocol.ErrTargetNotFound):
+	if errors.Is(err, protocol.ErrTargetNotFound) {
 		return protocol.NewErrorResponse(req.ID, protocol.CodeTargetNotFound, err.Error(), nil, req.Seq, req.Epoch)
-	case errors.Is(err, protocol.ErrStaleRef):
-		return protocol.NewErrorResponse(req.ID, protocol.CodeStaleRef, err.Error(), nil, req.Seq, req.Epoch)
-	case errors.Is(err, protocol.ErrActionTimeout):
-		return protocol.NewErrorResponse(req.ID, protocol.CodeActionTimeout, err.Error(), nil, req.Seq, req.Epoch)
-	case errors.Is(err, protocol.ErrNotActionable):
-		return protocol.NewErrorResponse(req.ID, protocol.CodeNotActionable, err.Error(), nil, req.Seq, req.Epoch)
-	case errors.Is(err, protocol.ErrNavigationError):
-		return protocol.NewErrorResponse(req.ID, protocol.CodeNavigationError, err.Error(), nil, req.Seq, req.Epoch)
-	case errors.Is(err, protocol.ErrAuthRequired):
-		return protocol.NewErrorResponse(req.ID, protocol.CodeAuthRequired, err.Error(), nil, req.Seq, req.Epoch)
-	default:
-		return protocol.NewErrorResponse(req.ID, protocol.CodeInternalError, err.Error(), nil, req.Seq, req.Epoch)
 	}
+	if errors.Is(err, protocol.ErrStaleRef) {
+		return protocol.NewErrorResponse(req.ID, protocol.CodeStaleRef, err.Error(), nil, req.Seq, req.Epoch)
+	}
+	if errors.Is(err, protocol.ErrActionTimeout) {
+		return protocol.NewErrorResponse(req.ID, protocol.CodeActionTimeout, err.Error(), nil, req.Seq, req.Epoch)
+	}
+	if errors.Is(err, protocol.ErrNotActionable) {
+		return protocol.NewErrorResponse(req.ID, protocol.CodeNotActionable, err.Error(), nil, req.Seq, req.Epoch)
+	}
+	return protocol.NewErrorResponse(req.ID, protocol.CodeInternalError, err.Error(), nil, req.Seq, req.Epoch)
 }

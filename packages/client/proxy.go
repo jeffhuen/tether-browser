@@ -1,136 +1,150 @@
 package client
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 )
 
-// Proxy implements the Mode A origin-preserving forward proxy.
+var (
+	ErrUnenrolledLoopback = errors.New("unenrolled loopback destination rejected")
+)
+
+// Proxy implements Mode A Origin-Preserving forward proxying with HTTP CONNECT tunneling.
 type Proxy struct {
-	mu            sync.RWMutex
-	listener      net.Listener
-	server        *http.Server
-	enrolled      map[string]string // target host (e.g. "localhost:3000") -> destination endpoint
-	flushInterval time.Duration
-	dialTimeout   time.Duration
+	listener    net.Listener
+	server      *http.Server
+	port        int
+	dialTimeout time.Duration
+
+	mu          sync.RWMutex
+	routes      map[string]string // host:port -> remote host:port (e.g. "localhost:3000" -> "100.x.y.z:3000")
+	activeConns map[net.Conn]struct{}
+	closed      bool
 }
 
-// NewProxy creates a forward proxy instance.
-func NewProxy(listenAddr string) *Proxy {
-	if listenAddr == "" {
-		listenAddr = "127.0.0.1:0"
+// NewProxy creates a forward proxy ready to bind to a local port.
+func NewProxy() *Proxy {
+	return &Proxy{
+		dialTimeout: 5 * time.Second,
+		routes:      make(map[string]string),
+		activeConns: make(map[net.Conn]struct{}),
 	}
-	p := &Proxy{
-		enrolled:      make(map[string]string),
-		flushInterval: 10 * time.Millisecond,
-		dialTimeout:   10 * time.Second,
-	}
-	p.server = &http.Server{
-		Addr:    listenAddr,
-		Handler: p,
-	}
-	return p
 }
 
-// Start begins listening on the configured address.
-func (p *Proxy) Start() error {
+// Enroll adds an enrolled destination mapping (e.g. "localhost:3000" -> "127.0.0.1:3000" or remote address).
+func (p *Proxy) Enroll(localHostPort, remoteHostPort string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.routes[localHostPort] = remoteHostPort
+}
 
-	if p.listener != nil {
-		return nil
-	}
+// Unenroll removes an enrolled destination mapping.
+func (p *Proxy) Unenroll(localHostPort string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.routes, localHostPort)
+}
 
-	ln, err := net.Listen("tcp", p.server.Addr)
+// ResolveTarget checks if a host:port is enrolled.
+func (p *Proxy) ResolveTarget(hostPort string) (string, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	target, ok := p.routes[hostPort]
+	return target, ok
+}
+
+// ListenAndServe binds to 127.0.0.1 on the requested port (or 0 for ephemeral).
+func (p *Proxy) ListenAndServe(port int) error {
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("proxy listen: %w", err)
+		return fmt.Errorf("proxy listen on %s: %w", addr, err)
 	}
 	p.listener = ln
+	p.port = ln.Addr().(*net.TCPAddr).Port
 
-	go func() {
-		_ = p.server.Serve(ln)
-	}()
+	p.server = &http.Server{
+		Handler: p,
+	}
 
-	return nil
+	return p.server.Serve(ln)
 }
 
-// Port returns the bound port number.
+// Port returns the listening port of the proxy.
 func (p *Proxy) Port() int {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	if p.listener == nil {
-		return 0
-	}
-	return p.listener.Addr().(*net.TCPAddr).Port
+	return p.port
 }
 
-// Addr returns the listener address string.
-func (p *Proxy) Addr() string {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	if p.listener == nil {
-		return ""
-	}
-	return p.listener.Addr().String()
-}
-
-// Enroll maps a local host:port to a remote endpoint.
-func (p *Proxy) Enroll(targetHost, remoteEndpoint string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.enrolled[targetHost] = remoteEndpoint
-}
-
-// Unenroll removes a target mapping.
-func (p *Proxy) Unenroll(targetHost string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	delete(p.enrolled, targetHost)
-}
-
-// ResolveTarget checks if a host is enrolled and returns its destination.
-func (p *Proxy) ResolveTarget(host string) (string, bool) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	if remote, ok := p.enrolled[host]; ok {
-		return remote, true
-	}
-
-	base := stripPort(host)
-	if remote, ok := p.enrolled[base]; ok {
-		return remote, true
-	}
-
-	return "", false
-}
-
-// Close terminates the proxy server and listener.
+// Close gracefully terminates the proxy server and all active hijacked tunnel connections.
 func (p *Proxy) Close() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.closed = true
+	conns := make([]net.Conn, 0, len(p.activeConns))
+	for c := range p.activeConns {
+		conns = append(conns, c)
+	}
+	p.activeConns = make(map[net.Conn]struct{})
+	p.mu.Unlock()
+
+	for _, c := range conns {
+		_ = c.Close()
+	}
 
 	if p.server != nil {
 		return p.server.Close()
 	}
+	if p.listener != nil {
+		return p.listener.Close()
+	}
 	return nil
 }
 
-// ServeHTTP routes CONNECT requests and plain HTTP requests.
+func (p *Proxy) trackConn(c net.Conn) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return false
+	}
+	p.activeConns[c] = struct{}{}
+	return true
+}
+
+func (p *Proxy) untrackConn(c net.Conn) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.activeConns, c)
+}
+
+// ServeHTTP dispatches requests between CONNECT tunneling and plain HTTP proxying.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.Method == http.MethodConnect {
 		p.handleConnect(w, req)
 		return
 	}
 	p.handlePlainHTTP(w, req)
+}
+
+func isLoopback(hostPort string) bool {
+	host := hostPort
+	if h, _, err := net.SplitHostPort(hostPort); err == nil {
+		host = h
+	}
+	hLower := strings.ToLower(host)
+	if hLower == "localhost" || strings.HasSuffix(hLower, ".localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // handleConnect splices TCP sockets for HTTPS and WebSockets.
@@ -140,9 +154,13 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 		host = req.URL.Host
 	}
 
-	destAddr := host
-	if remote, ok := p.ResolveTarget(host); ok {
-		destAddr = remote
+	destAddr, enrolled := p.ResolveTarget(host)
+	if !enrolled {
+		if isLoopback(host) {
+			http.Error(w, fmt.Sprintf("unenrolled loopback destination rejected: %s", host), http.StatusForbidden)
+			return
+		}
+		destAddr = host
 	}
 
 	targetConn, err := net.DialTimeout("tcp", destAddr, p.dialTimeout)
@@ -158,18 +176,34 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	clientConn, _, err := hijacker.Hijack()
+	clientConn, brw, err := hijacker.Hijack()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("hijack failed: %v", err), http.StatusServiceUnavailable)
 		return
 	}
 	defer clientConn.Close()
 
+	if !p.trackConn(clientConn) || !p.trackConn(targetConn) {
+		return
+	}
+	defer p.untrackConn(clientConn)
+	defer p.untrackConn(targetConn)
+
 	setTCPNoDelay(clientConn, true)
 	setTCPNoDelay(targetConn, true)
 
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
 		return
+	}
+
+	// Forward any buffered bytes from client before bidirectional splice
+	if brw != nil && brw.Reader.Buffered() > 0 {
+		buffered := make([]byte, brw.Reader.Buffered())
+		if _, err := io.ReadFull(brw.Reader, buffered); err == nil {
+			if _, err := targetConn.Write(buffered); err != nil {
+				return
+			}
+		}
 	}
 
 	spliceSockets(clientConn, targetConn)
@@ -182,67 +216,56 @@ func (p *Proxy) handlePlainHTTP(w http.ResponseWriter, req *http.Request) {
 		host = req.URL.Host
 	}
 
-	remote, enrolled := p.ResolveTarget(host)
+	destAddr, enrolled := p.ResolveTarget(host)
+	if !enrolled {
+		if isLoopback(host) {
+			http.Error(w, fmt.Sprintf("unenrolled loopback destination rejected: %s", host), http.StatusForbidden)
+			return
+		}
+		destAddr = host
+	}
+
+	targetURL, err := url.Parse(fmt.Sprintf("http://%s", destAddr))
+	if err != nil {
+		http.Error(w, "invalid destination", http.StatusBadRequest)
+		return
+	}
 
 	rp := &httputil.ReverseProxy{
-		FlushInterval: p.flushInterval,
-		Director: func(outReq *http.Request) {
-			outReq.URL.Scheme = "http"
-			if enrolled {
-				outReq.URL.Host = remote
-			} else if outReq.URL.Host == "" {
-				outReq.URL.Host = host
-			}
-			outReq.Host = host
+		Director: func(r *http.Request) {
+			r.URL.Scheme = "http"
+			r.URL.Host = targetURL.Host
+			r.Host = req.Host // Preserve original Host header for virtual hosts
+			// Strip hop-by-hop headers
+			r.Header.Del("Proxy-Connection")
+		},
+		FlushInterval: 10 * time.Millisecond, // Low latency streaming
+		ErrorHandler: func(rw http.ResponseWriter, r *http.Request, err error) {
+			http.Error(rw, fmt.Sprintf("proxy error: %v", err), http.StatusBadGateway)
 		},
 	}
 
 	rp.ServeHTTP(w, req)
 }
 
-// setTCPNoDelay enables TCP_NODELAY if the connection is a TCP connection.
 func setTCPNoDelay(conn net.Conn, noDelay bool) {
 	if tc, ok := conn.(*net.TCPConn); ok {
 		_ = tc.SetNoDelay(noDelay)
 	}
 }
 
-// spliceSockets copies bidirectional data between two connections.
 func spliceSockets(c1, c2 net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	go func() {
+	copyHalf := func(dst, src net.Conn) {
 		defer wg.Done()
-		_, _ = io.Copy(c1, c2)
-		if tc, ok := c1.(*net.TCPConn); ok {
-			_ = tc.CloseWrite()
-		} else {
-			_ = c1.Close()
-		}
-	}()
+		defer dst.Close()
+		_, _ = io.Copy(dst, src)
+	}
 
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(c2, c1)
-		if tc, ok := c2.(*net.TCPConn); ok {
-			_ = tc.CloseWrite()
-		} else {
-			_ = c2.Close()
-		}
-	}()
+	go copyHalf(c1, c2)
+	go copyHalf(c2, c1)
 
 	wg.Wait()
-}
-
-func stripPort(host string) string {
-	h, _, err := net.SplitHostPort(host)
-	if err == nil {
-		return h
-	}
-	if strings.Contains(host, ":") {
-		parts := strings.Split(host, ":")
-		return parts[0]
-	}
-	return host
 }

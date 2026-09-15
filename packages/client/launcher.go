@@ -1,181 +1,126 @@
 package client
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
-// LauncherConfig specifies options for starting a managed Chrome instance.
-type LauncherConfig struct {
-	WorkspaceID string
-	ProxyPort   int
-	ExecPath    string
-	ExtraArgs   []string
-	Headless    bool
-}
+var validWorkspaceIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 
-// ChromeProcess represents a running Chrome instance managed by the launcher.
+// ChromeProcess manages the lifecycle of an isolated Chrome instance.
 type ChromeProcess struct {
-	mu         sync.Mutex
-	cmd        *exec.Cmd
-	profileDir string
-	port       int
-	wsPath     string
-	wsURL      string
+	Cmd        *exec.Cmd
+	ProfileDir string
+	CDPPort    int
+	ProxyPort  int
 }
 
-// ResolveProfileDir resolves the dedicated user data directory for a workspace.
-func ResolveProfileDir(workspaceID string) (string, error) {
-	if workspaceID == "" {
-		workspaceID = "default"
+// ValidateWorkspaceID ensures a workspace ID does not contain path traversal characters.
+func ValidateWorkspaceID(id string) error {
+	if id == "" {
+		return errors.New("workspace ID cannot be empty")
 	}
-	home, err := os.UserHomeDir()
+	if !validWorkspaceIDRegex.MatchString(id) {
+		return fmt.Errorf("invalid workspace ID %q: must contain only alphanumeric characters, underscores, and dashes", id)
+	}
+	return nil
+}
+
+// GetProfileDir returns a safe, platform-appropriate user data directory for a workspace.
+func GetProfileDir(workspaceID string) (string, error) {
+	if err := ValidateWorkspaceID(workspaceID); err != nil {
+		return "", err
+	}
+
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		home = os.Getenv("HOME")
-		if home == "" {
-			return "", errors.New("cannot determine user home directory")
-		}
+		return "", fmt.Errorf("get user home directory: %w", err)
 	}
-	return filepath.Join(home, ".config", "tether", "profiles", workspaceID), nil
+
+	var baseDir string
+	switch runtime.GOOS {
+	case "darwin":
+		baseDir = filepath.Join(homeDir, "Library", "Application Support", "Tether", "Profiles")
+	case "windows":
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			appData = filepath.Join(homeDir, "AppData", "Roaming")
+		}
+		baseDir = filepath.Join(appData, "Tether", "Profiles")
+	default:
+		// Linux and other Unixes
+		configDir := os.Getenv("XDG_CONFIG_HOME")
+		if configDir == "" {
+			configDir = filepath.Join(homeDir, ".config")
+		}
+		baseDir = filepath.Join(configDir, "tether", "profiles")
+	}
+
+	return filepath.Join(baseDir, workspaceID), nil
 }
 
-// FindChromeExecutable locates a Chrome or Chromium binary on the system.
+// FindChromeExecutable locates Google Chrome or Chromium on the host machine.
 func FindChromeExecutable() (string, error) {
-	envVars := []string{"CHROME_PATH", "GOOGLE_CHROME_BIN", "TETHER_CHROME_BIN"}
-	for _, env := range envVars {
-		if path := os.Getenv(env); path != "" {
-			if _, err := os.Stat(path); err == nil {
-				return path, nil
-			}
+	// 1. Check environment variable override
+	if envPath := os.Getenv("TETHER_CHROME_PATH"); envPath != "" {
+		if _, err := os.Stat(envPath); err == nil {
+			return envPath, nil
 		}
 	}
 
-	binaries := []string{
-		"google-chrome",
-		"google-chrome-stable",
-		"chromium",
-		"chromium-browser",
-		"chrome",
+	// 2. Platform-specific default locations
+	var candidates []string
+	switch runtime.GOOS {
+	case "darwin":
+		candidates = []string{
+			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+			"/Applications/Chromium.app/Contents/MacOS/Chromium",
+			"/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+		}
+	case "windows":
+		programFiles := os.Getenv("ProgramFiles")
+		programFilesX86 := os.Getenv("ProgramFiles(x86)")
+		localAppData := os.Getenv("LOCALAPPDATA")
+		candidates = []string{
+			filepath.Join(programFiles, "Google", "Chrome", "Application", "chrome.exe"),
+			filepath.Join(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
+			filepath.Join(localAppData, "Google", "Chrome", "Application", "chrome.exe"),
+		}
+	default:
+		// Linux
+		candidates = []string{
+			"google-chrome",
+			"google-chrome-stable",
+			"chromium",
+			"chromium-browser",
+		}
 	}
-	for _, bin := range binaries {
-		if path, err := exec.LookPath(bin); err == nil {
+
+	for _, c := range candidates {
+		if path, err := exec.LookPath(c); err == nil {
 			return path, nil
 		}
-	}
-
-	standardPaths := []string{
-		"/usr/bin/google-chrome",
-		"/usr/bin/google-chrome-stable",
-		"/usr/bin/chromium",
-		"/usr/bin/chromium-browser",
-		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-		"/Applications/Chromium.app/Contents/MacOS/Chromium",
-	}
-	for _, path := range standardPaths {
-		if _, err := os.Stat(path); err == nil {
-			return path, nil
+		if _, err := os.Stat(c); err == nil {
+			return c, nil
 		}
 	}
 
-	return "", errors.New("chrome executable not found")
+	return "", errors.New("google chrome executable not found; install Chrome or set TETHER_CHROME_PATH")
 }
 
-// BuildChromeArgs constructs the command-line arguments for Chrome.
-func BuildChromeArgs(cfg LauncherConfig, profileDir string) []string {
-	args := []string{
-		"--remote-debugging-port=0",
-		fmt.Sprintf("--user-data-dir=%s", profileDir),
-		"--disable-blink-features=AutomationControlled",
-		"--no-first-run",
-		"--no-default-browser-check",
-	}
-
-	if cfg.ProxyPort > 0 {
-		args = append(args,
-			fmt.Sprintf("--proxy-server=http://127.0.0.1:%d", cfg.ProxyPort),
-			"--proxy-bypass-list=<-loopback>",
-		)
-	}
-
-	if cfg.Headless {
-		args = append(args, "--headless=new")
-	}
-
-	args = append(args, cfg.ExtraArgs...)
-	return args
-}
-
-// ParseDevToolsActivePort reads port and websocket path from a DevToolsActivePort file.
-func ParseDevToolsActivePort(filePath string) (int, string, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return 0, "", err
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	if !scanner.Scan() {
-		return 0, "", errors.New("empty DevToolsActivePort file")
-	}
-	line1 := strings.TrimSpace(scanner.Text())
-	port, err := strconv.Atoi(line1)
-	if err != nil {
-		return 0, "", fmt.Errorf("invalid port in DevToolsActivePort: %w", err)
-	}
-
-	wsPath := ""
-	if scanner.Scan() {
-		wsPath = strings.TrimSpace(scanner.Text())
-	}
-
-	return port, wsPath, nil
-}
-
-// WaitForDevToolsActivePort polls for the DevToolsActivePort file until ready or timeout.
-func WaitForDevToolsActivePort(ctx context.Context, filePath string, timeout time.Duration) (int, string, error) {
-	deadline := time.Now().Add(timeout)
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return 0, "", ctx.Err()
-		case <-ticker.C:
-			if _, err := os.Stat(filePath); err == nil {
-				port, wsPath, err := ParseDevToolsActivePort(filePath)
-				if err == nil && port > 0 {
-					return port, wsPath, nil
-				}
-			}
-			if time.Now().After(deadline) {
-				return 0, "", fmt.Errorf("timeout waiting for %s", filePath)
-			}
-		}
-	}
-}
-
-// LaunchChrome starts Chrome with configured flags and reads the assigned debugging port.
-func LaunchChrome(ctx context.Context, cfg LauncherConfig) (*ChromeProcess, error) {
-	execPath := cfg.ExecPath
-	if execPath == "" {
-		found, err := FindChromeExecutable()
-		if err != nil {
-			return nil, err
-		}
-		execPath = found
-	}
-
-	profileDir, err := ResolveProfileDir(cfg.WorkspaceID)
+// LaunchChrome launches an isolated Chrome instance configured for Mode A proxying.
+func LaunchChrome(ctx context.Context, workspaceID string, proxyPort int) (*ChromeProcess, error) {
+	profileDir, err := GetProfileDir(workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -184,78 +129,97 @@ func LaunchChrome(ctx context.Context, cfg LauncherConfig) (*ChromeProcess, erro
 		return nil, fmt.Errorf("create profile directory: %w", err)
 	}
 
+	// Clean up any stale DevToolsActivePort file from previous crashes
 	activePortFile := filepath.Join(profileDir, "DevToolsActivePort")
 	_ = os.Remove(activePortFile)
 
-	args := BuildChromeArgs(cfg, profileDir)
-	cmd := exec.Command(execPath, args...)
+	chromePath, err := FindChromeExecutable()
+	if err != nil {
+		return nil, err
+	}
 
+	args := []string{
+		"--user-data-dir=" + profileDir,
+		"--remote-debugging-port=0", // Ephemeral port allocation
+		"--no-first-run",
+		"--no-default-browser-check",
+		"--disable-blink-features=AutomationControlled",
+		"--new-window",
+		"about:blank",
+	}
+
+	if proxyPort > 0 {
+		args = append(args,
+			fmt.Sprintf("--proxy-server=http://127.0.0.1:%d", proxyPort),
+			`--proxy-bypass-list=<-loopback>`,
+		)
+	}
+
+	cmd := exec.CommandContext(ctx, chromePath, args...)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start chrome process: %w", err)
 	}
 
-	proc := &ChromeProcess{
-		cmd:        cmd,
-		profileDir: profileDir,
-	}
-
-	port, wsPath, err := WaitForDevToolsActivePort(ctx, activePortFile, 15*time.Second)
+	// Poll for DevToolsActivePort to discover the allocated ephemeral port
+	cdpPort, err := waitForActivePort(profileDir, 10*time.Second)
 	if err != nil {
-		_ = proc.Close()
-		return nil, fmt.Errorf("detect allocated port: %w", err)
+		_ = cmd.Process.Kill()
+		return nil, fmt.Errorf("wait for devtools active port: %w", err)
 	}
 
-	proc.port = port
-	proc.wsPath = wsPath
-	proc.wsURL = fmt.Sprintf("ws://127.0.0.1:%d%s", port, wsPath)
-	return proc, nil
+	return &ChromeProcess{
+		Cmd:        cmd,
+		ProfileDir: profileDir,
+		CDPPort:    cdpPort,
+		ProxyPort:  proxyPort,
+	}, nil
 }
 
-// Port returns the allocated ephemeral debugging port.
-func (cp *ChromeProcess) Port() int {
-	cp.mu.Lock()
-	defer cp.mu.Unlock()
-	return cp.port
-}
-
-// WebSocketURL returns the browser WebSocket debugging URL.
-func (cp *ChromeProcess) WebSocketURL() string {
-	cp.mu.Lock()
-	defer cp.mu.Unlock()
-	return cp.wsURL
-}
-
-// ProfileDir returns the profile directory path.
-func (cp *ChromeProcess) ProfileDir() string {
-	cp.mu.Lock()
-	defer cp.mu.Unlock()
-	return cp.profileDir
-}
-
-// Close terminates only the launched Chrome process.
+// Close gracefully terminates the Chrome process owned by Tether.
 func (cp *ChromeProcess) Close() error {
-	cp.mu.Lock()
-	defer cp.mu.Unlock()
-
-	if cp.cmd == nil || cp.cmd.Process == nil {
+	if cp == nil || cp.Cmd == nil || cp.Cmd.Process == nil {
 		return nil
 	}
-
-	// Request clean termination
-	_ = cp.cmd.Process.Signal(os.Interrupt)
+	// Try graceful termination first
+	if err := cp.Cmd.Process.Signal(os.Interrupt); err != nil {
+		_ = cp.Cmd.Process.Kill()
+	}
 
 	done := make(chan error, 1)
 	go func() {
-		done <- cp.cmd.Wait()
+		done <- cp.Cmd.Wait()
 	}()
 
 	select {
-	case <-time.After(2 * time.Second):
-		_ = cp.cmd.Process.Kill()
-		<-done
 	case <-done:
+		return nil
+	case <-time.After(2 * time.Second):
+		return cp.Cmd.Process.Kill()
+	}
+}
+
+func waitForActivePort(profileDir string, timeout time.Duration) (int, error) {
+	deadline := time.Now().Add(timeout)
+	activePortFile := filepath.Join(profileDir, "DevToolsActivePort")
+
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(activePortFile)
+		if err == nil && len(data) > 0 {
+			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+			if len(lines) >= 1 {
+				portStr := strings.TrimSpace(lines[0])
+				if port, err := strconv.Atoi(portStr); err == nil && port > 0 {
+					// Verify port is accepting TCP connections
+					conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
+					if err == nil {
+						conn.Close()
+						return port, nil
+					}
+				}
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 
-	cp.cmd = nil
-	return nil
+	return 0, fmt.Errorf("timed out after %v waiting for %s", timeout, activePortFile)
 }

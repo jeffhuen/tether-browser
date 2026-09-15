@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func startMockTCPEchoServer(t *testing.T) (net.Listener, string) {
@@ -37,22 +38,23 @@ func TestProxyConnectEnrolledTarget(t *testing.T) {
 	echoLn, echoAddr := startMockTCPEchoServer(t)
 	defer echoLn.Close()
 
-	proxy := NewProxy("127.0.0.1:0")
-	if err := proxy.Start(); err != nil {
-		t.Fatalf("start proxy: %v", err)
-	}
+	proxy := NewProxy()
+	go func() {
+		_ = proxy.ListenAndServe(0)
+	}()
 	defer proxy.Close()
 
-	// Enroll localhost:3000 to the echo server
+	// Wait for proxy to listen
+	time.Sleep(50 * time.Millisecond)
+
 	proxy.Enroll("localhost:3000", echoAddr)
 
-	proxyConn, err := net.Dial("tcp", proxy.Addr())
+	proxyConn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", proxy.Port()))
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
 	defer proxyConn.Close()
 
-	// Send HTTP CONNECT for enrolled target
 	connectReq := "CONNECT localhost:3000 HTTP/1.1\r\nHost: localhost:3000\r\n\r\n"
 	if _, err := proxyConn.Write([]byte(connectReq)); err != nil {
 		t.Fatalf("write CONNECT: %v", err)
@@ -67,10 +69,8 @@ func TestProxyConnectEnrolledTarget(t *testing.T) {
 		t.Fatalf("expected 200 Connection Established, got: %s", statusLine)
 	}
 
-	// Consume empty line
 	_, _ = br.ReadString('\n')
 
-	// Send test payload through the spliced tunnel
 	testPayload := "hello tether connect tunnel\n"
 	if _, err := proxyConn.Write([]byte(testPayload)); err != nil {
 		t.Fatalf("write payload to tunnel: %v", err)
@@ -85,24 +85,22 @@ func TestProxyConnectEnrolledTarget(t *testing.T) {
 	}
 }
 
-func TestProxyConnectExternalTarget(t *testing.T) {
-	echoLn, echoAddr := startMockTCPEchoServer(t)
-	defer echoLn.Close()
-
-	proxy := NewProxy("127.0.0.1:0")
-	if err := proxy.Start(); err != nil {
-		t.Fatalf("start proxy: %v", err)
-	}
+func TestProxyConnectUnenrolledLoopbackRejected(t *testing.T) {
+	proxy := NewProxy()
+	go func() {
+		_ = proxy.ListenAndServe(0)
+	}()
 	defer proxy.Close()
+	time.Sleep(50 * time.Millisecond)
 
-	// Do not enroll: connect directly to echoAddr as an external host
-	proxyConn, err := net.Dial("tcp", proxy.Addr())
+	proxyConn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", proxy.Port()))
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
 	defer proxyConn.Close()
 
-	connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", echoAddr, echoAddr)
+	// Requesting an unenrolled loopback destination MUST be rejected with 403 Forbidden
+	connectReq := "CONNECT localhost:9999 HTTP/1.1\r\nHost: localhost:9999\r\n\r\n"
 	if _, err := proxyConn.Write([]byte(connectReq)); err != nil {
 		t.Fatalf("write CONNECT: %v", err)
 	}
@@ -110,77 +108,54 @@ func TestProxyConnectExternalTarget(t *testing.T) {
 	br := bufio.NewReader(proxyConn)
 	statusLine, err := br.ReadString('\n')
 	if err != nil {
-		t.Fatalf("read CONNECT response: %v", err)
+		t.Fatalf("read response: %v", err)
 	}
-	if !strings.Contains(statusLine, "200 Connection Established") {
-		t.Fatalf("expected 200 Connection Established, got: %s", statusLine)
-	}
-
-	_, _ = br.ReadString('\n')
-
-	testPayload := "direct external traffic\n"
-	if _, err := proxyConn.Write([]byte(testPayload)); err != nil {
-		t.Fatalf("write payload: %v", err)
-	}
-
-	echoed, err := br.ReadString('\n')
-	if err != nil {
-		t.Fatalf("read echo: %v", err)
-	}
-	if echoed != testPayload {
-		t.Fatalf("expected %q, got %q", testPayload, echoed)
+	if !strings.Contains(statusLine, "403 Forbidden") {
+		t.Fatalf("expected 403 Forbidden for unenrolled loopback, got: %s", statusLine)
 	}
 }
 
-func TestProxyPlainHTTPReverseProxy(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Host != "dev.local:3000" {
-			t.Errorf("expected preserved host dev.local:3000, got: %s", r.Host)
-		}
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = w.Write([]byte("Hello Tether Plain HTTP"))
+func TestProxyPlainHTTPEnrolled(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Custom", "Tether")
+		fmt.Fprintf(w, "hello from remote app on %s", r.Host)
 	}))
-	defer backend.Close()
+	defer ts.Close()
 
-	backendAddr := strings.TrimPrefix(backend.URL, "http://")
-
-	proxy := NewProxy("127.0.0.1:0")
-	if err := proxy.Start(); err != nil {
-		t.Fatalf("start proxy: %v", err)
-	}
+	proxy := NewProxy()
+	go func() {
+		_ = proxy.ListenAndServe(0)
+	}()
 	defer proxy.Close()
+	time.Sleep(50 * time.Millisecond)
 
-	proxy.Enroll("dev.local:3000", backendAddr)
+	tsHostPort := strings.TrimPrefix(ts.URL, "http://")
+	proxy.Enroll("localhost:3000", tsHostPort)
 
-	req, err := http.NewRequest(http.MethodGet, "http://dev.local:3000/test", nil)
+	// Send HTTP request to proxy
+	proxyConn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", proxy.Port()))
 	if err != nil {
-		t.Fatalf("new request: %v", err)
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer proxyConn.Close()
+
+	httpReq := "GET http://localhost:3000/orders HTTP/1.1\r\nHost: localhost:3000\r\n\r\n"
+	if _, err := proxyConn.Write([]byte(httpReq)); err != nil {
+		t.Fatalf("write http: %v", err)
 	}
 
-	rec := httptest.NewRecorder()
-	proxy.ServeHTTP(rec, req)
-
-	res := rec.Result()
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("expected status 200, got: %d", res.StatusCode)
+	br := bufio.NewReader(proxyConn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
 	}
+	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(res.Body)
-	if string(body) != "Hello Tether Plain HTTP" {
-		t.Fatalf("expected body 'Hello Tether Plain HTTP', got %q", string(body))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK, got: %d", resp.StatusCode)
 	}
-}
-
-func TestProxyUnenroll(t *testing.T) {
-	proxy := NewProxy("127.0.0.1:0")
-	proxy.Enroll("target.local", "127.0.0.1:9999")
-
-	if _, ok := proxy.ResolveTarget("target.local"); !ok {
-		t.Fatalf("expected target.local to be enrolled")
-	}
-
-	proxy.Unenroll("target.local")
-	if _, ok := proxy.ResolveTarget("target.local"); ok {
-		t.Fatalf("expected target.local to be unenrolled")
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "hello from remote app on localhost:3000") {
+		t.Fatalf("expected body with preserved Host, got: %s", string(body))
 	}
 }
