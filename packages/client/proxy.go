@@ -132,27 +132,48 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	p.handlePlainHTTP(w, req)
 }
 
-func isLoopbackDestination(hostPort string) bool {
+func resolveAndValidateDestination(hostPort string) (string, error) {
 	host := hostPort
-	if h, _, err := net.SplitHostPort(hostPort); err == nil {
+	port := ""
+	if h, prt, err := net.SplitHostPort(hostPort); err == nil {
 		host = h
+		port = prt
 	}
-	hLower := strings.ToLower(host)
+
+	// Normalize bracketed IPv6 hosts (e.g. "[::1]")
+	hostClean := strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+
+	hLower := strings.ToLower(hostClean)
 	if hLower == "localhost" || strings.HasSuffix(hLower, ".localhost") {
-		return true
+		return "", ErrUnenrolledLoopback
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		return ip.IsLoopback()
+
+	if ip := net.ParseIP(hostClean); ip != nil {
+		if ip.IsLoopback() {
+			return "", ErrUnenrolledLoopback
+		}
+		if port != "" {
+			return net.JoinHostPort(ip.String(), port), nil
+		}
+		return ip.String(), nil
 	}
-	// Check if DNS resolves to loopback
-	if ips, err := net.LookupIP(host); err == nil {
-		for _, ip := range ips {
-			if ip.IsLoopback() {
-				return true
-			}
+
+	ips, err := net.LookupIP(hostClean)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", hostClean, err)
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() {
+			return "", ErrUnenrolledLoopback
 		}
 	}
-	return false
+
+	// Use first validated IP to eliminate DNS rebinding
+	validatedIP := ips[0].String()
+	if port != "" {
+		return net.JoinHostPort(validatedIP, port), nil
+	}
+	return validatedIP, nil
 }
 
 // handleConnect splices TCP sockets for HTTPS and WebSockets.
@@ -164,11 +185,16 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, req *http.Request) {
 
 	destAddr, enrolled := p.ResolveTarget(host)
 	if !enrolled {
-		if isLoopbackDestination(host) {
-			http.Error(w, fmt.Sprintf("unenrolled loopback destination rejected: %s", host), http.StatusForbidden)
+		validated, err := resolveAndValidateDestination(host)
+		if err != nil {
+			if errors.Is(err, ErrUnenrolledLoopback) {
+				http.Error(w, fmt.Sprintf("unenrolled loopback destination rejected: %s", host), http.StatusForbidden)
+				return
+			}
+			http.Error(w, fmt.Sprintf("resolve %s failed: %v", host, err), http.StatusBadGateway)
 			return
 		}
-		destAddr = host
+		destAddr = validated
 	}
 
 	targetConn, err := net.DialTimeout("tcp", destAddr, p.dialTimeout)
@@ -225,11 +251,16 @@ func (p *Proxy) handlePlainHTTP(w http.ResponseWriter, req *http.Request) {
 
 	destAddr, enrolled := p.ResolveTarget(host)
 	if !enrolled {
-		if isLoopbackDestination(host) {
-			http.Error(w, fmt.Sprintf("unenrolled loopback destination rejected: %s", host), http.StatusForbidden)
+		validated, err := resolveAndValidateDestination(host)
+		if err != nil {
+			if errors.Is(err, ErrUnenrolledLoopback) {
+				http.Error(w, fmt.Sprintf("unenrolled loopback destination rejected: %s", host), http.StatusForbidden)
+				return
+			}
+			http.Error(w, fmt.Sprintf("resolve %s failed: %v", host, err), http.StatusBadGateway)
 			return
 		}
-		destAddr = host
+		destAddr = validated
 	}
 
 	targetURL, err := url.Parse(fmt.Sprintf("http://%s", destAddr))
