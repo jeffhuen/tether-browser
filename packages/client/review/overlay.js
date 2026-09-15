@@ -691,23 +691,6 @@
         }
       });
 
-      host.addEventListener('click', (e) => {
-        if (!this.active) return;
-        e.preventDefault();
-        e.stopPropagation();
-
-        if (this.modalOpen) {
-          this.closeModal();
-          return;
-        }
-        const target = this.getElementUnderPointer(e.clientX, e.clientY);
-        if (!target) return;
-
-        this.selectedEl = target;
-        this.pendingPayload = extractPayload(target);
-        this.openModal(e.clientX, e.clientY);
-      });
-
       (document.body || document.documentElement).appendChild(host);
       this.host = host;
       this.shadowRoot = shadow;
@@ -830,9 +813,26 @@
       }
     }
 
+    isPointInModal(x, y) {
+      if (!this.modalOpen || !this.modal) return false;
+      const r = this.modal.getBoundingClientRect();
+      return (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom);
+    }
+
+    findBadgeAtPoint(x, y) {
+      for (const entry of this.markerElements.values()) {
+        if (!entry || !entry.element) continue;
+        const r = entry.element.getBoundingClientRect();
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+          return entry.note;
+        }
+      }
+      return null;
+    }
+
     onClick(e) {
       if (!this.active) return;
-      if (e.target === this.host || (this.host && this.host.contains(e.target))) {
+      if (this.isPointInModal(e.clientX, e.clientY)) {
         return;
       }
 
@@ -840,12 +840,20 @@
       e.stopPropagation();
       e.stopImmediatePropagation();
 
+      const hitNote = this.findBadgeAtPoint(e.clientX, e.clientY);
+      if (hitNote) {
+        this.openExistingModal(hitNote);
+        return;
+      }
+
       if (this.modalOpen) {
         this.closeModal();
         return;
       }
 
-      const target = e.target;
+      const target = (e.target && e.target !== this.host && e.target !== document.documentElement && e.target !== document.body)
+        ? e.target
+        : this.getElementUnderPointer(e.clientX, e.clientY);
       if (!target || target === document.documentElement || target === document.body) return;
 
       this.selectedEl = target;
