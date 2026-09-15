@@ -32,7 +32,7 @@ type WSConn struct {
 	conn    net.Conn
 	reader  *bufio.Reader
 	writeMu sync.Mutex
-	closed  bool
+	closed  atomic.Bool
 }
 
 // DialWebSocket connects to a WebSocket server with context deadline support.
@@ -135,10 +135,14 @@ func (ws *WSConn) WriteTextMessage(text []byte) error {
 }
 
 func (ws *WSConn) writeFrame(opcode byte, data []byte) error {
+	if ws.closed.Load() {
+		return errors.New("connection closed")
+	}
+
 	ws.writeMu.Lock()
 	defer ws.writeMu.Unlock()
 
-	if ws.closed {
+	if ws.closed.Load() {
 		return errors.New("connection closed")
 	}
 
@@ -261,6 +265,9 @@ func (ws *WSConn) ReadMessage() (int, []byte, error) {
 }
 
 func (ws *WSConn) writeControl(opcode byte, data []byte) {
+	if ws.closed.Load() {
+		return
+	}
 	ws.writeMu.Lock()
 	defer ws.writeMu.Unlock()
 
@@ -278,14 +285,11 @@ func (ws *WSConn) writeControl(opcode byte, data []byte) {
 	_, _ = ws.conn.Write(masked)
 }
 
-// Close terminates the WebSocket connection.
+// Close terminates the WebSocket connection immediately without waiting for write lock.
 func (ws *WSConn) Close() error {
-	ws.writeMu.Lock()
-	defer ws.writeMu.Unlock()
-	if ws.closed {
+	if ws.closed.Swap(true) {
 		return nil
 	}
-	ws.closed = true
 	return ws.conn.Close()
 }
 
