@@ -93,7 +93,9 @@ func (b *Broker) Run(ctx context.Context) error {
 		_ = os.Chmod(dir, 0700)
 	}
 
+	oldUmask := setRestrictiveUmask()
 	listener, err := net.Listen("unix", b.socketPath)
+	restoreUmask(oldUmask)
 	if err != nil {
 		return fmt.Errorf("listen on unix socket %s: %w", b.socketPath, err)
 	}

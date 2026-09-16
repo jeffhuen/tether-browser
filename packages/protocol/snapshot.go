@@ -108,7 +108,7 @@ func FormatCompactText(nodes []*AXNode, indent int) string {
 		if n.Ref != "" {
 			sb.WriteString(fmt.Sprintf("[%s] ", n.Ref))
 		}
-		sb.WriteString(n.Role)
+		sb.WriteString(escapeAXField(n.Role))
 		if n.Name != "" {
 			sb.WriteString(fmt.Sprintf(" %q", n.Name))
 		}
@@ -116,7 +116,7 @@ func FormatCompactText(nodes []*AXNode, indent int) string {
 			sb.WriteString(fmt.Sprintf(" value=%q", n.Value))
 		}
 		if n.Checked != "" {
-			sb.WriteString(fmt.Sprintf(" checked=%s", n.Checked))
+			sb.WriteString(fmt.Sprintf(" checked=%s", escapeAXField(n.Checked)))
 		}
 		if n.Disabled {
 			sb.WriteString(" (disabled)")
@@ -137,4 +137,22 @@ func FormatCompactText(nodes []*AXNode, indent int) string {
 		}
 	}
 	return sb.String()
+}
+
+// escapeAXField strips newlines, tabs, and control characters from page-controlled
+// fields so an attacker cannot forge tree rows in compact text representations.
+func escapeAXField(s string) string {
+	if strings.IndexFunc(s, func(r rune) bool { return r < 0x20 }) == -1 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '\r' || r == '\n' || r == '\t' || r < 0x20 {
+			b.WriteByte(' ')
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
 }

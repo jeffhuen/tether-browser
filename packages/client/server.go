@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -161,11 +162,12 @@ func (s *Server) handleConn(conn net.Conn) {
 			if uncompressedLen > protocol.MaxFramePayload {
 				return
 			}
-			payload := make([]byte, uncompressedLen)
-			if _, err := io.ReadFull(br, payload); err != nil {
+			var buf bytes.Buffer
+			buf.Write(header)
+			if _, err := io.CopyN(&buf, br, int64(uncompressedLen)); err != nil {
 				return
 			}
-			framed := append(header, payload...)
+			framed := buf.Bytes()
 			decompressed, err := protocol.DecompressPayload(framed)
 			if err != nil {
 				return
@@ -198,12 +200,12 @@ func (s *Server) handleConn(conn net.Conn) {
 				return
 			}
 
-			payload := make([]byte, compressedLen)
-			if _, err := io.ReadFull(br, payload); err != nil {
+			var buf bytes.Buffer
+			buf.Write(header)
+			if _, err := io.CopyN(&buf, br, int64(compressedLen)); err != nil {
 				return
 			}
-
-			framed := append(header, payload...)
+			framed := buf.Bytes()
 			decompressed, err := protocol.DecompressPayload(framed)
 			if err != nil {
 				return

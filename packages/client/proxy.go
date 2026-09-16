@@ -143,11 +143,15 @@ func isRestrictedIP(ip net.IP) bool {
 	if ip == nil {
 		return true
 	}
-	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate() {
 		return true
 	}
 	if v4 := ip.To4(); v4 != nil {
-		if v4.IsLoopback() || v4.IsUnspecified() || v4.IsMulticast() || v4.IsLinkLocalUnicast() || v4.IsLinkLocalMulticast() {
+		if v4.IsLoopback() || v4.IsUnspecified() || v4.IsMulticast() || v4.IsLinkLocalUnicast() || v4.IsLinkLocalMulticast() || v4.IsPrivate() {
+			return true
+		}
+		// CGNAT / Shared Address Space: 100.64.0.0/10 (covers Tailscale mesh IPs)
+		if v4[0] == 100 && (v4[1]&0xC0) == 64 {
 			return true
 		}
 	}
@@ -319,11 +323,15 @@ func setTCPNoDelay(conn net.Conn, noDelay bool) {
 }
 
 func spliceSockets(c1, c2 net.Conn) {
+	var once sync.Once
+	shut := func() { once.Do(func() { _ = c1.Close(); _ = c2.Close() }) }
+	defer shut()
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	copyHalf := func(dst, src net.Conn) {
 		defer wg.Done()
+		defer shut()
 		_, _ = io.Copy(dst, src)
 		if tc, ok := dst.(*net.TCPConn); ok {
 			_ = tc.CloseWrite()
@@ -334,6 +342,4 @@ func spliceSockets(c1, c2 net.Conn) {
 	go copyHalf(c2, c1)
 
 	wg.Wait()
-	_ = c1.Close()
-	_ = c2.Close()
 }

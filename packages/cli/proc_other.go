@@ -1,12 +1,12 @@
-//go:build !linux && !windows
+//go:build !linux && !darwin && !windows
 
 package cli
 
 import (
+	"fmt"
 	"net"
 )
 
 func verifyPeerCredentials(conn net.Conn) error {
-	// Socket permissions (0600) and directory permissions (0700) protect Unix domain sockets on macOS/BSD.
-	return nil
+	return fmt.Errorf("peer credential verification unsupported on this platform")
 }

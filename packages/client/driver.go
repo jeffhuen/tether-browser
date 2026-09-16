@@ -76,6 +76,10 @@ func (d *CDPDriver) OpenTab(ctx context.Context, params protocol.OpenParams) (*p
 	if params.URL == "" {
 		return nil, errors.New("url cannot be empty")
 	}
+	parsedURL, err := url.Parse(params.URL)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https" && params.URL != "about:blank") {
+		return nil, fmt.Errorf("invalid URL scheme %q: only http, https, and about:blank are allowed", parsedURL.Scheme)
+	}
 
 	endpoint := fmt.Sprintf("%s/json/new?%s", d.browserURL, url.QueryEscape(params.URL))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, nil)
