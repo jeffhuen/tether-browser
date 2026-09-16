@@ -818,7 +818,16 @@
       this.summary = summary;
       summary.addEventListener('click', (e) => { e.stopPropagation(); });
       summary.querySelector('#summary-copy').addEventListener('click', () => this.copyAll());
-      (document.body || document.documentElement).appendChild(host);
+      const mount = () => {
+        if (host.isConnected) return;
+        const parent = document.body || document.documentElement;
+        if (parent) {
+          parent.appendChild(host);
+        } else {
+          setTimeout(mount, 20);
+        }
+      };
+      mount();
       this.host = host;
       this.shadowRoot = shadow;
 
@@ -827,6 +836,7 @@
 
     start(armed = true) {
       this.active = true;
+      try { window.sessionStorage.removeItem('tether-review-off'); } catch (e) {}
       this.ensureOverlay();
       if (this.modalOpen) this.closeModal();
       this.markerElements.forEach(entry => {
@@ -910,6 +920,7 @@
 
     stop() {
       this.active = false;
+      try { window.sessionStorage.setItem('tether-review-off', '1'); } catch (e) {}
       this.setArmed(false);
       if (this.dock) this.dock.style.display = 'none';
       if (this.summary) this.summary.style.display = 'none';

@@ -127,6 +127,9 @@ func (d *CDPDriver) OpenTab(ctx context.Context, params protocol.OpenParams) (*p
 
 	// Always-on review bar: arm the session chrome passively so the dock and
 	// markers are present without intercepting automation. Best-effort only.
+	// EnsureAutoReview re-arms on every future navigation; StartPassive covers
+	// the already-committed document.
+	_ = (&ReviewController{}).EnsureAutoReview(ctx, client)
 	_ = (&ReviewController{}).StartPassive(ctx, client)
 	return &protocol.OpenResult{
 		TargetID: targetID,
