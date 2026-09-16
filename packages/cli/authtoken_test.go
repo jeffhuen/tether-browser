@@ -2,7 +2,9 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -80,5 +82,38 @@ func TestEnsureDaemonTokenPersists(t *testing.T) {
 	t.Setenv("TETHER_AUTH_TOKEN", "explicit-override")
 	if got, _ := EnsureDaemonToken(); got != "explicit-override" {
 		t.Fatalf("expected env override, got %q", got)
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	cases := map[string]string{
+		"":                "''",
+		"plain-token-123": "'plain-token-123'",
+		"with space":      "'with space'",
+		"it's":            "'it'\\''s'",
+		"a$b`c\"d":        "'a$b`c\"d'",
+		"line1\nline2":    "'line1\nline2'",
+		"-leading-dash":   "'-leading-dash'",
+		"100%":            "'100%'",
+	}
+	for in, want := range cases {
+		if got := ShellQuote(in); got != want {
+			t.Errorf("ShellQuote(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// Roundtrip through a real POSIX shell: printf %s must echo the input back.
+	// (Newlines excluded: printf %s passes them through literally by design,
+	// and real tokens never contain them; single-quote wrapping is still pinned above.)
+	for in := range cases {
+		if in == "" || strings.Contains(in, "\n") {
+			continue
+		}
+		out, err := exec.Command("sh", "-c", "printf %s "+ShellQuote(in)).Output()
+		if err != nil {
+			t.Fatalf("shell roundtrip %q: %v", in, err)
+		}
+		if string(out) != in {
+			t.Errorf("shell roundtrip %q = %q", in, string(out))
+		}
 	}
 }
