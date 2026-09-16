@@ -154,46 +154,7 @@ func (m *e2eMockDriver) StartReview(ctx context.Context, p protocol.ReviewParams
 func (m *e2eMockDriver) GetReviewNotes(ctx context.Context, p protocol.ReviewParams) ([]*protocol.ReviewNote, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(m.reviewNotes) > 0 {
-		return m.reviewNotes, nil
-	}
-	return []*protocol.ReviewNote{
-		{
-			ID:        "note-1",
-			Index:     1,
-			Intent:    "design_fix",
-			Comment:   "Button padding too small on mobile.",
-			CreatedAt: time.Now(),
-			Payload: &protocol.ReviewPayload{
-				Page: protocol.PageInfo{
-					SanitizedURL:   "http://localhost:3000/checkout",
-					Title:          "Checkout",
-					ViewportWidth:  1440,
-					ViewportHeight: 900,
-				},
-				Target: protocol.TargetInfo{
-					TagName:        "button",
-					Role:           "button",
-					AccessibleName: "Checkout",
-					Selector:       "button.primary-btn",
-					ElementPath:    "main > form > button.primary-btn",
-					TextSnippet:    "Checkout",
-					CSSClasses:     "btn primary-btn",
-					RectViewport:   protocol.Rect{X: 100, Y: 200, Width: 180, Height: 48},
-					ComputedStyles: map[string]string{
-						"display":          "flex",
-						"background-color": "rgb(37, 99, 235)",
-					},
-					Framework: protocol.FrameworkInfo{
-						Name:           "Elixir Phoenix LiveView",
-						Component:      "OrderLive",
-						SourceLocation: "lib/web/live/order_live.html.heex:42",
-						Provenance:     "exact",
-					},
-				},
-			},
-		},
-	}, nil
+	return m.reviewNotes, nil
 }
 
 func (m *e2eMockDriver) ClearReview(ctx context.Context, p protocol.ReviewParams) error {
@@ -208,7 +169,45 @@ func TestEndToEndCLIAutomationCycle(t *testing.T) {
 	testSocket := filepath.Join(t.TempDir(), "test-e2e-broker.sock")
 	t.Setenv("TETHER_BROKER_SOCKET", testSocket)
 
-	driver := &e2eMockDriver{}
+	driver := &e2eMockDriver{
+		reviewNotes: []*protocol.ReviewNote{
+			{
+				ID:        "note-1",
+				Index:     1,
+				Intent:    "design_fix",
+				Comment:   "Button padding too small on mobile.",
+				CreatedAt: time.Now(),
+				Payload: &protocol.ReviewPayload{
+					Page: protocol.PageInfo{
+						SanitizedURL:   "http://localhost:3000/checkout",
+						Title:          "Checkout",
+						ViewportWidth:  1440,
+						ViewportHeight: 900,
+					},
+					Target: protocol.TargetInfo{
+						TagName:        "button",
+						Role:           "button",
+						AccessibleName: "Checkout",
+						Selector:       "button.primary-btn",
+						ElementPath:    "main > form > button.primary-btn",
+						TextSnippet:    "Checkout",
+						CSSClasses:     "btn primary-btn",
+						RectViewport:   protocol.Rect{X: 100, Y: 200, Width: 180, Height: 48},
+						ComputedStyles: map[string]string{
+							"display":          "flex",
+							"background-color": "rgb(37, 99, 235)",
+						},
+						Framework: protocol.FrameworkInfo{
+							Name:           "Elixir Phoenix LiveView",
+							Component:      "OrderLive",
+							SourceLocation: "lib/web/live/order_live.html.heex:42",
+							Provenance:     "exact",
+						},
+					},
+				},
+			},
+		},
+	}
 	server := client.NewServer(driver)
 
 	go func() {
@@ -301,6 +300,16 @@ func TestEndToEndCLIAutomationCycle(t *testing.T) {
 		t.Errorf("expected review report to include framework and source, got:\n%s", out)
 	}
 
+	// 11. Review Clear
+	out, errOut, code = runCLI("review", "clear")
+	if code != 0 || !strings.Contains(out, "cleared") {
+		t.Fatalf("review clear failed (code %d, stderr: %s): %s", code, errOut, out)
+	}
+
+	out, errOut, code = runCLI("review", "list")
+	if code != 0 || !strings.Contains(out, "No active review notes") {
+		t.Fatalf("expected no active review notes after clear, got: %s", out)
+	}
 	// 11. Screenshot
 	tmpDir := t.TempDir()
 	shotPath := filepath.Join(tmpDir, "screen.png")
