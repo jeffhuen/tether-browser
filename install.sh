@@ -4,13 +4,13 @@
 
 set -euo pipefail
 REPO="jeffhuen/tether-browser"
-VERSION="0.1.4"
-
+VERSION="0.1.5"
 # Color helpers
 if [ -t 1 ]; then
+    BOLD="\033[1m"
+    GREEN="\033[32m"
     CYAN="\033[36m"
     RED="\033[31m"
-    RESET="\033[0m"
 else
     BOLD=""
     GREEN=""
