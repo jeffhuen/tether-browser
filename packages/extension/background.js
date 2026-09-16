@@ -208,6 +208,59 @@ chrome.debugger.onDetach.addListener((source) => {
   elementRefsByTab.delete(source.tabId);
 });
 
+function resolveTargetTabId(params = {}) {
+  const raw = params.targetId || params.tabId;
+  if (raw !== undefined && raw !== null && raw !== "") {
+    const parsed = parseInt(raw, 10);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return activeTabId;
+}
+
+async function getLiveTabs() {
+  let tabs = [];
+  if (tabGroupId !== null) {
+    try {
+      tabs = await chrome.tabs.query({ groupId: tabGroupId });
+    } catch {}
+  }
+  if (tabs.length === 0) {
+    try {
+      tabs = await chrome.tabs.query({ currentWindow: true });
+    } catch {}
+  }
+  for (const t of tabs) {
+    tabGroupTabs.add(t.id);
+  }
+  return tabs;
+}
+
+// Track user tab switching in Chrome
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  activeTabId = activeInfo.tabId;
+  tabGroupTabs.add(activeInfo.tabId);
+});
+
+// Track user navigation, redirects, and title updates
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (tabGroupId !== null && tab.groupId === tabGroupId) {
+    tabGroupTabs.add(tabId);
+  }
+});
+
+// Track popups and links with target="_blank"
+chrome.tabs.onCreated.addListener(async (tab) => {
+  if (tab.openerTabId && tabGroupTabs.has(tab.openerTabId)) {
+    if (tabGroupId !== null) {
+      try {
+        await chrome.tabs.group({ tabIds: [tab.id], groupId: tabGroupId });
+      } catch {}
+    }
+    tabGroupTabs.add(tab.id);
+    activeTabId = tab.id;
+  }
+});
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabGroupTabs.delete(tabId);
   attachedTabs.delete(tabId);
@@ -220,31 +273,34 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 // --- Action Implementations ---
 
-async function handleOpen(params) {
+async function handleOpen(params = {}) {
   const url = params.url || "about:blank";
   await ensureTabGroup(true);
 
-  let targetTabId = params.tabId || activeTabId;
+  let targetTabId = resolveTargetTabId(params);
   if (!targetTabId || !tabGroupTabs.has(targetTabId)) {
     // Create new tab in group
-    const tab = await chrome.tabs.create({ url, active: false });
+    const tab = await chrome.tabs.create({ url, active: true });
     await chrome.tabs.group({ tabIds: [tab.id], groupId: tabGroupId });
     tabGroupTabs.add(tab.id);
     activeTabId = tab.id;
     targetTabId = tab.id;
   } else {
     // Navigate existing tab
-    await chrome.tabs.update(targetTabId, { url });
+    await chrome.tabs.update(targetTabId, { url, active: true });
   }
 
   await ensureDomain(targetTabId, "Page");
-  return { tabId: targetTabId, url };
+  return {
+    targetId: String(targetTabId),
+    tabId: targetTabId,
+    url,
+  };
 }
 
-async function handleSnapshot(params) {
-  const tabId = params.tabId || activeTabId;
+async function handleSnapshot(params = {}) {
+  const tabId = resolveTargetTabId(params);
   if (!tabId) throw new Error("No active tab in Tether group");
-
   await ensureDomain(tabId, "Accessibility");
   await ensureDomain(tabId, "DOM");
 
@@ -289,9 +345,11 @@ async function handleSnapshot(params) {
   elementRefsByTab.set(tabId, refMap);
 
   return {
+    targetId: String(tabId),
     tabId,
     nodes: simplifiedTree,
     nodeCount: simplifiedTree.length,
+    rootHash: `hash-${Date.now()}`,
   };
 }
 
@@ -320,20 +378,21 @@ async function resolveRefCoordinates(tabId, ref) {
   return { x: Math.round(x), y: Math.round(y) };
 }
 
-async function handleClick(params) {
-  const tabId = params.tabId || activeTabId;
+async function handleClick(params = {}) {
+  const tabId = resolveTargetTabId(params);
   if (!tabId) throw new Error("No active tab in Tether group");
 
   let x = params.x;
   let y = params.y;
-  if (params.ref) {
-    const coords = await resolveRefCoordinates(tabId, params.ref);
+  const sel = params.selector || params.ref;
+  if (sel && typeof sel === "string" && sel.startsWith("@")) {
+    const coords = await resolveRefCoordinates(tabId, sel);
     x = coords.x;
     y = coords.y;
   }
 
   if (typeof x !== "number" || typeof y !== "number") {
-    throw new Error("Click requires either a valid @ref or (x, y) coordinates");
+    throw new Error(`Click requires either a valid @ref or (x, y) coordinates; received: ${sel || "none"}`);
   }
 
   await ensureDomain(tabId, "Input");
@@ -365,15 +424,14 @@ async function handleClick(params) {
   return { tabId, clicked: { x, y } };
 }
 
-async function handleFill(params) {
-  const tabId = params.tabId || activeTabId;
+async function handleFill(params = {}) {
+  const tabId = resolveTargetTabId(params);
   if (!tabId) throw new Error("No active tab in Tether group");
 
-  // Focus element first
-  if (params.ref) {
-    await handleClick({ tabId, ref: params.ref });
+  const sel = params.selector || params.ref;
+  if (sel && typeof sel === "string" && sel.startsWith("@")) {
+    await handleClick({ targetId: tabId, selector: sel });
   }
-
   await ensureDomain(tabId, "Input");
 
   // Select all and clear
@@ -390,8 +448,8 @@ async function handleFill(params) {
   return { tabId, filled: params.text };
 }
 
-async function handleEval(params) {
-  const tabId = params.tabId || activeTabId;
+async function handleEval(params = {}) {
+  const tabId = resolveTargetTabId(params);
   if (!tabId) throw new Error("No active tab in Tether group");
 
   await ensureDomain(tabId, "Runtime");
@@ -402,6 +460,7 @@ async function handleEval(params) {
   });
 
   return {
+    targetId: String(tabId),
     tabId,
     value: res.result?.value,
     type: res.result?.type,
@@ -409,8 +468,8 @@ async function handleEval(params) {
   };
 }
 
-async function handleScreenshot(params) {
-  const tabId = params.tabId || activeTabId;
+async function handleScreenshot(params = {}) {
+  const tabId = resolveTargetTabId(params);
   if (!tabId) throw new Error("No active tab in Tether group");
 
   await ensureDomain(tabId, "Page");
@@ -421,35 +480,30 @@ async function handleScreenshot(params) {
   });
 
   return {
+    targetId: String(tabId),
     tabId,
     format,
     data: res.data,
+    base64: res.data,
   };
 }
-
 async function handleStatus() {
   await ensureTabGroup(false);
+  const tabs = await getLiveTabs();
   return {
     connected: true,
     tabGroupId,
-    tabs: Array.from(tabGroupTabs),
-    activeTabId,
-    targetCount: tabGroupTabs.size,
-    activeTargetId: String(activeTabId || ""),
+    tabs: tabs.map((t) => t.id),
+    targetCount: tabs.length,
+    activeTargetId: String(activeTabId || (tabs.length > 0 ? tabs[0].id : "")),
     mode: "extension",
-    version: "0.1.13",
+    version: "0.1.14",
   };
 }
 
 async function handleTabList() {
   await ensureTabGroup(false);
-  let tabs = [];
-  if (tabGroupId !== null) {
-    tabs = await chrome.tabs.query({ groupId: tabGroupId });
-  }
-  if (tabs.length === 0) {
-    tabs = await chrome.tabs.query({ currentWindow: true });
-  }
+  const tabs = await getLiveTabs();
   return {
     tabs: tabs.map((t) => ({
       id: String(t.id),
@@ -461,7 +515,7 @@ async function handleTabList() {
   };
 }
 
-async function handleTabSwitch(params) {
+async function handleTabSwitch(params = {}) {
   const target = params.targetId || params.tabId;
   const tabId = parseInt(target, 10);
   if (isNaN(tabId)) {
@@ -472,7 +526,6 @@ async function handleTabSwitch(params) {
   await ensureAttached(tabId);
   return { ok: true, activeId: String(tabId) };
 }
-
 // --- Request Router ---
 
 async function handleNativeMessage(msg) {
