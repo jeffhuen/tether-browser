@@ -11,6 +11,7 @@ if [ -t 1 ]; then
     GREEN="\033[32m"
     CYAN="\033[36m"
     RED="\033[31m"
+    RESET="\033[0m"
 else
     BOLD=""
     GREEN=""
