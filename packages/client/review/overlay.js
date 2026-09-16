@@ -857,6 +857,22 @@
     }
 
     onKeyDown(e) {
+      if (this.modalOpen) {
+        const path = e.composedPath ? e.composedPath() : [];
+        const inCard = path.some(node => node && node.classList && node.classList.contains('card'));
+        if (inCard || e.target === this.host) {
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            this.closeModal();
+            return;
+          }
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          return;
+        }
+      }
       if (e.key === 'Escape') {
         if (this.modalOpen) {
           this.closeModal();

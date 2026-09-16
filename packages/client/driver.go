@@ -77,7 +77,10 @@ func (d *CDPDriver) OpenTab(ctx context.Context, params protocol.OpenParams) (*p
 		return nil, errors.New("url cannot be empty")
 	}
 	parsedURL, err := url.Parse(params.URL)
-	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https" && params.URL != "about:blank") {
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL %q: %w", params.URL, err)
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" && params.URL != "about:blank" {
 		return nil, fmt.Errorf("invalid URL scheme %q: only http, https, and about:blank are allowed", parsedURL.Scheme)
 	}
 
@@ -828,9 +831,9 @@ func (d *CDPDriver) getAutomationContextID(ctx context.Context, client *CDPClien
 	}
 
 	createCall := map[string]any{
-		"frameId":             frameID,
-		"worldName":           "tether-automation",
-		"grantUniveralAccess": true,
+		"frameId":              frameID,
+		"worldName":            "tether-automation",
+		"grantUniversalAccess": true,
 	}
 	createResp, err := client.Call(ctx, "Page.createIsolatedWorld", createCall)
 	if err != nil {

@@ -425,6 +425,9 @@ func (c *CDPClient) Call(ctx context.Context, method string, params any) (json.R
 		c.mu.Unlock()
 		return nil, ctx.Err()
 	case <-c.closed:
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
 		return nil, errors.New("cdp client closed")
 	case res := <-resChan:
 		return res.result, res.err
