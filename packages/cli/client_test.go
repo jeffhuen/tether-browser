@@ -14,10 +14,10 @@ import (
 )
 
 func TestDaemonUnreachableDiagnostic(t *testing.T) {
-	// 1. Direct client call to unreachable default daemon
-	client := NewClient(DefaultDaemonAddr)
+	deadAddr := "127.0.0.1:65534"
+	t.Setenv("TETHER_DAEMON_ADDR", deadAddr)
+	client := NewClient(deadAddr)
 	client.SetTimeout(200 * time.Millisecond)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 

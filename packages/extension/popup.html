@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tether Browser Bridge</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="brand">
+        <div class="logo">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="title">Tether</h1>
+          <span class="version">v0.1.14</span>
+        </div>
+      </div>
+      <div id="status-badge" class="badge badge-disconnected">
+        <span class="dot"></span>
+        <span id="status-text">Disconnected</span>
+      </div>
+    </header>
+
+    <!-- Quick Actions (FireShot Style) -->
+    <section class="section">
+      <div class="action-grid">
+        <button id="btn-inspect" class="action-card action-primary" title="Click to inspect elements and pin review feedback on the page">
+          <svg class="action-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <circle cx="12" cy="12" r="3"/>
+            <line x1="12" y1="2" x2="12" y2="6"/>
+            <line x1="12" y1="18" x2="12" y2="22"/>
+            <line x1="2" y1="12" x2="6" y2="12"/>
+            <line x1="18" y1="12" x2="22" y2="12"/>
+          </svg>
+          <div class="action-label">Inspect & Pin Notes</div>
+          <div class="action-desc">Click elements to add review notes</div>
+        </button>
+
+        <button id="btn-screenshot" class="action-card" title="Capture full desktop resolution screenshot">
+          <svg class="action-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+          <div class="action-label">Take Screenshot</div>
+          <div class="action-desc">Save high-res PNG to disk</div>
+        </button>
+      </div>
+    </section>
+
+    <!-- Review Notes Section -->
+    <section id="review-section" class="section">
+      <div class="section-header">
+        <span class="section-title">Review Notes (<span id="notes-count">0</span>)</span>
+        <div class="section-actions">
+          <button id="btn-copy-notes" class="btn-text" title="Copy notes formatted as Markdown for AI agents">Copy for Agent</button>
+          <button id="btn-clear-notes" class="btn-text btn-danger" title="Clear all notes">Clear</button>
+        </div>
+      </div>
+      <div id="notes-list" class="notes-container">
+        <div class="empty-state">No pinned notes yet. Click <b>Inspect & Pin Notes</b> to review elements on this page.</div>
+      </div>
+    </section>
+
+    <!-- Open Tabs Manager -->
+    <section class="section">
+      <div class="section-header">
+        <span class="section-title">Open Tabs</span>
+        <button id="btn-refresh-tabs" class="btn-icon" title="Refresh tabs">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+          </svg>
+        </button>
+      </div>
+      <div id="tabs-list" class="tabs-container">
+        <div class="loading-state">Loading tabs...</div>
+      </div>
+    </section>
+
+    <!-- Quick Navigation -->
+    <footer class="footer">
+      <form id="nav-form" class="nav-form">
+        <input type="text" id="nav-input" class="nav-input" placeholder="Open URL in Tether group..." autocomplete="off">
+        <button type="submit" class="btn-primary">Go</button>
+      </form>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

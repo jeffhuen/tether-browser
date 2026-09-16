@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/jeffhuen/tether-browser/packages/protocol"
 	"net"
+	"os"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
-
-	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
 // DefaultDaemonAddr is the standard local tunnel address for the tether daemon.
@@ -34,7 +34,11 @@ type Client struct {
 // If addr is empty, DefaultDaemonAddr is used with TCP.
 func NewClient(addr string) *Client {
 	if addr == "" {
-		addr = DefaultDaemonAddr
+		if env := os.Getenv("TETHER_DAEMON_ADDR"); env != "" {
+			addr = env
+		} else {
+			addr = DefaultDaemonAddr
+		}
 	}
 	network := "tcp"
 	if strings.HasPrefix(addr, "unix:") {
