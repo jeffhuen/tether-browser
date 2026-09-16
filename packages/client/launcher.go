@@ -129,9 +129,13 @@ func LaunchChrome(ctx context.Context, workspaceID string, proxyPort int) (*Chro
 		return nil, fmt.Errorf("create profile directory: %w", err)
 	}
 
-	// Clean up any stale DevToolsActivePort file from previous crashes
-	activePortFile := filepath.Join(profileDir, "DevToolsActivePort")
-	_ = os.Remove(activePortFile)
+	// Name fresh profiles "Tether" so Chrome's own profile chip identifies the
+	// driven browser. Only written when absent; never clobbers existing state.
+	// (A custom banner is impossible via flags: bad_flags_prompt.cc renders the
+	// raw flag text, and --enable-automation would disable password managers.)
+	if _, err := os.Stat(filepath.Join(profileDir, "Preferences")); os.IsNotExist(err) {
+		_ = os.WriteFile(filepath.Join(profileDir, "Preferences"), []byte(`{"profile":{"name":"Tether"}}`), 0600)
+	}
 
 	chromePath, err := FindChromeExecutable()
 	if err != nil {
@@ -143,7 +147,6 @@ func LaunchChrome(ctx context.Context, workspaceID string, proxyPort int) (*Chro
 		"--remote-debugging-port=0", // Ephemeral port allocation
 		"--no-first-run",
 		"--no-default-browser-check",
-		"--disable-blink-features=AutomationControlled",
 		"--new-window",
 		"about:blank",
 	}
