@@ -1,13 +1,11 @@
 package client
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -256,18 +254,10 @@ func probeActivePort(profileDir string) (int, bool) {
 		expectedTarget = strings.TrimSpace(lines[1])
 	}
 
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
-	if err != nil {
-		return 0, false
-	}
-	defer conn.Close()
-	// A bare TCP dial proves nothing: the port may have been recycled by a
-	// non-CDP service. Require a real DevTools version handshake with a
-	// parsed HTTP 200 status and a ws:// debugger URL.
-	_ = conn.SetDeadline(time.Now().Add(time.Second))
-	_, _ = fmt.Fprintf(conn, "GET /json/version HTTP/1.0\r\n\r\n")
-	reader := bufio.NewReader(io.LimitReader(conn, 65536))
-	resp, err := http.ReadResponse(reader, nil)
+	// Chrome CDP requires a valid Host header (rejects missing Host header as HTTP 500).
+	// Using standard http.Client ensures Host: 127.0.0.1:<port> is properly sent.
+	client := &http.Client{Timeout: 1 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/json/version", port))
 	if err != nil {
 		return 0, false
 	}

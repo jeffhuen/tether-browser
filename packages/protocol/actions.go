@@ -3,7 +3,7 @@ package protocol
 // Standard method names for browser automation over JSON-RPC.
 const (
 	// Version is the current release version of tether-browser.
-	Version = "0.1.11"
+	Version = "0.1.12"
 
 	MethodOpen        = "browser.open"
 	MethodSnapshot    = "browser.snapshot"
