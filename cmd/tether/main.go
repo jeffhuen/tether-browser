@@ -12,10 +12,10 @@ import (
 
 	"github.com/jeffhuen/tether-browser/packages/cli"
 	"github.com/jeffhuen/tether-browser/packages/client"
+	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
-const helpText = `tether - zero-latency remote browser automation bridge for AI coding agents
-
+const helpText = `tether v0.1.0 - zero-latency remote browser automation bridge for AI coding agents
 Usage:
   tether daemon [options]    Start the local workstation daemon (drives Chrome via CDP)
   tether broker [options]    Manage the remote session broker (run, start, stop, status)
@@ -139,12 +139,26 @@ func main() {
 		fmt.Print(helpText)
 		os.Exit(0)
 	}
+	if args[0] == "version" || args[0] == "-v" || args[0] == "--version" || args[0] == "-version" {
+		isJSON := false
+		for _, a := range args[1:] {
+			if a == "--json" {
+				isJSON = true
+				break
+			}
+		}
+		if isJSON {
+			fmt.Printf("{\"version\":%q}\n", protocol.Version)
+		} else {
+			fmt.Printf("tether v%s\n", protocol.Version)
+		}
+		os.Exit(0)
+	}
 
 	if args[0] == "daemon" {
 		code := runDaemon(args[1:])
 		os.Exit(code)
 	}
-
 	// Dispatch CLI automation and broker commands
 	code := cli.Run(args, os.Stdout, os.Stderr)
 	os.Exit(code)

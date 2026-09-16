@@ -1011,7 +1011,7 @@ func (d *CDPDriver) Status(ctx context.Context, params protocol.StatusParams) (*
 		Connected:      len(d.targets) > 0,
 		ActiveTargetID: d.activeTarget,
 		TargetCount:    len(d.targets),
-		Version:        "1.0.0",
+		Version:        protocol.Version,
 		Mode:           "managed",
 		DaemonUptimeS:  int64(time.Since(d.startTime).Seconds()),
 	}, nil
