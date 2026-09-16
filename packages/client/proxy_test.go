@@ -209,3 +209,44 @@ func TestProxyRestrictedIPRejection(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveProxyListenerStable(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	ln1, port1, err := ResolveProxyListener("stable-ws", 0)
+	if err != nil {
+		t.Fatalf("first resolve: %v", err)
+	}
+	if port1 <= 0 {
+		t.Fatalf("expected positive port, got %d", port1)
+	}
+	ln1.Close()
+
+	// Re-resolving must return the same persisted port.
+	ln2, port2, err := ResolveProxyListener("stable-ws", 0)
+	if err != nil {
+		t.Fatalf("second resolve: %v", err)
+	}
+	defer ln2.Close()
+	if port2 != port1 {
+		t.Fatalf("expected stable port %d, got %d", port1, port2)
+	}
+
+	// An explicit request wins and is never adopted as stable.
+	explicit, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicitPort := explicit.Addr().(*net.TCPAddr).Port
+	explicit.Close()
+	ln3, port3, err := ResolveProxyListener("stable-ws", explicitPort)
+	if err != nil {
+		t.Fatalf("explicit resolve: %v", err)
+	}
+	defer ln3.Close()
+	if port3 != explicitPort {
+		t.Fatalf("expected explicit port %d, got %d", explicitPort, port3)
+	}
+}

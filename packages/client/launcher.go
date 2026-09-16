@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -125,15 +126,21 @@ func LaunchChrome(ctx context.Context, workspaceID string, proxyPort int) (*Chro
 	if err != nil {
 		return nil, err
 	}
-
 	if err := os.MkdirAll(profileDir, 0700); err != nil {
 		return nil, fmt.Errorf("create profile directory: %w", err)
 	}
+	unlock, err := acquireProfileLaunchLock(profileDir, 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 
-	// Self-heal order: adopt a live instance if the previous daemon died but
-	// Chrome survived; otherwise kill only our own stale profile processes
-	// (never the user's regular Chrome) and launch fresh. No manual recovery.
-	if port, ok := probeActivePort(profileDir); ok {
+	// Self-heal order: adopt a live instance only when it provably serves CDP
+	// for OUR proxy configuration (its launch-time --proxy-server flags are
+	// immutable, so a mismatched adoption would route traffic into the void).
+	// Otherwise kill only our own stale profile processes (never the user's
+	// regular Chrome) and launch fresh. No manual recovery.
+	if port, ok := probeActivePort(profileDir); ok && proxyPortPersisted(profileDir, proxyPort) {
 		return &ChromeProcess{
 			ProfileDir: profileDir,
 			CDPPort:    port,
@@ -237,7 +244,18 @@ func probeActivePort(profileDir string) (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	conn.Close()
+	defer conn.Close()
+	// A bare TCP dial proves nothing: the port may have been recycled by a
+	// non-CDP service. Require a real DevTools version handshake.
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	_, _ = fmt.Fprintf(conn, "GET /json/version HTTP/1.0\r\n\r\n")
+	resp, err := io.ReadAll(io.LimitReader(conn, 8192))
+	if err != nil {
+		return 0, false
+	}
+	if !strings.Contains(string(resp), "200") || !strings.Contains(string(resp), "webSocketDebuggerUrl") {
+		return 0, false
+	}
 	return port, true
 }
 
@@ -255,46 +273,192 @@ func waitForActivePort(profileDir string, timeout time.Duration) (int, error) {
 	return 0, fmt.Errorf("timed out after %v waiting for %s", timeout, activePortFile)
 }
 
+// profileKillPattern matches only processes launched with exactly
+// our --user-data-dir argument. The trailing boundary rejects sibling dirs
+// (.../profile2) and the --user-data-dir= prefix rejects lookalike flags
+// (... --backup=<dir>). Any process carrying this exact flag claims our
+// dedicated profile dir, which only our Chrome instances do.
+func profileKillPattern(profileDir string) string {
+	return `--user-data-dir=` + regexp.QuoteMeta(profileDir) + `($| )`
+}
+
 // killStaleProfileProcesses terminates leftover Chrome processes bound to our
-// dedicated profile dir (orphaned when a daemon is killed). The match is
-// scoped to our dir only: the user's regular Chrome profile never matches.
-// Best-effort: failures are ignored so a missing pkill can never fail launch.
+// dedicated profile dir (orphaned when a daemon is killed). Best-effort:
+// failures are ignored so a missing pkill can never fail launch.
 func killStaleProfileProcesses(profileDir string) {
-	switch runtime.GOOS {
-	case "windows":
-		pattern := strings.ReplaceAll(profileDir, "'", "''")
-		_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
-			fmt.Sprintf("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*%s*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }", pattern)).Run()
-	default:
-		_ = exec.Command("pkill", "-f", regexp.QuoteMeta(profileDir)).Run()
+	pattern := profileKillPattern(profileDir)
+	if runtime.GOOS == "windows" {
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+			"$d=$env:TETHER_PROFILE_DIR; Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match $d } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
+		cmd.Env = append(os.Environ(), "TETHER_PROFILE_DIR="+pattern)
+		_ = cmd.Run()
+		return
+	}
+	_ = exec.Command("pkill", "-f", "--", pattern).Run()
+	waitForPatternExit(pattern, 5*time.Second)
+}
+
+// waitForPatternExit polls until no process matches pattern (unix only).
+func waitForPatternExit(pattern string, timeout time.Duration) {
+	if runtime.GOOS == "windows" {
+		return
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		// "--" keeps patterns starting with "--" from parsing as options.
+		if err := exec.Command("pgrep", "-f", "--", pattern).Run(); err != nil {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// acquireProfileLaunchLock serializes concurrent launchers for one profile
+// via an atomic lock dir. Stale locks (crashed holder) break after 60s.
+// It returns a release func for defer.
+func acquireProfileLaunchLock(profileDir string, timeout time.Duration) (func(), error) {
+	lockDir := filepath.Join(profileDir, "tether-launch.lock")
+	release := func() { _ = os.RemoveAll(lockDir) }
+	deadline := time.Now().Add(timeout)
+	for {
+		if err := os.Mkdir(lockDir, 0700); err == nil {
+			return release, nil
+		}
+		if fi, err := os.Stat(lockDir); err == nil && time.Since(fi.ModTime()) > time.Minute {
+			_ = os.RemoveAll(lockDir)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("another launcher holds %s", lockDir)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
 // ensureProfileName labels our dedicated profile "Tether" in Chrome's own
-// profile chip. Merges into any existing Preferences file so profiles that
-// predate the feature are labeled without touching other keys. A corrupt
-// file is left alone for Chrome to rebuild.
+// profile chip. Chrome keeps per-profile state under <user-data-dir>/Default,
+// with the display name cached in <user-data-dir>/Local State, so both are
+// updated: Default/Preferences always, Local State only when it already
+// exists (a fresh Chrome builds its own cache from Preferences on first run).
+// Decoding preserves unrelated values byte-for-byte; corrupt or non-object
+// files are left alone for Chrome to rebuild.
 func ensureProfileName(profileDir string) {
-	prefsPath := filepath.Join(profileDir, "Preferences")
-	prefs := map[string]any{}
-	if data, err := os.ReadFile(prefsPath); err != nil {
-		_ = os.WriteFile(prefsPath, []byte(`{"profile":{"name":"Tether"}}`), 0600)
-		return
-	} else if err := json.Unmarshal(data, &prefs); err != nil {
+	setProfileName(filepath.Join(profileDir, "Default", "Preferences"), true)
+	if _, err := os.Stat(filepath.Join(profileDir, "Local State")); err == nil {
+		setLocalStateName(filepath.Join(profileDir, "Local State"))
+	}
+}
+
+// setProfileName writes {"profile":{"name":"Tether"}} into a Preferences file,
+// preserving every other byte. When create is true a missing file is created.
+func setProfileName(path string, create bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !create {
+			return
+		}
+		_ = os.MkdirAll(filepath.Dir(path), 0700)
+		_ = os.WriteFile(path, []byte(`{"profile":{"name":"Tether"}}`), 0600)
 		return
 	}
-	prof, _ := prefs["profile"].(map[string]any)
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil || root == nil {
+		return
+	}
+	var prof map[string]json.RawMessage
+	if raw, ok := root["profile"]; ok {
+		if err := json.Unmarshal(raw, &prof); err != nil {
+			return
+		}
+	}
 	if prof == nil {
-		prof = map[string]any{}
-		prefs["profile"] = prof
+		prof = map[string]json.RawMessage{}
 	}
-	if name, _ := prof["name"].(string); name == "Tether" {
-		return
+	if name, ok := prof["name"]; ok {
+		var current string
+		if err := json.Unmarshal(name, &current); err == nil && current == "Tether" {
+			return
+		}
 	}
-	prof["name"] = "Tether"
-	data, err := json.Marshal(prefs)
+	named, err := json.Marshal("Tether")
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(prefsPath, data, 0600)
+	prof["name"] = named
+	updated, err := json.Marshal(prof)
+	if err != nil {
+		return
+	}
+	root["profile"] = updated
+	out, err := json.Marshal(root)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, out, 0600)
+}
+
+// setLocalStateName updates the profile info_cache display entry that Chrome's
+// profile menu actually renders, creating it when the cache exists.
+func setLocalStateName(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil || root == nil {
+		return
+	}
+	var profile map[string]json.RawMessage
+	if raw, ok := root["profile"]; ok {
+		if err := json.Unmarshal(raw, &profile); err != nil {
+			return
+		}
+	}
+	if profile == nil {
+		profile = map[string]json.RawMessage{}
+	}
+	var cache map[string]json.RawMessage
+	if raw, ok := profile["info_cache"]; ok {
+		if err := json.Unmarshal(raw, &cache); err != nil {
+			return
+		}
+	}
+	if cache == nil {
+		cache = map[string]json.RawMessage{}
+	}
+	var entry map[string]json.RawMessage
+	if raw, ok := cache["Default"]; ok {
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return
+		}
+	}
+	if entry == nil {
+		entry = map[string]json.RawMessage{}
+	}
+	nameBytes, err := json.Marshal("Tether")
+	if err != nil {
+		return
+	}
+	entry["name"] = nameBytes
+	entry["is_using_default_name"], _ = json.Marshal(false)
+	updatedEntry, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	cache["Default"] = updatedEntry
+	updatedCache, err := json.Marshal(cache)
+	if err != nil {
+		return
+	}
+	profile["info_cache"] = updatedCache
+	updatedProfile, err := json.Marshal(profile)
+	if err != nil {
+		return
+	}
+	root["profile"] = updatedProfile
+	out, err := json.Marshal(root)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, out, 0600)
 }

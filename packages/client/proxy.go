@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +20,62 @@ import (
 var (
 	ErrUnenrolledLoopback = errors.New("unenrolled loopback destination rejected")
 )
+
+// proxyPortFileName persists the workspace proxy port so an adopted Chrome
+// keeps working: its launch-time --proxy-server flags never change.
+const proxyPortFileName = "tether-proxy.port"
+
+// ResolveProxyListener binds the Mode A proxy listener. An explicit request
+// wins and is never persisted. Otherwise the workspace-persisted port is
+// reused so a relaunched daemon re-matches an adopted Chrome instance;
+// on conflict it falls back to ephemeral and persists the replacement.
+func ResolveProxyListener(workspace string, requested int) (net.Listener, int, error) {
+	if requested != 0 {
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", requested))
+		if err != nil {
+			return nil, 0, err
+		}
+		return ln, requested, nil
+	}
+	profileDir, err := GetProfileDir(workspace)
+	if err != nil {
+		return nil, 0, err
+	}
+	portFile := filepath.Join(profileDir, proxyPortFileName)
+	if data, err := os.ReadFile(portFile); err == nil {
+		if persisted, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && persisted > 0 {
+			if ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", persisted)); err == nil {
+				return ln, persisted, nil
+			}
+		}
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, 0, err
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = os.MkdirAll(profileDir, 0700)
+	if err := os.WriteFile(portFile, []byte(strconv.Itoa(port)), 0600); err != nil {
+		_ = os.Chmod(portFile, 0600)
+		return ln, port, nil
+	}
+	_ = os.Chmod(portFile, 0600)
+	return ln, port, nil
+}
+
+// proxyPortPersisted reports whether port is the workspace's persisted proxy
+// port. Adoption is only safe in that case: Chrome's launch flags pin it.
+func proxyPortPersisted(profileDir string, port int) bool {
+	if port <= 0 {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(profileDir, proxyPortFileName))
+	if err != nil {
+		return false
+	}
+	persisted, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	return err == nil && persisted == port
+}
 
 // Proxy implements Mode A Origin-Preserving forward proxying with HTTP CONNECT tunneling.
 type Proxy struct {
