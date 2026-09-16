@@ -8,6 +8,7 @@
   const SECRET_PATTERNS = [
     /access_token/i,
     /auth_token/i,
+    /refresh_token/i,
     /refresh_?token/i,
     /id_token/i,
     /session_?token/i,

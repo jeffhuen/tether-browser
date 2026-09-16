@@ -74,10 +74,11 @@ func CompressPayload(data []byte) ([]byte, error) {
 
 	compressed := enc.EncodeAll(data, make([]byte, 0, len(data)/2))
 
-	buf := make([]byte, 5+len(compressed))
+	buf := make([]byte, 9+len(compressed))
 	buf[0] = FormatZstd
-	binary.BigEndian.PutUint32(buf[1:5], uncompressedLen)
-	copy(buf[5:], compressed)
+	binary.BigEndian.PutUint32(buf[1:5], uint32(len(compressed)))
+	binary.BigEndian.PutUint32(buf[5:9], uncompressedLen)
+	copy(buf[9:], compressed)
 	return buf, nil
 }
 
@@ -88,15 +89,14 @@ func DecompressPayload(framed []byte) ([]byte, error) {
 	}
 
 	format := framed[0]
-	uncompressedLen := binary.BigEndian.Uint32(framed[1:5])
-	if uncompressedLen > MaxFramePayload {
-		return nil, fmt.Errorf("%w: advertised %d bytes", ErrPayloadTooLarge, uncompressedLen)
-	}
-
-	payload := framed[5:]
 
 	switch format {
 	case FormatRaw:
+		uncompressedLen := binary.BigEndian.Uint32(framed[1:5])
+		if uncompressedLen > MaxFramePayload {
+			return nil, fmt.Errorf("%w: advertised %d bytes", ErrPayloadTooLarge, uncompressedLen)
+		}
+		payload := framed[5:]
 		if len(payload) != int(uncompressedLen) {
 			return nil, fmt.Errorf("length mismatch: header %d, actual %d", uncompressedLen, len(payload))
 		}
@@ -105,6 +105,19 @@ func DecompressPayload(framed []byte) ([]byte, error) {
 		return out, nil
 
 	case FormatZstd:
+		if len(framed) < 9 {
+			return nil, ErrCorruptedFrame
+		}
+		compressedLen := binary.BigEndian.Uint32(framed[1:5])
+		uncompressedLen := binary.BigEndian.Uint32(framed[5:9])
+		if uncompressedLen > MaxFramePayload || compressedLen > MaxFramePayload {
+			return nil, fmt.Errorf("%w: advertised %d bytes", ErrPayloadTooLarge, uncompressedLen)
+		}
+		payload := framed[9:]
+		if len(payload) != int(compressedLen) {
+			return nil, fmt.Errorf("compressed length mismatch: header %d, actual %d", compressedLen, len(payload))
+		}
+
 		dec := decoderPool.Get().(*zstd.Decoder)
 		defer decoderPool.Put(dec)
 
