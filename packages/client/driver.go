@@ -132,15 +132,22 @@ func (d *CDPDriver) OpenTab(ctx context.Context, params protocol.OpenParams) (*p
 // CloseTab closes an open tab.
 func (d *CDPDriver) CloseTab(ctx context.Context, params protocol.CloseParams) error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	targetID := params.TargetID
 	if targetID == "" {
 		targetID = d.activeTarget
 	}
 
 	if params.CloseAll {
+		targetsToClose := make(map[protocol.TargetID]*CDPClient, len(d.targets))
 		for tid, client := range d.targets {
+			targetsToClose[tid] = client
+		}
+		d.targets = make(map[protocol.TargetID]*CDPClient)
+		d.refTables = make(map[protocol.TargetID]map[string]int64)
+		d.activeTarget = ""
+		d.mu.Unlock()
+
+		for tid, client := range targetsToClose {
 			_ = client.Close()
 			endpoint := fmt.Sprintf("%s/json/close/%s", d.browserURL, tid)
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -150,37 +157,37 @@ func (d *CDPDriver) CloseTab(ctx context.Context, params protocol.CloseParams) e
 				}
 			}
 		}
-		d.targets = make(map[protocol.TargetID]*CDPClient)
-		d.refTables = make(map[protocol.TargetID]map[string]int64)
-		d.activeTarget = ""
 		return nil
 	}
 
 	if targetID == "" {
+		d.mu.Unlock()
 		return protocol.ErrTargetNotFound
 	}
 
 	client, exists := d.targets[targetID]
 	if exists {
-		_ = client.Close()
 		delete(d.targets, targetID)
 		delete(d.refTables, targetID)
 	}
-
-	endpoint := fmt.Sprintf("%s/json/close/%s", d.browserURL, targetID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err == nil {
-		resp, err := d.httpClient.Do(req)
-		if err == nil {
-			_ = resp.Body.Close()
-		}
-	}
-
 	if d.activeTarget == targetID {
 		d.activeTarget = ""
 		for tid := range d.targets {
 			d.activeTarget = tid
 			break
+		}
+	}
+	d.mu.Unlock()
+
+	if client != nil {
+		_ = client.Close()
+	}
+
+	endpoint := fmt.Sprintf("%s/json/close/%s", d.browserURL, targetID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err == nil {
+		if resp, err := d.httpClient.Do(req); err == nil {
+			_ = resp.Body.Close()
 		}
 	}
 
@@ -364,9 +371,13 @@ func (d *CDPDriver) Snapshot(ctx context.Context, params protocol.SnapshotParams
 	};
 })(%t, %t)
 `
+	contextID, _ := d.getAutomationContextID(ctx, client)
 	evalCall := map[string]any{
 		"expression":    fmt.Sprintf(script, params.InteractiveOnly, params.Compact),
 		"returnByValue": true,
+	}
+	if contextID > 0 {
+		evalCall["contextId"] = contextID
 	}
 
 	evalResp, err := client.Call(ctx, "Runtime.evaluate", evalCall)
@@ -788,18 +799,67 @@ func (d *CDPDriver) Eval(ctx context.Context, params protocol.EvalParams) (*prot
 		return nil, err
 	}
 
-	val, err := d.evalRaw(ctx, client, params.Expression)
+	val, err := d.evalRawWithContext(ctx, client, params.Expression, 0)
 	if err != nil {
 		return &protocol.EvalResult{Error: err.Error()}, nil
 	}
 	return &protocol.EvalResult{Value: val}, nil
 }
 
+func (d *CDPDriver) getAutomationContextID(ctx context.Context, client *CDPClient) (int64, error) {
+	treeResp, err := client.Call(ctx, "Page.getFrameTree", nil)
+	if err != nil {
+		return 0, err
+	}
+
+	var treeOut struct {
+		FrameTree struct {
+			Frame struct {
+				ID string `json:"id"`
+			} `json:"frame"`
+		} `json:"frameTree"`
+	}
+	if err := json.Unmarshal(treeResp, &treeOut); err != nil {
+		return 0, err
+	}
+	frameID := treeOut.FrameTree.Frame.ID
+	if frameID == "" {
+		return 0, errors.New("main frame ID not found")
+	}
+
+	createCall := map[string]any{
+		"frameId":             frameID,
+		"worldName":           "tether-automation",
+		"grantUniveralAccess": true,
+	}
+	createResp, err := client.Call(ctx, "Page.createIsolatedWorld", createCall)
+	if err != nil {
+		return 0, err
+	}
+
+	var createOut struct {
+		ExecutionContextID int64 `json:"executionContextId"`
+	}
+	if err := json.Unmarshal(createResp, &createOut); err != nil {
+		return 0, err
+	}
+
+	return createOut.ExecutionContextID, nil
+}
+
 func (d *CDPDriver) evalRaw(ctx context.Context, client *CDPClient, expression string) (any, error) {
+	contextID, _ := d.getAutomationContextID(ctx, client)
+	return d.evalRawWithContext(ctx, client, expression, contextID)
+}
+
+func (d *CDPDriver) evalRawWithContext(ctx context.Context, client *CDPClient, expression string, contextID int64) (any, error) {
 	call := map[string]any{
 		"expression":    expression,
 		"returnByValue": true,
 		"awaitPromise":  true,
+	}
+	if contextID > 0 {
+		call["contextId"] = contextID
 	}
 	resp, err := client.Call(ctx, "Runtime.evaluate", call)
 	if err != nil {
