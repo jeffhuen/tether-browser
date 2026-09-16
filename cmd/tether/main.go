@@ -18,7 +18,7 @@ import (
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
-const helpText = `tether v0.1.17 - zero-latency remote browser automation bridge for AI coding agents
+const helpText = `tether v0.1.19 - zero-latency remote browser automation bridge for AI coding agents
 Usage:
   tether connect <host>        Link local Chrome to a remote server via SSH in one command
   tether extension install     Register native messaging host for Chrome, Brave, and Edge
@@ -96,11 +96,14 @@ func runDaemon(args []string) int {
 	cdpURL := *chromeURL
 	var driver client.BrowserDriver
 	extDriver := client.NewExtensionDriver("")
-	for i := 0; i < 15; i++ {
+	if !extDriver.IsAvailable() && !*noChrome {
+		client.EnsureBrowserRunning()
+	}
+	for i := 0; i < 25; i++ {
 		if extDriver.IsAvailable() {
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 	if extDriver.IsAvailable() {
 		fmt.Printf("✓ Using Tether Chrome Extension bridge (%s)\n", client.GetBridgeSocketPath())

@@ -137,11 +137,13 @@ async function ensureTabGroup(createIfEmpty = true) {
 
   if (!createIfEmpty) return null;
 
-  // Prefer creating inside current active window so tabs stay in one window
+  // Use chrome.windows.getAll to find user's visible normal window
+  // (In service workers, currentWindow:true returns [] when Chrome is unfocused)
   try {
-    const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (activeTabs.length > 0) {
-      const tab = await chrome.tabs.create({ url: "about:blank", active: false });
+    const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
+    if (windows && windows.length > 0) {
+      const targetWin = windows.find((w) => w.focused) || windows[0];
+      const tab = await chrome.tabs.create({ windowId: targetWin.id, url: "about:blank", active: true });
       const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
       await chrome.tabGroups.update(groupId, { title: "Tether", color: "blue" });
       tabGroupId = groupId;
@@ -149,10 +151,12 @@ async function ensureTabGroup(createIfEmpty = true) {
       activeTabId = tab.id;
       return tabGroupId;
     }
-  } catch {}
+  } catch (err) {
+    console.warn("[Tether] Failed to create tab in existing window:", err);
+  }
 
-  // Fallback: create dedicated window if no active window exists
-  const win = await chrome.windows.create({ focused: false, url: "about:blank" });
+  // Fallback: create focused window if no normal window exists
+  const win = await chrome.windows.create({ focused: true, url: "about:blank" });
   const tab = win.tabs[0];
   const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
   await chrome.tabGroups.update(groupId, { title: "Tether", color: "blue" });
@@ -231,11 +235,14 @@ function resolveTargetTabId(params = {}) {
   }
   return activeTabId;
 }
-
 async function getLiveTabs() {
   let tabs = [];
   try {
-    tabs = await chrome.tabs.query({ currentWindow: true });
+    const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
+    if (windows && windows.length > 0) {
+      const targetWin = windows.find((w) => w.focused) || windows[0];
+      tabs = targetWin.tabs || [];
+    }
   } catch {}
   if (tabs.length === 0) {
     try {

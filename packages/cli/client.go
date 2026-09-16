@@ -106,11 +106,10 @@ func (c *Client) Call(ctx context.Context, method string, params any) (*protocol
 	}
 	defer conn.Close()
 
-	// Set TCP_NODELAY on TCP connection to minimize latency.
+	// Set TCP_NODELAY on TCP connection to minimize latency (best-effort;
+	// forwarded or proxied sockets may return EINVAL on setsockopt).
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		if err := tcpConn.SetNoDelay(true); err != nil {
-			return nil, fmt.Errorf("set TCP_NODELAY: %w", err)
-		}
+		_ = tcpConn.SetNoDelay(true)
 	}
 
 	seq := c.NextSeq()

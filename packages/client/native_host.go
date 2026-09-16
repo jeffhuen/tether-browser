@@ -109,6 +109,13 @@ type ExtensionBridge struct {
 	reqCounter   atomic.Uint64
 	closed       atomic.Bool
 	token        string
+	onClose      func()
+}
+
+func (b *ExtensionBridge) SetOnClose(fn func()) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.onClose = fn
 }
 
 type nativeRequest struct {
@@ -146,9 +153,15 @@ func (b *ExtensionBridge) StartReader(ctx context.Context) {
 			payload, err := ReadNativeMessage(b.in)
 			if err != nil {
 				if !b.closed.Load() {
-					fmt.Fprintf(os.Stderr, "[Tether NativeHost] Stream read error: %v\n", err)
+					fmt.Fprintf(os.Stderr, "[Tether NativeHost] Chrome disconnected: %v\n", err)
 				}
 				b.failAllPending(err)
+				b.mu.Lock()
+				onClose := b.onClose
+				b.mu.Unlock()
+				if onClose != nil {
+					onClose()
+				}
 				return
 			}
 
@@ -257,26 +270,32 @@ func RunNativeHostServer(ctx context.Context, in io.Reader, out io.Writer) error
 	defer ln.Close()
 	defer os.Remove(socketPath)
 	_ = os.Chmod(socketPath, 0600)
+	serverCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	bridge := NewExtensionBridge(in, out, "")
-	bridge.StartReader(ctx)
+	bridge.SetOnClose(func() {
+		cancel()
+		_ = ln.Close()
+	})
+	bridge.StartReader(serverCtx)
 
 	fmt.Fprintf(os.Stderr, "[Tether NativeHost] Bridge listening on %s\n", socketPath)
 
 	go func() {
-		<-ctx.Done()
+		<-serverCtx.Done()
 		_ = ln.Close()
 	}()
 
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
+			if serverCtx.Err() != nil {
 				return nil
 			}
 			return err
 		}
-		go handleBridgeConnection(ctx, bridge, conn)
+		go handleBridgeConnection(serverCtx, bridge, conn)
 	}
 }
 
