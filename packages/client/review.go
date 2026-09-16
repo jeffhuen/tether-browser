@@ -130,7 +130,31 @@ func (rc *ReviewController) StartPassive(ctx context.Context, client *CDPClient)
 	return err
 }
 
-// GetNotes retrieves the captured review notes and element context from the isolated world.
+// autoReviewSnippet re-arms the passive review session on every new document.
+// Top-frame only: iframes must never sprout their own dock. The sessionStorage
+// gate keeps a stopped session stopped across navigations. The gate is
+// per-origin by design: Done silences the current site, while a new site
+// starts a fresh passive session (notes are per-page payloads anyway).
+const autoReviewSnippet = `;try {
+  if (window.top === window && window.__tetherReview && !window.__tetherReview.active) {
+    var off = false;
+    try { off = window.sessionStorage.getItem('tether-review-off') === '1'; } catch (e) {}
+    if (!off) { window.__tetherReview.startPassive(); }
+  }
+} catch (e) {}`
+
+// EnsureAutoReview registers the overlay to self-install in every future
+// document of the target's main frame, so navigations cannot wipe the bar.
+func (rc *ReviewController) EnsureAutoReview(ctx context.Context, client *CDPClient) error {
+	call := map[string]any{
+		"source":    reviewOverlayScript + autoReviewSnippet,
+		"worldName": "tether-review",
+	}
+	if _, err := client.Call(ctx, "Page.addScriptToEvaluateOnNewDocument", call); err != nil {
+		return fmt.Errorf("register auto review script: %w", err)
+	}
+	return nil
+}
 func (rc *ReviewController) GetNotes(ctx context.Context, client *CDPClient) ([]*protocol.ReviewNote, error) {
 	val, err := rc.evalInIsolatedWorld(ctx, client, "window.__tetherReview ? window.__tetherReview.getNotes() : []")
 	if err != nil {
