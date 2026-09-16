@@ -526,6 +526,61 @@ async function handleTabSwitch(params = {}) {
   await ensureAttached(tabId);
   return { ok: true, activeId: String(tabId) };
 }
+
+async function handleReviewStart(params = {}) {
+  const tabId = resolveTargetTabId(params);
+  if (!tabId) throw new Error("No active tab in Tether group");
+  await ensureDomain(tabId, "Runtime");
+  await ensureDomain(tabId, "Page");
+
+  const url = chrome.runtime.getURL("review/overlay.js");
+  const resp = await fetch(url);
+  const code = await resp.text();
+
+  await cdp(tabId, "Runtime.evaluate", {
+    expression: code,
+  });
+
+  await cdp(tabId, "Runtime.evaluate", {
+    expression: "window.__tetherReview ? window.__tetherReview.start() : false",
+  });
+
+  return { ok: true, active: true };
+}
+
+async function handleReviewList(params = {}) {
+  const tabId = resolveTargetTabId(params);
+  if (!tabId) throw new Error("No active tab in Tether group");
+  await ensureDomain(tabId, "Runtime");
+
+  const res = await cdp(tabId, "Runtime.evaluate", {
+    expression: "window.__tetherReview ? JSON.stringify(window.__tetherReview.getNotes()) : '[]'",
+    returnByValue: true,
+  });
+
+  let notes = [];
+  try {
+    notes = JSON.parse(res.result?.value || "[]");
+  } catch {}
+
+  return {
+    notes,
+    pageUrl: "",
+    viewport: "",
+  };
+}
+
+async function handleReviewClear(params = {}) {
+  const tabId = resolveTargetTabId(params);
+  if (!tabId) throw new Error("No active tab in Tether group");
+  await ensureDomain(tabId, "Runtime");
+
+  await cdp(tabId, "Runtime.evaluate", {
+    expression: "window.__tetherReview ? window.__tetherReview.clearNotes() : false",
+  });
+
+  return { ok: true };
+}
 // --- Request Router ---
 
 async function handleNativeMessage(msg) {
@@ -562,6 +617,15 @@ async function handleNativeMessage(msg) {
       case "browser.tab.switch":
         result = await handleTabSwitch(params);
         break;
+      case "browser.review.start":
+        result = await handleReviewStart(params);
+        break;
+      case "browser.review.list":
+        result = await handleReviewList(params);
+        break;
+      case "browser.review.clear":
+        result = await handleReviewClear(params);
+        break;
       default:
         sendError(id, -32601, `Method ${method} not found in extension dispatcher`);
         return;
@@ -573,4 +637,62 @@ async function handleNativeMessage(msg) {
 }
 
 // Start connection on service worker load
+
+// --- Internal Message Router (for popup UI) ---
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  (async () => {
+    try {
+      switch (msg.type) {
+        case "popup_get_status": {
+          const tabList = await handleTabList();
+          let notes = [];
+          if (activeTabId) {
+            try {
+              const res = await handleReviewList({ tabId: activeTabId });
+              notes = res.notes || [];
+            } catch {}
+          }
+          sendResponse({
+            connected: nativePort !== null,
+            activeTabId,
+            tabs: tabList.tabs,
+            notes,
+          });
+          break;
+        }
+        case "popup_switch_tab": {
+          await handleTabSwitch({ targetId: msg.tabId });
+          sendResponse({ ok: true });
+          break;
+        }
+        case "popup_start_review": {
+          await handleReviewStart({ tabId: activeTabId });
+          sendResponse({ ok: true });
+          break;
+        }
+        case "popup_clear_notes": {
+          await handleReviewClear({ tabId: activeTabId });
+          sendResponse({ ok: true });
+          break;
+        }
+        case "popup_capture_screenshot": {
+          const res = await handleScreenshot({ tabId: activeTabId });
+          sendResponse(res);
+          break;
+        }
+        case "popup_navigate": {
+          await handleOpen({ url: msg.url });
+          sendResponse({ ok: true });
+          break;
+        }
+        default:
+          sendResponse({ error: "unknown popup message" });
+      }
+    } catch (err) {
+      sendResponse({ error: err.message || String(err) });
+    }
+  })();
+  return true; // Keep message channel open for async sendResponse
+});
 connectNativeHost();
