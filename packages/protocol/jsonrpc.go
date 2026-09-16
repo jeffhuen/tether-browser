@@ -156,6 +156,7 @@ func NewRequestWithToken(id any, method string, params any, seq uint64, epoch st
 	req.Token = token
 	return req, nil
 }
+
 // NewResponse creates a successful response with automatic JSON marshaling of result.
 // If result is nil, it serializes as literal JSON null per JSON-RPC 2.0 spec.
 func NewResponse(id any, result any, seq uint64, epoch string) (*Response, error) {

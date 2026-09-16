@@ -57,7 +57,7 @@ type ReviewPayload struct {
 // ReviewNote represents a pinned review comment attached to an element.
 type ReviewNote struct {
 	ID        string         `json:"id"`
-	Index     int            `json:"index"` // 1-indexed pin number (1, 2, 3...)
+	Index     int            `json:"index"`  // 1-indexed pin number (1, 2, 3...)
 	Intent    string         `json:"intent"` // "design_fix", "bug", "clarification"
 	Comment   string         `json:"comment"`
 	CreatedAt time.Time      `json:"createdAt"`
