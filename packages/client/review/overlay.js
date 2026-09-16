@@ -587,6 +587,7 @@
   class TetherReviewManager {
     constructor() {
       this.active = false;
+      this.armed = false;
       this.notes = [];
       this.markerElements = new Map();
       this.host = null;
@@ -594,6 +595,9 @@
       this.reticle = null;
       this.tooltip = null;
       this.modal = null;
+      this.dock = null;
+      this.dockSelect = null;
+      this.dockCount = null;
       this.hoveredEl = null;
       this.selectedEl = null;
       this.pendingPayload = null;
@@ -608,9 +612,8 @@
 
       const host = document.createElement('div');
       host.setAttribute('data-tether-annotation-overlay', '');
-      host.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:all;overflow:hidden;cursor:crosshair;';
+      host.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;overflow:hidden;cursor:default;';
       const shadow = host.attachShadow({ mode: 'closed' });
-
       const style = document.createElement('style');
       style.textContent = `
         .reticle {
@@ -676,9 +679,32 @@
         }
         .card textarea { height: 72px; resize: vertical; }
         .card-actions { display: flex; justify-content: flex-end; gap: 8px; }
-        .btn { padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; border: none; }
         .btn-primary { background: #2563eb; color: #fff; }
         .btn-secondary { background: #f1f5f9; color: #475569; }
+        .dock {
+          position: fixed;
+          left: 50%;
+          bottom: 16px;
+          transform: translateX(-50%);
+          display: none;
+          align-items: center;
+          gap: 8px;
+          background: #0f172a;
+          color: #fff;
+          border-radius: 9999px;
+          padding: 6px 8px 6px 14px;
+          font: 600 12px/1 -apple-system, BlinkMacSystemFont, sans-serif;
+          box-shadow: 0 10px 24px rgba(0,0,0,.35);
+          pointer-events: auto;
+          z-index: 150;
+          user-select: none;
+          white-space: nowrap;
+        }
+        .dock-title { opacity: .7; }
+        .dock-count { background: #2563eb; border-radius: 9999px; min-width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; padding: 0 6px; }
+        .dock-btn { border: none; border-radius: 9999px; padding: 6px 12px; font: inherit; cursor: pointer; background: #2563eb; color: #fff; }
+        .dock-btn.active { background: #16a34a; }
+        .dock-done { background: transparent; color: #cbd5e1; }
       `;
       shadow.appendChild(style);
 
@@ -740,6 +766,22 @@
         }
       });
 
+      const dock = document.createElement('div');
+      dock.className = 'dock';
+      dock.innerHTML = `
+        <span class="dock-title">Tether</span>
+        <button class="dock-btn" id="dock-select" title="Select an element to annotate">⊕ Select</button>
+        <span class="dock-count" id="dock-count">0</span>
+        <button class="dock-btn dock-done" id="dock-done" title="End review session">✕ Done</button>
+      `;
+      shadow.appendChild(dock);
+      this.dock = dock;
+      this.dockSelect = dock.querySelector('#dock-select');
+      this.dockCount = dock.querySelector('#dock-count');
+      dock.addEventListener('click', (e) => { e.stopPropagation(); });
+      dock.querySelector('#dock-select').addEventListener('click', () => this.setArmed(true));
+      dock.querySelector('#dock-done').addEventListener('click', () => this.stop());
+
       (document.body || document.documentElement).appendChild(host);
       this.host = host;
       this.shadowRoot = shadow;
@@ -750,19 +792,23 @@
     start() {
       this.active = true;
       this.ensureOverlay();
-      this.host.style.pointerEvents = 'all';
-      this.host.style.cursor = 'crosshair';
+      if (this.modalOpen) this.closeModal();
       this.markerElements.forEach(entry => {
         if (entry && entry.element) entry.element.style.pointerEvents = 'auto';
       });
       window.addEventListener('mousemove', this.boundOnPointerMove, true);
       window.addEventListener('click', this.boundOnClick, true);
       window.addEventListener('keydown', this.boundOnKeyDown, true);
+      if (this.dock) this.dock.style.display = 'flex';
+      this.updateDockCount();
+      this.setArmed(true);
       this.startTracking();
     }
 
     stop() {
       this.active = false;
+      this.setArmed(false);
+      if (this.dock) this.dock.style.display = 'none';
       if (this.rafId) {
         cancelAnimationFrame(this.rafId);
         this.rafId = 0;
@@ -803,7 +849,7 @@
         }
       });
       this.markerElements.clear();
-
+      this.updateDockCount();
       try {
         document.querySelectorAll('[data-tether-pin]').forEach(el => el.removeAttribute('data-tether-pin'));
       } catch (e) {}
@@ -825,7 +871,7 @@
     }
 
     onPointerMove(e) {
-      if (!this.active || this.modalOpen) return;
+      if (!this.active || !this.armed || this.modalOpen) return;
 
       const target = this.getElementUnderPointer(e.clientX, e.clientY);
       if (!target) {
@@ -911,11 +957,38 @@
       return null;
     }
 
+    setArmed(on) {
+      this.armed = !!on;
+      if (this.host) {
+        this.host.style.pointerEvents = this.armed ? 'all' : 'none';
+        this.host.style.cursor = this.armed ? 'crosshair' : 'default';
+      }
+      if (!this.armed) {
+        if (this.reticle) this.reticle.style.display = 'none';
+        if (this.tooltip) this.tooltip.style.display = 'none';
+      }
+      if (this.dockSelect) this.dockSelect.classList.toggle('active', this.armed);
+    }
+
+    isEventInDock(e) {
+      if (!this.dock || this.dock.style.display === 'none') return false;
+      if (e.target !== this.host && (!this.host || !this.host.contains(e.target))) return false;
+      const r = this.dock.getBoundingClientRect();
+      return (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom);
+    }
+
+    updateDockCount() {
+      if (this.dockCount) this.dockCount.textContent = String(this.notes.length);
+    }
     onClick(e) {
       if (!this.active) return;
       if (this.isEventInModal(e)) {
         return;
       }
+      if (this.isEventInDock(e)) {
+        return;
+      }
+      if (!this.armed) return;
 
       e.preventDefault();
       e.stopPropagation();
@@ -929,6 +1002,7 @@
 
       if (this.modalOpen) {
         this.closeModal();
+        this.setArmed(false);
         return;
       }
 
@@ -956,6 +1030,7 @@
       card.querySelector('#card-comment').value = '';
 
       if (this.host) this.host.style.cursor = 'default';
+      this.setArmed(false);
       card.style.display = 'block';
       card.style.left = Math.max(20, Math.min(window.innerWidth - 340, clickX + 10)) + 'px';
       card.style.top = Math.max(20, Math.min(window.innerHeight - 300, clickY + 10)) + 'px';
@@ -966,7 +1041,7 @@
     closeModal() {
       this.modalOpen = false;
       this.editingNote = null;
-      if (this.host) this.host.style.cursor = this.active ? 'crosshair' : 'default';
+      if (this.host) this.host.style.cursor = (this.active && this.armed) ? 'crosshair' : 'default';
       if (this.modal) this.modal.style.display = 'none';
       this.selectedEl = null;
       this.pendingPayload = null;
@@ -1005,6 +1080,7 @@
       } catch (e) {}
       this.notes.push(note);
       this.createBadge(note);
+      this.updateDockCount();
       this.closeModal();
     }
 
