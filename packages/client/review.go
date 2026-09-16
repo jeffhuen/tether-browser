@@ -40,9 +40,9 @@ func (rc *ReviewController) getIsolatedContextID(ctx context.Context, client *CD
 
 	// Call Page.createIsolatedWorld to get execution context ID for tether-review world
 	createCall := map[string]any{
-		"frameId":             frameID,
-		"worldName":           "tether-review",
-		"grantUniveralAccess": true,
+		"frameId":              frameID,
+		"worldName":            "tether-review",
+		"grantUniversalAccess": true,
 	}
 	createResp, err := client.Call(ctx, "Page.createIsolatedWorld", createCall)
 	if err != nil {

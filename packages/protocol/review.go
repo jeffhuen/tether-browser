@@ -137,10 +137,10 @@ func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport st
 		}
 		componentLabel := target.TagName
 		if target.Role != "" && target.Role != target.TagName {
-			componentLabel = fmt.Sprintf("%s (%s)", componentLabel, target.Role)
+			componentLabel = fmt.Sprintf("%s (%s)", componentLabel, sanitizeMarkdownLine(target.Role))
 		}
 		if fw.Component != "" {
-			componentLabel = fmt.Sprintf("%s %s", fw.Component, componentLabel)
+			componentLabel = fmt.Sprintf("%s %s", sanitizeMarkdownLine(fw.Component), componentLabel)
 		}
 		if target.AccessibleName != "" {
 			componentLabel = fmt.Sprintf("%s %q", componentLabel, sanitizeMarkdownLine(target.AccessibleName))
@@ -157,14 +157,14 @@ func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport st
 			sb.WriteString(fmt.Sprintf("**Intent:** %s\n", sanitizeMarkdownLine(note.Intent)))
 		}
 		if fw.Name != "" && fw.Name != "Static" {
-			fwLine := fw.Name
+			fwLine := sanitizeMarkdownLine(fw.Name)
 			if fw.Component != "" {
-				fwLine = fmt.Sprintf("%s (%s)", fwLine, fw.Component)
+				fwLine = fmt.Sprintf("%s (%s)", fwLine, sanitizeMarkdownLine(fw.Component))
 			}
 			sb.WriteString(fmt.Sprintf("**Framework:** %s\n", fwLine))
 		}
 		if fw.SourceLocation != "" {
-			sb.WriteString(fmt.Sprintf("**Source:** %s (provenance: %s)\n", fw.SourceLocation, fw.Provenance))
+			sb.WriteString(fmt.Sprintf("**Source:** %s (provenance: %s)\n", sanitizeMarkdownLine(fw.SourceLocation), sanitizeMarkdownLine(fw.Provenance)))
 		}
 		sb.WriteString(fmt.Sprintf("**Selector:** %s\n", sanitizeMarkdownLine(target.Selector)))
 		if target.ElementPath != "" {
@@ -173,12 +173,12 @@ func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport st
 		sb.WriteString(fmt.Sprintf("**Bounds:** x=%.0f, y=%.0f, %.0fx%.0f\n",
 			target.RectViewport.X, target.RectViewport.Y, target.RectViewport.Width, target.RectViewport.Height))
 		if target.CSSClasses != "" {
-			sb.WriteString(fmt.Sprintf("**Classes:** `%s`\n", target.CSSClasses))
+			sb.WriteString(fmt.Sprintf("**Classes:** `%s`\n", sanitizeMarkdownLine(target.CSSClasses)))
 		}
 		if len(target.ComputedStyles) > 0 {
 			sb.WriteString("**Computed styles:**\n")
 			for k, v := range target.ComputedStyles {
-				sb.WriteString(fmt.Sprintf("- %s: %s\n", k, v))
+				sb.WriteString(fmt.Sprintf("- %s: %s\n", sanitizeMarkdownLine(k), sanitizeMarkdownLine(v)))
 			}
 		}
 		if len(note.Payload.NearbyText) > 0 {
