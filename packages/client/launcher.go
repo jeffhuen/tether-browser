@@ -129,6 +129,18 @@ func LaunchChrome(ctx context.Context, workspaceID string, proxyPort int) (*Chro
 		return nil, fmt.Errorf("create profile directory: %w", err)
 	}
 
+	// Self-heal order: adopt a live instance if the previous daemon died but
+	// Chrome survived; otherwise kill only our own stale profile processes
+	// (never the user's regular Chrome) and launch fresh. No manual recovery.
+	if port, ok := probeActivePort(profileDir); ok {
+		return &ChromeProcess{
+			ProfileDir: profileDir,
+			CDPPort:    port,
+			ProxyPort:  proxyPort,
+		}, nil
+	}
+	killStaleProfileProcesses(profileDir)
+
 	// Clean up any stale DevToolsActivePort file from previous crashes
 	activePortFile := filepath.Join(profileDir, "DevToolsActivePort")
 	_ = os.Remove(activePortFile)
@@ -166,11 +178,12 @@ func LaunchChrome(ctx context.Context, workspaceID string, proxyPort int) (*Chro
 		return nil, fmt.Errorf("start chrome process: %w", err)
 	}
 
-	// Poll for DevToolsActivePort to discover the allocated ephemeral port
-	cdpPort, err := waitForActivePort(profileDir, 10*time.Second)
+	// Poll for DevToolsActivePort to discover the allocated ephemeral port.
+	// Cold starts (component updates, profile migration) can exceed 10s.
+	cdpPort, err := waitForActivePort(profileDir, 30*time.Second)
 	if err != nil {
 		_ = cmd.Process.Kill()
-		return nil, fmt.Errorf("wait for devtools active port: %w", err)
+		return nil, fmt.Errorf("wait for devtools active port: %w (profile %s)", err, profileDir)
 	}
 
 	return &ChromeProcess{
@@ -204,28 +217,54 @@ func (cp *ChromeProcess) Close() error {
 	}
 }
 
+// probeActivePort reads DevToolsActivePort and verifies the port answers.
+// A stale file from a dead instance fails the dial and reports unhealthy.
+func probeActivePort(profileDir string) (int, bool) {
+	data, err := os.ReadFile(filepath.Join(profileDir, "DevToolsActivePort"))
+	if err != nil || len(data) == 0 {
+		return 0, false
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 1 {
+		return 0, false
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(lines[0]))
+	if err != nil || port <= 0 {
+		return 0, false
+	}
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
+	if err != nil {
+		return 0, false
+	}
+	conn.Close()
+	return port, true
+}
+
 func waitForActivePort(profileDir string, timeout time.Duration) (int, error) {
 	deadline := time.Now().Add(timeout)
 	activePortFile := filepath.Join(profileDir, "DevToolsActivePort")
 
 	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(activePortFile)
-		if err == nil && len(data) > 0 {
-			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-			if len(lines) >= 1 {
-				portStr := strings.TrimSpace(lines[0])
-				if port, err := strconv.Atoi(portStr); err == nil && port > 0 {
-					// Verify port is accepting TCP connections
-					conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
-					if err == nil {
-						conn.Close()
-						return port, nil
-					}
-				}
-			}
+		if port, ok := probeActivePort(profileDir); ok {
+			return port, nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
 	return 0, fmt.Errorf("timed out after %v waiting for %s", timeout, activePortFile)
+}
+
+// killStaleProfileProcesses terminates leftover Chrome processes bound to our
+// dedicated profile dir (orphaned when a daemon is killed). The match is
+// scoped to our dir only: the user's regular Chrome profile never matches.
+// Best-effort: failures are ignored so a missing pkill can never fail launch.
+func killStaleProfileProcesses(profileDir string) {
+	switch runtime.GOOS {
+	case "windows":
+		pattern := strings.ReplaceAll(profileDir, "'", "''")
+		_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+			fmt.Sprintf("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*%s*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }", pattern)).Run()
+	default:
+		_ = exec.Command("pkill", "-f", regexp.QuoteMeta(profileDir)).Run()
+	}
 }

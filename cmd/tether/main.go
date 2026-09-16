@@ -17,7 +17,7 @@ import (
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
-const helpText = `tether v0.1.9 - zero-latency remote browser automation bridge for AI coding agents
+const helpText = `tether v0.1.10 - zero-latency remote browser automation bridge for AI coding agents
 Usage:
   tether connect <host>      Link local Chrome to a remote server via SSH in one command
   tether daemon [options]    Start the local workstation daemon (drives Chrome via CDP)
