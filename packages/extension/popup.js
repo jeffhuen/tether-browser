@@ -283,8 +283,10 @@ document.addEventListener("DOMContentLoaded", () => {
       .replace(/'/g, "&#039;");
   }
 
-  // Initial load
+  // Initial load + live 2-second status & tab poll while popup is open
   refresh();
+  const pollInterval = setInterval(refresh, 2000);
+  window.addEventListener("unload", () => clearInterval(pollInterval));
 });
   function formatDesignFeedbackReport(notes) {
     if (!notes || notes.length === 0) return '';

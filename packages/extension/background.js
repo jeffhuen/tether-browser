@@ -663,6 +663,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     try {
       switch (msg.type) {
         case "popup_get_status": {
+          if (!nativePort) {
+            connectNativeHost();
+          }
           const tabList = await handleTabList();
           let notes = [];
           if (activeTabId) {
