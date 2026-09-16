@@ -225,6 +225,7 @@ func (d *CDPDriver) Snapshot(ctx context.Context, params protocol.SnapshotParams
 		/auth_code/i,
 		/oauth_state/i,
 		/[?&](code|state)=/i,
+		/\bnonce\b/i,
 		/api_?key/i,
 		/client_secret/i,
 		/x-amz-/i,
