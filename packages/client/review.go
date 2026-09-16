@@ -120,6 +120,16 @@ func (rc *ReviewController) Start(ctx context.Context, client *CDPClient) error 
 	return err
 }
 
+// StartPassive activates the review session chrome (dock, markers) without
+// arming the element selector, so automation clicks pass through untouched.
+func (rc *ReviewController) StartPassive(ctx context.Context, client *CDPClient) error {
+	if err := rc.InjectReviewScript(ctx, client); err != nil {
+		return err
+	}
+	_, err := rc.evalInIsolatedWorld(ctx, client, "window.__tetherReview ? window.__tetherReview.startPassive() : false")
+	return err
+}
+
 // GetNotes retrieves the captured review notes and element context from the isolated world.
 func (rc *ReviewController) GetNotes(ctx context.Context, client *CDPClient) ([]*protocol.ReviewNote, error) {
 	val, err := rc.evalInIsolatedWorld(ctx, client, "window.__tetherReview ? window.__tetherReview.getNotes() : []")

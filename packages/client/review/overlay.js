@@ -598,6 +598,7 @@
       this.dock = null;
       this.dockSelect = null;
       this.dockCount = null;
+      this.summary = null;
       this.hoveredEl = null;
       this.selectedEl = null;
       this.pendingPayload = null;
@@ -705,6 +706,29 @@
         .dock-btn { border: none; border-radius: 9999px; padding: 6px 12px; font: inherit; cursor: pointer; background: #2563eb; color: #fff; }
         .dock-btn.active { background: #16a34a; }
         .dock-done { background: transparent; color: #cbd5e1; }
+        .summary {
+          position: fixed;
+          left: 50%;
+          bottom: 64px;
+          transform: translateX(-50%);
+          width: 360px;
+          max-height: 240px;
+          overflow-y: auto;
+          background: #0f172a;
+          color: #e2e8f0;
+          border-radius: 12px;
+          box-shadow: 0 10px 24px rgba(0,0,0,.35);
+          pointer-events: auto;
+          z-index: 160;
+          font: 12px/1.5 -apple-system, BlinkMacSystemFont, sans-serif;
+          padding: 10px 12px;
+          display: none;
+          user-select: none;
+        }
+        .summary-header { display: flex; justify-content: space-between; align-items: center; font-weight: 700; margin-bottom: 6px; }
+        .summary-row { padding: 4px 6px; border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .summary-row:hover { background: #1e293b; }
+        .summary-empty { opacity: .6; }
       `;
       shadow.appendChild(style);
 
@@ -772,6 +796,7 @@
         <span class="dock-title">Tether</span>
         <button class="dock-btn" id="dock-select" title="Select an element to annotate">⊕ Select</button>
         <span class="dock-count" id="dock-count">0</span>
+        <button class="dock-btn" id="dock-list" title="Show all pins">☰ List</button>
         <button class="dock-btn dock-done" id="dock-done" title="End review session">✕ Done</button>
       `;
       shadow.appendChild(dock);
@@ -780,8 +805,19 @@
       this.dockCount = dock.querySelector('#dock-count');
       dock.addEventListener('click', (e) => { e.stopPropagation(); });
       dock.querySelector('#dock-select').addEventListener('click', () => this.setArmed(true));
+      dock.querySelector('#dock-list').addEventListener('click', () => this.toggleSummary());
       dock.querySelector('#dock-done').addEventListener('click', () => this.stop());
 
+      const summary = document.createElement('div');
+      summary.className = 'summary';
+      summary.innerHTML = `
+        <div class="summary-header"><span>Review notes</span><button class="dock-btn" id="summary-copy" title="Copy all notes to clipboard">⧉ Copy all</button></div>
+        <div class="summary-list" id="summary-list"></div>
+      `;
+      shadow.appendChild(summary);
+      this.summary = summary;
+      summary.addEventListener('click', (e) => { e.stopPropagation(); });
+      summary.querySelector('#summary-copy').addEventListener('click', () => this.copyAll());
       (document.body || document.documentElement).appendChild(host);
       this.host = host;
       this.shadowRoot = shadow;
@@ -789,7 +825,7 @@
       return shadow;
     }
 
-    start() {
+    start(armed = true) {
       this.active = true;
       this.ensureOverlay();
       if (this.modalOpen) this.closeModal();
@@ -800,15 +836,83 @@
       window.addEventListener('click', this.boundOnClick, true);
       window.addEventListener('keydown', this.boundOnKeyDown, true);
       if (this.dock) this.dock.style.display = 'flex';
+      if (this.summary) this.summary.style.display = 'none';
       this.updateDockCount();
-      this.setArmed(true);
+      this.renderSummary();
+      this.setArmed(armed);
       this.startTracking();
+    }
+
+    startPassive() {
+      this.start(false);
+    }
+
+    toggleSummary() {
+      if (!this.summary) return;
+      const show = this.summary.style.display === 'none';
+      if (show) this.renderSummary();
+      this.summary.style.display = show ? 'block' : 'none';
+    }
+
+    noteLabel(n) {
+      if (!n || !n.payload || !n.payload.target) return 'note';
+      const t = n.payload.target;
+      return t.accessibleName || (t.tagName + (t.cssClasses ? '.' + t.cssClasses.split(/\s+/)[0] : ''));
+    }
+
+    renderSummary() {
+      if (!this.summary) return;
+      const list = this.summary.querySelector('#summary-list');
+      if (!list) return;
+      list.innerHTML = '';
+      if (this.notes.length === 0) {
+        list.innerHTML = '<div class="summary-empty">No pins yet — press Select, then click an element.</div>';
+        return;
+      }
+      this.notes.forEach(n => {
+        const row = document.createElement('div');
+        row.className = 'summary-row';
+        row.textContent = '[' + n.index + '] ' + this.noteLabel(n) + ' — ' + (n.comment || n.intent || '');
+        row.title = 'Open note ' + n.index;
+        row.addEventListener('click', () => this.openExistingModal(n));
+        list.appendChild(row);
+      });
+    }
+
+    buildSummaryText() {
+      const lines = ['Tether Review — ' + this.notes.length + ' note' + (this.notes.length === 1 ? '' : 's')];
+      this.notes.forEach(n => {
+        lines.push('[' + n.index + '] ' + this.noteLabel(n) + ' (' + (n.intent || 'note') + '): ' + (n.comment || ''));
+      });
+      return lines.join('\n');
+    }
+
+    copyAll() {
+      const text = this.buildSummaryText();
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        navigator.clipboard.writeText(text).catch(() => this.fallbackCopy(text));
+      } else {
+        this.fallbackCopy(text);
+      }
+    }
+
+    fallbackCopy(text) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;opacity:0;';
+        (document.body || document.documentElement).appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+      } catch (e) {}
     }
 
     stop() {
       this.active = false;
       this.setArmed(false);
       if (this.dock) this.dock.style.display = 'none';
+      if (this.summary) this.summary.style.display = 'none';
       if (this.rafId) {
         cancelAnimationFrame(this.rafId);
         this.rafId = 0;
@@ -850,6 +954,7 @@
       });
       this.markerElements.clear();
       this.updateDockCount();
+      this.renderSummary();
       try {
         document.querySelectorAll('[data-tether-pin]').forEach(el => el.removeAttribute('data-tether-pin'));
       } catch (e) {}
@@ -970,11 +1075,16 @@
       if (this.dockSelect) this.dockSelect.classList.toggle('active', this.armed);
     }
 
+    hitChrome(el, x, y) {
+      if (!el || el.style.display === 'none') return false;
+      const r = el.getBoundingClientRect();
+      return (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom);
+    }
+
     isEventInDock(e) {
-      if (!this.dock || this.dock.style.display === 'none') return false;
       if (e.target !== this.host && (!this.host || !this.host.contains(e.target))) return false;
-      const r = this.dock.getBoundingClientRect();
-      return (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom);
+      if (this.hitChrome(this.dock, e.clientX, e.clientY)) return true;
+      return this.hitChrome(this.summary, e.clientX, e.clientY);
     }
 
     updateDockCount() {
@@ -1081,6 +1191,7 @@
       this.notes.push(note);
       this.createBadge(note);
       this.updateDockCount();
+      this.renderSummary();
       this.closeModal();
     }
 
