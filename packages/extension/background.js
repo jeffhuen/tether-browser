@@ -41,6 +41,7 @@ function connectNativeHost() {
     nativePort.onMessage.addListener(handleNativeMessage);
     nativePort.onDisconnect.addListener(handleNativeDisconnect);
     startHeartbeat();
+    ensureTabGroup(true);
     console.log("[Tether] Connected to native messaging host:", NATIVE_HOST_NAME);
   } catch (err) {
     console.warn("[Tether] Failed to connect to native messaging host:", err.message);
@@ -136,7 +137,21 @@ async function ensureTabGroup(createIfEmpty = true) {
 
   if (!createIfEmpty) return null;
 
-  // Create dedicated window with a new tab and Tether tab group
+  // Prefer creating inside current active window so tabs stay in one window
+  try {
+    const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (activeTabs.length > 0) {
+      const tab = await chrome.tabs.create({ url: "about:blank", active: false });
+      const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
+      await chrome.tabGroups.update(groupId, { title: "Tether", color: "blue" });
+      tabGroupId = groupId;
+      tabGroupTabs = new Set([tab.id]);
+      activeTabId = tab.id;
+      return tabGroupId;
+    }
+  } catch {}
+
+  // Fallback: create dedicated window if no active window exists
   const win = await chrome.windows.create({ focused: false, url: "about:blank" });
   const tab = win.tabs[0];
   const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
@@ -219,18 +234,13 @@ function resolveTargetTabId(params = {}) {
 
 async function getLiveTabs() {
   let tabs = [];
-  if (tabGroupId !== null) {
-    try {
-      tabs = await chrome.tabs.query({ groupId: tabGroupId });
-    } catch {}
-  }
+  try {
+    tabs = await chrome.tabs.query({ currentWindow: true });
+  } catch {}
   if (tabs.length === 0) {
     try {
-      tabs = await chrome.tabs.query({ currentWindow: true });
+      tabs = await chrome.tabs.query({});
     } catch {}
-  }
-  for (const t of tabs) {
-    tabGroupTabs.add(t.id);
   }
   return tabs;
 }
@@ -507,11 +517,13 @@ async function handleTabList() {
   return {
     tabs: tabs.map((t) => ({
       id: String(t.id),
-      title: t.title || "Untitled",
+      title: (tabGroupId !== null && t.groupId === tabGroupId ? "[Tether] " : "") + (t.title || "Untitled"),
       url: t.url || "",
       active: t.active || t.id === activeTabId,
+      inGroup: tabGroupId !== null && t.groupId === tabGroupId,
     })),
     activeId: String(activeTabId || (tabs.length > 0 ? tabs[0].id : "")),
+    tabGroupId,
   };
 }
 
@@ -523,6 +535,18 @@ async function handleTabSwitch(params = {}) {
   }
   await chrome.tabs.update(tabId, { active: true });
   activeTabId = tabId;
+
+  // Bring the switched tab into the Tether group if not already grouped
+  if (tabGroupId !== null) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab && tab.groupId !== tabGroupId) {
+        await chrome.tabs.group({ tabIds: [tabId], groupId: tabGroupId });
+        tabGroupTabs.add(tabId);
+      }
+    } catch {}
+  }
+
   await ensureAttached(tabId);
   return { ok: true, activeId: String(tabId) };
 }

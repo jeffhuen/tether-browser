@@ -355,12 +355,7 @@ func (d *ExtensionDriver) IsAvailable() bool {
 	return true
 }
 
-func (d *ExtensionDriver) ensureConn() error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.conn != nil {
-		return nil
-	}
+func (d *ExtensionDriver) dialConnLocked() error {
 	network := "unix"
 	if runtime.GOOS == "windows" {
 		network = "tcp"
@@ -374,11 +369,16 @@ func (d *ExtensionDriver) ensureConn() error {
 	return nil
 }
 
-func (d *ExtensionDriver) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	if err := d.ensureConn(); err != nil {
-		return nil, err
+func (d *ExtensionDriver) ensureConn() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.conn != nil {
+		return nil
 	}
+	return d.dialConnLocked()
+}
 
+func (d *ExtensionDriver) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	id := fmt.Sprintf("d-%d", d.reqCounter.Add(1))
 	req, err := protocol.NewRequest(id, method, params, 0, "")
 	if err != nil {
@@ -393,27 +393,40 @@ func (d *ExtensionDriver) call(ctx context.Context, method string, params any) (
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if _, err := d.conn.Write(data); err != nil {
-		_ = d.conn.Close()
-		d.conn = nil
-		return nil, fmt.Errorf("write to bridge socket: %w", err)
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if d.conn == nil {
+			if err := d.dialConnLocked(); err != nil {
+				return nil, err
+			}
+		}
+
+		if _, err := d.conn.Write(data); err != nil {
+			_ = d.conn.Close()
+			d.conn = nil
+			lastErr = err
+			continue
+		}
+
+		line, err := d.reader.ReadBytes('\n')
+		if err != nil {
+			_ = d.conn.Close()
+			d.conn = nil
+			lastErr = err
+			continue
+		}
+
+		var resp protocol.Response
+		if err := json.Unmarshal(line, &resp); err != nil {
+			return nil, fmt.Errorf("unmarshal bridge response: %w", err)
+		}
+		if resp.Error != nil {
+			return nil, fmt.Errorf("extension error: %s", resp.Error.Message)
+		}
+		return resp.Result, nil
 	}
 
-	line, err := d.reader.ReadBytes('\n')
-	if err != nil {
-		_ = d.conn.Close()
-		d.conn = nil
-		return nil, fmt.Errorf("read from bridge socket: %w", err)
-	}
-
-	var resp protocol.Response
-	if err := json.Unmarshal(line, &resp); err != nil {
-		return nil, fmt.Errorf("unmarshal bridge response: %w", err)
-	}
-	if resp.Error != nil {
-		return nil, fmt.Errorf("extension error: %s", resp.Error.Message)
-	}
-	return resp.Result, nil
+	return nil, fmt.Errorf("bridge communication failed after retry: %w", lastErr)
 }
 
 func (d *ExtensionDriver) OpenTab(ctx context.Context, params protocol.OpenParams) (*protocol.OpenResult, error) {

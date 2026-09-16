@@ -58,7 +58,10 @@ document.addEventListener("DOMContentLoaded", () => {
           <div class="tab-title">${escapeHTML(tab.title || "Untitled")}</div>
           <div class="tab-url">${escapeHTML(tab.url || "")}</div>
         </div>
-        ${isActive ? '<span class="tab-badge">ACTIVE</span>' : ""}
+        <div class="tab-badges" style="display:flex;gap:4px;align-items:center;">
+          ${tab.inGroup ? '<span class="tab-badge" style="background:#0284c7;color:#fff;">TETHER</span>' : ''}
+          ${isActive ? '<span class="tab-badge">ACTIVE</span>' : ''}
+        </div>
       `;
 
       item.addEventListener("click", async () => {
