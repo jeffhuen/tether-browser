@@ -52,7 +52,7 @@ func TestExtensionBridgeOverUnixSocket(t *testing.T) {
 	// 1. Start NativeHost server listening on the private Unix socket
 	serverErrChan := make(chan error, 1)
 	go func() {
-		serverErrChan <- RunNativeHostServer(ctx, extToHostReader, hostToExtWriter)
+		serverErrChan <- RunNativeHostServer(ctx, extToHostReader, hostToExtWriter, nil)
 	}()
 
 	// Wait for socket to become ready
@@ -153,9 +153,8 @@ func TestServerWithExtensionDriver(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		_ = RunNativeHostServer(ctx, extToHostReader, hostToExtWriter)
+		_ = RunNativeHostServer(ctx, extToHostReader, hostToExtWriter, nil)
 	}()
-
 	// Wait for socket
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

@@ -98,13 +98,108 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  const connectSection = document.getElementById("connect-section");
+  const connectForm = document.getElementById("connect-form");
+  const connectHostInput = document.getElementById("connect-host-input");
+  const btnDoConnect = document.getElementById("btn-do-connect");
+  const recentHostsWrapper = document.getElementById("recent-hosts-wrapper");
+  const recentHostsList = document.getElementById("recent-hosts-list");
+
+  async function loadRecentHosts() {
+    try {
+      const data = await chrome.storage.local.get(["recent_hosts"]);
+      const hosts = data.recent_hosts || [];
+      if (hosts.length === 0) {
+        if (recentHostsWrapper) recentHostsWrapper.style.display = "none";
+        return;
+      }
+      if (recentHostsWrapper) recentHostsWrapper.style.display = "flex";
+      if (recentHostsList) {
+        recentHostsList.innerHTML = "";
+        hosts.forEach((h) => {
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "recent-chip";
+          chip.textContent = h;
+          chip.title = `Connect to ${h}`;
+          chip.addEventListener("click", () => {
+            if (connectHostInput) connectHostInput.value = h;
+            doConnect(h);
+          });
+          recentHostsList.appendChild(chip);
+        });
+      }
+    } catch {}
+  }
+
+  async function saveRecentHost(host) {
+    try {
+      const data = await chrome.storage.local.get(["recent_hosts"]);
+      let hosts = data.recent_hosts || [];
+      hosts = [host, ...hosts.filter((item) => item !== host)].slice(0, 5);
+      await chrome.storage.local.set({ recent_hosts: hosts });
+      loadRecentHosts();
+    } catch {}
+  }
+
+  async function doConnect(host) {
+    if (!host) return;
+    if (btnDoConnect) {
+      btnDoConnect.disabled = true;
+      btnDoConnect.textContent = "Connecting...";
+    }
+    showToast(`Connecting to ${host}...`, 3000);
+
+    try {
+      await saveRecentHost(host);
+      const res = await sendMessage({ type: "popup_ssh_connect", targetHost: host });
+      if (res && res.error) {
+        showToast("Error: " + res.error, 3000);
+      } else {
+        showToast(`✓ Connected to ${host}!`, 2000);
+        refresh();
+      }
+    } catch (err) {
+      showToast("Connect error: " + err.message, 3000);
+    } finally {
+      if (btnDoConnect) {
+        btnDoConnect.disabled = false;
+        btnDoConnect.textContent = "Connect";
+      }
+    }
+  }
+
+  if (connectForm) {
+    connectForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const host = connectHostInput ? connectHostInput.value.trim() : "";
+      if (host) doConnect(host);
+    });
+  }
+
+  if (statusBadge) {
+    statusBadge.style.cursor = "pointer";
+    statusBadge.addEventListener("click", () => {
+      if (connectSection) {
+        const isShown = connectSection.style.display !== "none";
+        connectSection.style.display = isShown ? "none" : "block";
+        if (!isShown) loadRecentHosts();
+      }
+    });
+  }
+
   function updateStatusUI(status) {
     if (status && status.connected) {
       statusBadge.className = "badge badge-connected";
       statusText.textContent = "Bridge Active";
+      if (connectSection) connectSection.style.display = "none";
     } else {
       statusBadge.className = "badge badge-disconnected";
-      statusText.textContent = "Waiting for Daemon";
+      statusText.textContent = "Disconnected (Click to Connect)";
+      if (connectSection && connectSection.style.display === "none") {
+        connectSection.style.display = "block";
+        loadRecentHosts();
+      }
     }
   }
 
