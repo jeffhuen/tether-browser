@@ -48,6 +48,7 @@ type Request struct {
 	Params  json.RawMessage `json:"params,omitempty"`
 	Seq     uint64          `json:"seq,omitempty"`
 	Epoch   string          `json:"epoch,omitempty"`
+	Token   string          `json:"token,omitempty"`
 }
 
 // Response represents a JSON-RPC 2.0 response with session tracking.
@@ -146,6 +147,15 @@ func NewRequest(id any, method string, params any, seq uint64, epoch string) (*R
 	}, nil
 }
 
+// NewRequestWithToken creates a request with an authentication token.
+func NewRequestWithToken(id any, method string, params any, seq uint64, epoch string, token string) (*Request, error) {
+	req, err := NewRequest(id, method, params, seq, epoch)
+	if err != nil {
+		return nil, err
+	}
+	req.Token = token
+	return req, nil
+}
 // NewResponse creates a successful response with automatic JSON marshaling of result.
 // If result is nil, it serializes as literal JSON null per JSON-RPC 2.0 spec.
 func NewResponse(id any, result any, seq uint64, epoch string) (*Response, error) {

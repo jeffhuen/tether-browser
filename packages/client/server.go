@@ -22,11 +22,12 @@ import (
 
 // Server receives JSON-RPC commands from the remote CLI and dispatches them to BrowserDriver.
 type Server struct {
-	driver   BrowserDriver
-	listener net.Listener
-	port     atomic.Int32
-	mu       sync.Mutex
-	closed   bool
+	driver    BrowserDriver
+	listener  net.Listener
+	port      atomic.Int32
+	authToken string
+	mu        sync.Mutex
+	closed    bool
 }
 
 // NewServer creates a new daemon RPC server bound to a driver.
@@ -34,6 +35,40 @@ func NewServer(driver BrowserDriver) *Server {
 	return &Server{
 		driver: driver,
 	}
+}
+
+// SetAuthToken configures a bearer token required for daemon access.
+func (s *Server) SetAuthToken(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authToken = token
+}
+
+// AuthToken returns the configured bearer token.
+func (s *Server) AuthToken() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.authToken
+}
+
+func (s *Server) isAuthorized(req *protocol.Request, httpReq *http.Request) bool {
+	token := s.AuthToken()
+	if token == "" {
+		return true
+	}
+	if httpReq != nil {
+		auth := httpReq.Header.Get("Authorization")
+		if strings.HasPrefix(auth, "Bearer ") && strings.TrimPrefix(auth, "Bearer ") == token {
+			return true
+		}
+		if httpReq.Header.Get("X-Tether-Token") == token {
+			return true
+		}
+	}
+	if req != nil && req.Token == token {
+		return true
+	}
+	return false
 }
 
 // ListenAndServe binds to 127.0.0.1 on the specified port (or 0 for ephemeral).
@@ -142,6 +177,12 @@ func (s *Server) handleConn(conn net.Conn) {
 				fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(respBytes), string(respBytes))
 				return
 			}
+			if !s.isAuthorized(&rpcReq, req) {
+				errResp := protocol.NewErrorResponse(nil, protocol.CodeAuthRequired, "authentication required: invalid or missing bearer token", nil, 0, "")
+				respBytes, _ := json.Marshal(errResp)
+				fmt.Fprintf(conn, "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(respBytes), string(respBytes))
+				return
+			}
 
 			rpcResp := s.Dispatch(req.Context(), &rpcReq)
 			respBytes, _ := json.Marshal(rpcResp)
@@ -175,6 +216,13 @@ func (s *Server) handleConn(conn net.Conn) {
 			var req protocol.Request
 			if err := json.Unmarshal(decompressed, &req); err != nil {
 				return
+			}
+			if !s.isAuthorized(&req, nil) {
+				errResp := protocol.NewErrorResponse(req.ID, protocol.CodeAuthRequired, "authentication required: invalid or missing token", nil, req.Seq, req.Epoch)
+				respJSON, _ := json.Marshal(errResp)
+				respFramed, _ := protocol.CompressPayload(respJSON)
+				_, _ = conn.Write(respFramed)
+				continue
 			}
 			resp := s.Dispatch(context.Background(), &req)
 			respJSON, _ := json.Marshal(resp)
@@ -215,6 +263,13 @@ func (s *Server) handleConn(conn net.Conn) {
 			if err := json.Unmarshal(decompressed, &req); err != nil {
 				return
 			}
+			if !s.isAuthorized(&req, nil) {
+				errResp := protocol.NewErrorResponse(req.ID, protocol.CodeAuthRequired, "authentication required: invalid or missing token", nil, req.Seq, req.Epoch)
+				respJSON, _ := json.Marshal(errResp)
+				respFramed, _ := protocol.CompressPayload(respJSON)
+				_, _ = conn.Write(respFramed)
+				continue
+			}
 			resp := s.Dispatch(context.Background(), &req)
 			respJSON, _ := json.Marshal(resp)
 			respFramed, err := protocol.CompressPayload(respJSON)
@@ -230,10 +285,16 @@ func (s *Server) handleConn(conn net.Conn) {
 		// JSON-RPC stream mode: loop continuously without peeking to preserve read-ahead buffer
 		dec := json.NewDecoder(br)
 		for {
-			_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
 			var req protocol.Request
 			if err := dec.Decode(&req); err != nil {
 				return
+			}
+			if !s.isAuthorized(&req, nil) {
+				errResp := protocol.NewErrorResponse(req.ID, protocol.CodeAuthRequired, "authentication required: invalid or missing token", nil, req.Seq, req.Epoch)
+				respBytes, _ := json.Marshal(errResp)
+				respBytes = append(respBytes, '\n')
+				_, _ = conn.Write(respBytes)
+				continue
 			}
 			resp := s.Dispatch(context.Background(), &req)
 			respBytes, err := json.Marshal(resp)
@@ -292,6 +353,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		errResp := protocol.NewErrorResponse(nil, protocol.CodeParseError, "parse error", nil, 0, "")
 		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(errResp)
+		return
+	}
+
+	if !s.isAuthorized(&req, r) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		errResp := protocol.NewErrorResponse(req.ID, protocol.CodeAuthRequired, "authentication required: invalid or missing bearer token", nil, req.Seq, req.Epoch)
 		_ = json.NewEncoder(w).Encode(errResp)
 		return
 	}

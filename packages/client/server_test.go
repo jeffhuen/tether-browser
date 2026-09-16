@@ -292,6 +292,44 @@ func TestServerHTTPOriginSecurity(t *testing.T) {
 	}
 }
 
+func TestServerTokenAuthentication(t *testing.T) {
+	driver := &mockDriver{}
+	server := NewServer(driver)
+	server.SetAuthToken("test-bearer-secret")
+
+	reqObj, _ := protocol.NewRequest("req-auth", protocol.MethodStatus, nil, 1, "")
+	body, _ := json.Marshal(reqObj)
+
+	// 1. Unauthenticated HTTP request -> 401 Unauthorized
+	httpReq := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	httpReq.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, httpReq)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized without token, got: %d", w.Code)
+	}
+
+	// 2. HTTP request with wrong bearer token -> 401 Unauthorized
+	httpReqWrong := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	httpReqWrong.Header.Set("Content-Type", "application/json")
+	httpReqWrong.Header.Set("Authorization", "Bearer wrong-token")
+	wWrong := httptest.NewRecorder()
+	server.ServeHTTP(wWrong, httpReqWrong)
+	if wWrong.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized with wrong token, got: %d", wWrong.Code)
+	}
+
+	// 3. HTTP request with correct bearer token -> 200 OK
+	httpReqAuth := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	httpReqAuth.Header.Set("Content-Type", "application/json")
+	httpReqAuth.Header.Set("Authorization", "Bearer test-bearer-secret")
+	wAuth := httptest.NewRecorder()
+	server.ServeHTTP(wAuth, httpReqAuth)
+	if wAuth.Code != http.StatusOK {
+		t.Errorf("expected 200 OK with valid bearer token, got: %d", wAuth.Code)
+	}
+}
+
 func TestServerZstdBinaryFraming(t *testing.T) {
 	driver := &mockDriver{}
 	server := NewServer(driver)

@@ -53,8 +53,8 @@ func runDaemon(args []string) int {
 	noChrome := fs.Bool("no-chrome", false, "Do not launch Chrome automatically")
 	chromeURL := fs.String("chrome-url", "", "Custom Chrome CDP URL to attach to")
 	enroll := fs.String("enroll", "localhost:3000=127.0.0.1:3000,localhost:5173=127.0.0.1:5173,localhost:8000=127.0.0.1:8000,localhost:8080=127.0.0.1:8080", "Comma-separated route enrollments")
+	token := fs.String("token", os.Getenv("TETHER_AUTH_TOKEN"), "Bearer authentication token for daemon RPC")
 	_ = fs.Parse(args)
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -97,7 +97,12 @@ func runDaemon(args []string) int {
 
 	driver := client.NewCDPDriver(cdpURL)
 	server := client.NewServer(driver)
-	fmt.Printf("Tether daemon listening on 127.0.0.1:%d (Mode A proxy on 127.0.0.1:%d)\n", *port, actualProxyPort)
+	if *token != "" {
+		server.SetAuthToken(*token)
+		fmt.Printf("Tether daemon listening on 127.0.0.1:%d [authenticated] (Mode A proxy on 127.0.0.1:%d)\n", *port, actualProxyPort)
+	} else {
+		fmt.Printf("Tether daemon listening on 127.0.0.1:%d (Mode A proxy on 127.0.0.1:%d)\n", *port, actualProxyPort)
+	}
 	serverErrChan := make(chan error, 1)
 	go func() {
 		serverErrChan <- server.ListenAndServe(*port)
