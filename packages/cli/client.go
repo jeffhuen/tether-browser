@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -50,7 +49,7 @@ func NewClient(addr string) *Client {
 		addr:    addr,
 		epoch:   fmt.Sprintf("epoch-%d", time.Now().UnixNano()),
 		timeout: 30 * time.Second,
-		token:   os.Getenv("TETHER_AUTH_TOKEN"),
+		token:   ResolveClientToken(),
 	}
 }
 

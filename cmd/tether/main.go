@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"net"
@@ -19,7 +17,7 @@ import (
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
-const helpText = `tether v0.1.5 - zero-latency remote browser automation bridge for AI coding agents
+const helpText = `tether v0.1.6 - zero-latency remote browser automation bridge for AI coding agents
 Usage:
   tether connect <host>      Link local Chrome to a remote server via SSH in one command
   tether daemon [options]    Start the local workstation daemon (drives Chrome via CDP)
@@ -58,8 +56,18 @@ func runDaemon(args []string) int {
 	noChrome := fs.Bool("no-chrome", false, "Do not launch Chrome automatically")
 	chromeURL := fs.String("chrome-url", "", "Custom Chrome CDP URL to attach to")
 	enroll := fs.String("enroll", "localhost:3000=127.0.0.1:3000,localhost:5173=127.0.0.1:5173,localhost:8000=127.0.0.1:8000,localhost:8080=127.0.0.1:8080", "Comma-separated route enrollments")
-	token := fs.String("token", os.Getenv("TETHER_AUTH_TOKEN"), "Bearer authentication token for daemon RPC")
+	tokenFlag := fs.String("token", "", "Bearer authentication token for daemon RPC (default: persisted workstation token)")
 	_ = fs.Parse(args)
+
+	token := strings.TrimSpace(*tokenFlag)
+	if token == "" {
+		var err error
+		token, err = cli.EnsureDaemonToken()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error resolving auth token: %v\n", err)
+			return 1
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -102,12 +110,8 @@ func runDaemon(args []string) int {
 
 	driver := client.NewCDPDriver(cdpURL)
 	server := client.NewServer(driver)
-	if *token != "" {
-		server.SetAuthToken(*token)
-		fmt.Printf("Tether daemon listening on 127.0.0.1:%d [authenticated] (Mode A proxy on 127.0.0.1:%d)\n", *port, actualProxyPort)
-	} else {
-		fmt.Printf("Tether daemon listening on 127.0.0.1:%d (Mode A proxy on 127.0.0.1:%d)\n", *port, actualProxyPort)
-	}
+	server.SetAuthToken(token)
+	fmt.Printf("Tether daemon listening on 127.0.0.1:%d [authenticated] (Mode A proxy on 127.0.0.1:%d)\n", *port, actualProxyPort)
 	serverErrChan := make(chan error, 1)
 	go func() {
 		serverErrChan <- server.ListenAndServe(*port)
@@ -192,16 +196,11 @@ func runConnect(args []string) int {
 	targetHost := args[0]
 	sshExtraArgs := args[1:]
 
-	token := os.Getenv("TETHER_AUTH_TOKEN")
-	if token == "" {
-		buf := make([]byte, 16)
-		if _, err := rand.Read(buf); err == nil {
-			token = hex.EncodeToString(buf)
-		} else {
-			token = fmt.Sprintf("tether-%d", time.Now().UnixNano())
-		}
+	token, err := cli.EnsureDaemonToken()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error resolving auth token: %v\n", err)
+		return 1
 	}
-
 	// Check if local daemon is already running
 	conn, err := net.DialTimeout("tcp", "127.0.0.1:9333", 300*time.Millisecond)
 	if err == nil {
@@ -245,8 +244,8 @@ func runConnect(args []string) int {
 	}
 
 	fmt.Printf("Connecting to %s with SSH reverse tunnel (-R 9333:localhost:9333)...\n", targetHost)
-	remoteCmd := fmt.Sprintf("export TETHER_AUTH_TOKEN=%q; exec ${SHELL:-bash} -l", token)
-
+	q := cli.ShellQuote(token)
+	remoteCmd := fmt.Sprintf("export TETHER_AUTH_TOKEN=%s; mkdir -p ~/.cache/tether && chmod 700 ~/.cache/tether && printf %%s %s > ~/.cache/tether/auth && chmod 600 ~/.cache/tether/auth; exec ${SHELL:-bash} -l", q, q)
 	sshArgs := []string{
 		"-R", "9333:localhost:9333",
 		"-t", targetHost,
