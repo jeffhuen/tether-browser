@@ -103,7 +103,9 @@ if [ "$download_success" = false ]; then
         if [ -f "./cmd/tether/main.go" ]; then
             CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN_PATH" ./cmd/tether
         else
-            GOBIN="$TMP_DIR" CGO_ENABLED=0 go install -ldflags="-s -w" "github.com/${REPO}/cmd/tether@latest"
+            if ! GOBIN="$TMP_DIR" CGO_ENABLED=0 go install -ldflags="-s -w" "github.com/${REPO}/cmd/tether@v${VERSION}" 2>/dev/null; then
+                GOBIN="$TMP_DIR" CGO_ENABLED=0 go install -ldflags="-s -w" "github.com/${REPO}/cmd/tether@main"
+            fi
             if [ -f "${TMP_DIR}/tether" ]; then
                 BIN_PATH="${TMP_DIR}/tether"
             fi
