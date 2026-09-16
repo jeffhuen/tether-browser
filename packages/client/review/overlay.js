@@ -8,11 +8,13 @@
   const SECRET_PATTERNS = [
     /access_token/i,
     /auth_token/i,
+    /refresh_?token/i,
     /id_token/i,
     /session_?token/i,
     /\btoken\b/i,
     /auth_code/i,
     /oauth_state/i,
+    /[?&](code|state)=/i,
     /\bnonce\b/i,
     /api_?key/i,
     /client_secret/i,
