@@ -3,9 +3,8 @@
 # Usage: curl -fsSL https://raw.githubusercontent.com/jeffhuen/tether-browser/main/install.sh | bash
 
 set -euo pipefail
-
 REPO="jeffhuen/tether-browser"
-VERSION="0.1.0"
+VERSION="0.1.1"
 
 # Color helpers
 if [ -t 1 ]; then
@@ -81,20 +80,24 @@ trap cleanup EXIT
 BIN_PATH="${TMP_DIR}/tether"
 
 # 4. Download release artifact or compile via Go
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/v${VERSION}/tether-v${VERSION}-${OS}-${ARCH}.tar.gz"
+DOWNLOAD_URL="https://github.com/${REPO}/releases/download/v${VERSION}/tether-${OS}-${ARCH}"
+DOWNLOAD_TAR_URL="https://github.com/${REPO}/releases/download/v${VERSION}/tether-v${VERSION}-${OS}-${ARCH}.tar.gz"
 
 download_success=false
 if command -v curl >/dev/null 2>&1; then
-    if curl -fsSL -o "${TMP_DIR}/tether.tar.gz" "$DOWNLOAD_URL" 2>/dev/null; then
+    if curl -fsSL -o "$BIN_PATH" "$DOWNLOAD_URL" 2>/dev/null; then
+        chmod +x "$BIN_PATH"
+        download_success=true
+    elif curl -fsSL -o "${TMP_DIR}/tether.tar.gz" "$DOWNLOAD_TAR_URL" 2>/dev/null; then
         tar -xzf "${TMP_DIR}/tether.tar.gz" -C "$TMP_DIR"
         EXTRACTED_BIN="$(find "$TMP_DIR" -type f -name tether | head -n 1)"
         if [ -n "$EXTRACTED_BIN" ]; then
             mv "$EXTRACTED_BIN" "$BIN_PATH"
+            chmod +x "$BIN_PATH"
             download_success=true
         fi
     fi
 fi
-
 if [ "$download_success" = false ]; then
     if command -v go >/dev/null 2>&1; then
         echo "Compiling via local Go toolchain..."
