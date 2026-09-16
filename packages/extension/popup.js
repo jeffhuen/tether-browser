@@ -19,22 +19,66 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnReloadExt = document.getElementById("btn-reload-ext");
 
   // Set dynamic version from manifest
+  let localVersion = "0.1.21";
   try {
     const manifest = chrome.runtime.getManifest();
-    if (extVersionEl && manifest.version) {
-      extVersionEl.textContent = "v" + manifest.version;
+    if (manifest.version) {
+      localVersion = manifest.version;
+      if (extVersionEl) extVersionEl.textContent = "v" + localVersion;
     }
   } catch {}
 
-  // Reload extension directly from disk (after git pull)
+  // Check updates and reload extension directly from disk
   if (btnReloadExt) {
-    btnReloadExt.addEventListener("click", () => {
+    btnReloadExt.addEventListener("click", async () => {
       btnReloadExt.style.transform = "rotate(360deg)";
       btnReloadExt.style.transition = "transform 0.4s ease";
-      setTimeout(() => {
-        chrome.runtime.reload();
-      }, 100);
+
+      showToast("Checking updates...", 1500);
+
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2000);
+        const res = await fetch("https://raw.githubusercontent.com/jeffhuen/tether-browser/main/packages/extension/manifest.json", {
+          signal: controller.signal,
+          cache: "no-store",
+        });
+        clearTimeout(timeoutId);
+        if (res.ok) {
+          const remoteManifest = await res.json();
+          if (remoteManifest.version && remoteManifest.version > localVersion) {
+            showToast(`Update available: v${remoteManifest.version} (run git pull)`, 3000);
+            setTimeout(() => chrome.runtime.reload(), 1500);
+            return;
+          } else {
+            showToast(`✓ Up to date (v${localVersion})`, 2000);
+            setTimeout(() => chrome.runtime.reload(), 800);
+            return;
+          }
+        }
+      } catch (e) {
+        // Offline or check failed: reload directly
+      }
+
+      showToast(`✓ Reloaded from disk (v${localVersion})`, 1500);
+      setTimeout(() => chrome.runtime.reload(), 400);
     });
+  }
+
+  function showToast(text, duration = 2000) {
+    let toast = document.getElementById("update-toast");
+    if (!toast) {
+      toast = document.createElement("div");
+      toast.id = "update-toast";
+      toast.className = "update-toast";
+      document.body.appendChild(toast);
+    }
+    toast.textContent = text;
+    toast.style.display = "flex";
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => {
+      toast.style.display = "none";
+    }, duration);
   }
 
   let currentNotes = [];
