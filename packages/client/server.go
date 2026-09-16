@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -51,6 +52,13 @@ func (s *Server) AuthToken() string {
 	return s.authToken
 }
 
+func tokenEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
 func (s *Server) isAuthorized(req *protocol.Request, httpReq *http.Request) bool {
 	token := s.AuthToken()
 	if token == "" {
@@ -58,14 +66,14 @@ func (s *Server) isAuthorized(req *protocol.Request, httpReq *http.Request) bool
 	}
 	if httpReq != nil {
 		auth := httpReq.Header.Get("Authorization")
-		if strings.HasPrefix(auth, "Bearer ") && strings.TrimPrefix(auth, "Bearer ") == token {
+		if strings.HasPrefix(auth, "Bearer ") && tokenEqual(strings.TrimPrefix(auth, "Bearer "), token) {
 			return true
 		}
-		if httpReq.Header.Get("X-Tether-Token") == token {
+		if tokenEqual(httpReq.Header.Get("X-Tether-Token"), token) {
 			return true
 		}
 	}
-	if req != nil && req.Token == token {
+	if req != nil && tokenEqual(req.Token, token) {
 		return true
 	}
 	return false
@@ -178,7 +186,7 @@ func (s *Server) handleConn(conn net.Conn) {
 				return
 			}
 			if !s.isAuthorized(&rpcReq, req) {
-				errResp := protocol.NewErrorResponse(nil, protocol.CodeAuthRequired, "authentication required: invalid or missing bearer token", nil, 0, "")
+				errResp := protocol.NewErrorResponse(rpcReq.ID, protocol.CodeAuthRequired, "authentication required: invalid or missing bearer token", nil, rpcReq.Seq, rpcReq.Epoch)
 				respBytes, _ := json.Marshal(errResp)
 				fmt.Fprintf(conn, "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(respBytes), string(respBytes))
 				return
