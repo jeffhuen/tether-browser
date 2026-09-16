@@ -4,7 +4,7 @@
 
 set -euo pipefail
 REPO="jeffhuen/tether-browser"
-VERSION="0.1.17"
+VERSION="0.1.19"
 # Color helpers
 if [ -t 1 ]; then
     BOLD="\033[1m"
@@ -100,15 +100,11 @@ fi
 if [ "$download_success" = false ]; then
     if command -v go >/dev/null 2>&1; then
         echo "Compiling via local Go toolchain..."
-        if [ -f "./cmd/tether/main.go" ]; then
-            CGO_ENABLED=0 go build -ldflags="-s -w" -o "$BIN_PATH" ./cmd/tether
-        else
-            if ! GOBIN="$TMP_DIR" CGO_ENABLED=0 go install -ldflags="-s -w" "github.com/${REPO}/cmd/tether@v${VERSION}" 2>/dev/null; then
-                GOBIN="$TMP_DIR" CGO_ENABLED=0 go install -ldflags="-s -w" "github.com/${REPO}/cmd/tether@main"
-            fi
-            if [ -f "${TMP_DIR}/tether" ]; then
-                BIN_PATH="${TMP_DIR}/tether"
-            fi
+        if ! GOBIN="$TMP_DIR" CGO_ENABLED=0 go install -ldflags="-s -w" "github.com/${REPO}/cmd/tether@v${VERSION}" 2>/dev/null; then
+            GOBIN="$TMP_DIR" CGO_ENABLED=0 go install -ldflags="-s -w" "github.com/${REPO}/cmd/tether@main"
+        fi
+        if [ -f "${TMP_DIR}/tether" ]; then
+            BIN_PATH="${TMP_DIR}/tether"
         fi
     else
         echo -e "${RED}Error: Could not download release artifact and Go is not installed.${RESET}" >&2

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 )
@@ -109,4 +110,28 @@ func InstallNativeHostManifest(executablePath string) ([]string, error) {
 	}
 
 	return installedPaths, nil
+}
+
+// EnsureBrowserRunning opens the user's default Chromium browser (Chrome, Brave, or Edge)
+// so the Tether extension loads and activates the native messaging bridge.
+func EnsureBrowserRunning() {
+	switch runtime.GOOS {
+	case "darwin":
+		browsers := []string{"Google Chrome", "Brave Browser", "Microsoft Edge", "Chromium"}
+		for _, b := range browsers {
+			if exec.Command("open", "-a", b).Run() == nil {
+				return
+			}
+		}
+	case "linux":
+		browsers := []string{"google-chrome", "google-chrome-stable", "brave-browser", "microsoft-edge", "chromium"}
+		for _, b := range browsers {
+			if path, err := exec.LookPath(b); err == nil {
+				_ = exec.Command(path).Start()
+				return
+			}
+		}
+	case "windows":
+		_ = exec.Command("cmd", "/c", "start", "chrome").Run()
+	}
 }
