@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"fmt"
 	"net"
 	"os/exec"
 )
@@ -12,5 +13,8 @@ func setSysProcAttr(cmd *exec.Cmd) {
 }
 
 func verifyPeerCredentials(conn net.Conn) error {
-	return nil
+	return fmt.Errorf("peer credential verification unsupported on windows")
 }
+
+func setRestrictiveUmask() int { return 0 }
+func restoreUmask(int)         {}

@@ -8,6 +8,24 @@ import (
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
+// escapeAXField strips newlines, tabs, and control characters from page-controlled
+// fields (Role, Checked) so an attacker cannot forge tree rows into terminal output.
+func escapeAXField(s string) string {
+	if strings.IndexFunc(s, func(r rune) bool { return r < 0x20 }) == -1 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '\r' || r == '\n' || r == '\t' || r < 0x20 {
+			b.WriteByte(' ')
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
 // FormatAXTree formats an accessibility node slice into indented terminal text with [@eN] badges.
 func FormatAXTree(nodes []*protocol.AXNode, indent int) string {
 	var sb strings.Builder
@@ -27,7 +45,7 @@ func FormatAXTree(nodes []*protocol.AXNode, indent int) string {
 			sb.WriteString(fmt.Sprintf("[%s] ", ref))
 		}
 
-		sb.WriteString(n.Role)
+		sb.WriteString(escapeAXField(n.Role))
 
 		if n.Name != "" {
 			sb.WriteString(fmt.Sprintf(" %q", n.Name))
@@ -36,7 +54,7 @@ func FormatAXTree(nodes []*protocol.AXNode, indent int) string {
 			sb.WriteString(fmt.Sprintf(" value=%q", n.Value))
 		}
 		if n.Checked != "" {
-			sb.WriteString(fmt.Sprintf(" checked=%s", n.Checked))
+			sb.WriteString(fmt.Sprintf(" checked=%s", escapeAXField(n.Checked)))
 		}
 		if n.Disabled {
 			sb.WriteString(" (disabled)")
