@@ -17,7 +17,7 @@ import (
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
-const helpText = `tether v0.1.10 - zero-latency remote browser automation bridge for AI coding agents
+const helpText = `tether v0.1.11 - zero-latency remote browser automation bridge for AI coding agents
 Usage:
   tether connect <host>      Link local Chrome to a remote server via SSH in one command
   tether daemon [options]    Start the local workstation daemon (drives Chrome via CDP)
@@ -71,15 +71,15 @@ func runDaemon(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Synchronously bind the forward proxy listener to guarantee readiness before Chrome launches
-	proxyAddr := fmt.Sprintf("127.0.0.1:%d", *proxyPort)
-	proxyLn, err := net.Listen("tcp", proxyAddr)
+	// Synchronously bind the forward proxy listener to guarantee readiness
+	// before Chrome launches. The port is stable per workspace so a relaunched
+	// daemon re-matches an adopted Chrome instance's launch-time flags.
+	proxyLn, actualProxyPort, err := client.ResolveProxyListener(*workspace, *proxyPort)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error starting forward proxy listener on %s: %v\n", proxyAddr, err)
+		fmt.Fprintf(os.Stderr, "Error starting forward proxy listener: %v\n", err)
 		return 1
 	}
 	defer proxyLn.Close()
-	actualProxyPort := proxyLn.Addr().(*net.TCPAddr).Port
 
 	proxy := client.NewProxy()
 	enrollRoutes(proxy, *enroll)
