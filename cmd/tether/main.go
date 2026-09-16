@@ -212,7 +212,15 @@ func runConnect(args []string) int {
 		if err != nil {
 			selfExe = "tether"
 		}
-		daemonCmd := exec.Command(selfExe, "daemon", "--token="+token)
+		daemonCmd := exec.Command(selfExe, "daemon")
+		daemonEnv := make([]string, 0, len(os.Environ())+1)
+		for _, kv := range os.Environ() {
+			if !strings.HasPrefix(kv, "TETHER_AUTH_TOKEN=") {
+				daemonEnv = append(daemonEnv, kv)
+			}
+		}
+		daemonEnv = append(daemonEnv, "TETHER_AUTH_TOKEN="+token)
+		daemonCmd.Env = daemonEnv
 		daemonCmd.Stdout = os.Stdout
 		daemonCmd.Stderr = os.Stderr
 		if err := daemonCmd.Start(); err != nil {

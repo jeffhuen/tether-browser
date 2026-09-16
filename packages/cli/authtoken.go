@@ -66,9 +66,11 @@ func EnsureDaemonToken() (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return "", fmt.Errorf("create token dir: %w", err)
 	}
+	_ = os.Chmod(filepath.Dir(path), 0700)
 	if err := os.WriteFile(path, []byte(tok+"\n"), 0600); err != nil {
 		return "", fmt.Errorf("persist auth token: %w", err)
 	}
+	_ = os.Chmod(path, 0600)
 	return tok, nil
 }
 
