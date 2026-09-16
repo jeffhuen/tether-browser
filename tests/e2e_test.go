@@ -146,6 +146,18 @@ func (m *e2eMockDriver) Status(ctx context.Context, p protocol.StatusParams) (*p
 		DaemonUptimeS:  42,
 	}, nil
 }
+func (m *e2eMockDriver) ListTabs(ctx context.Context) (*protocol.TabListResult, error) {
+	return &protocol.TabListResult{
+		Tabs: []protocol.TabInfo{
+			{ID: "tab-1", Title: "E2E Test Page", URL: "http://localhost:3000", Active: true},
+		},
+		ActiveID: "tab-1",
+	}, nil
+}
+
+func (m *e2eMockDriver) SwitchTab(ctx context.Context, p protocol.TabSwitchParams) error {
+	return nil
+}
 
 func (m *e2eMockDriver) StartReview(ctx context.Context, p protocol.ReviewParams) error {
 	return nil

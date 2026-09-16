@@ -293,6 +293,26 @@ func TestParseArgsScreenshotCloseStatusBroker(t *testing.T) {
 	if cmd6.Name != "broker" || cmd6.BrokerSubcmd != "start" {
 		t.Errorf("unexpected broker command: %+v", cmd6)
 	}
+	// tabs
+	cmdTabs, err := ParseArgs([]string{"tabs"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cmdTabs.Method != protocol.MethodTabList {
+		t.Errorf("expected Method %q, got %q", protocol.MethodTabList, cmdTabs.Method)
+	}
+
+	// switch
+	cmdSwitch, err := ParseArgs([]string{"switch", "target-42"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cmdSwitch.Method != protocol.MethodTabSwitch {
+		t.Errorf("expected Method %q, got %q", protocol.MethodTabSwitch, cmdSwitch.Method)
+	}
+	if cmdSwitch.Params.(protocol.TabSwitchParams).TargetID != "target-42" {
+		t.Errorf("expected targetId target-42, got %q", cmdSwitch.Params.(protocol.TabSwitchParams).TargetID)
+	}
 }
 
 func TestParseArgsGlobalFlags(t *testing.T) {
@@ -310,6 +330,17 @@ func TestParseArgsGlobalFlags(t *testing.T) {
 	}
 	if cmd.Global.Session != "test-session" {
 		t.Errorf("expected Global.Session 'test-session', got %q", cmd.Global.Session)
+	}
+	if cmd.Global.Tab != "" {
+		t.Errorf("expected empty Global.Tab")
+	}
+
+	cmdTab, err := ParseArgs([]string{"--tab", "tab-99", "snapshot"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cmdTab.Global.Tab != "tab-99" {
+		t.Errorf("expected Global.Tab 'tab-99', got %q", cmdTab.Global.Tab)
 	}
 	openParams := cmd.Params.(protocol.OpenParams)
 	if openParams.TimeoutMs != 5000 {

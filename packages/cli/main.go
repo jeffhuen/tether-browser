@@ -12,7 +12,7 @@ import (
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
-const usageText = `tether v0.1.12 - remote browser automation for AI coding agents
+const usageText = `tether v0.1.13 - remote browser automation for AI coding agents
 Usage: tether <command> [args] [options]
 Commands:
   open <url>                 Navigate to URL
@@ -29,6 +29,8 @@ Commands:
   screenshot [path]          Capture screenshot
   close [--all]              Close active tab or all tabs
   status                     Show daemon and target connectivity
+  tabs                       List all open browser tabs
+  switch <targetId>          Switch active tab
   review [start|list|clear|send] In-page developer review inspector
   broker [run|start|stop]    Manage session broker daemon
 
@@ -42,6 +44,7 @@ Global Options:
   --json                     Output JSON instead of formatted text
   --timeout <ms>             Command timeout in milliseconds
   --session <name>           Target isolated browser session
+  --tab <id>, -t <id>        Target a specific browser tab ID
 `
 
 // Run parses arguments, executes commands, and prints results to stdout/stderr.
@@ -114,8 +117,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 
 	params := cmd.Params
-	if cmd.Global.Session != "" || cmd.Global.TimeoutMs > 0 {
-		params = injectSessionAndTimeout(params, cmd.Global.Session, cmd.Global.TimeoutMs)
+	if cmd.Global.Session != "" || cmd.Global.TimeoutMs > 0 || cmd.Global.Tab != "" {
+		params = injectSessionAndTimeout(params, cmd.Global.Session, cmd.Global.TimeoutMs, cmd.Global.Tab)
 	}
 
 	resp, err := client.Call(ctx, cmd.Method, params)
@@ -203,6 +206,22 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		fmt.Fprint(stdout, out)
+	case "tabs":
+		var res protocol.TabListResult
+		_ = resp.UnmarshalResult(&res)
+		out, err := FormatTabList(&res, cmd.Global.JSON)
+		if err != nil {
+			fmt.Fprintf(stderr, "Error: %v\n", err)
+			return 1
+		}
+		fmt.Fprint(stdout, out)
+
+	case "switch", "tab":
+		targetID := ""
+		if p, ok := cmd.Params.(protocol.TabSwitchParams); ok {
+			targetID = string(p.TargetID)
+		}
+		fmt.Fprintf(stdout, "Switched active tab to %s\n", targetID)
 
 	case "review":
 		out, err := FormatReview(cmd.BrokerSubcmd, resp, cmd.Global.JSON)
@@ -220,7 +239,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func injectSessionAndTimeout(params any, session string, timeoutMs int) any {
+func injectSessionAndTimeout(params any, session string, timeoutMs int, tab string) any {
 	var m map[string]any
 	if params != nil {
 		data, err := json.Marshal(params)
@@ -236,6 +255,9 @@ func injectSessionAndTimeout(params any, session string, timeoutMs int) any {
 	}
 	if timeoutMs > 0 {
 		m["timeoutMs"] = timeoutMs
+	}
+	if tab != "" {
+		m["targetId"] = tab
 	}
 	return m
 }

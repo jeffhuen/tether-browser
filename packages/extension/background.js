@@ -434,8 +434,43 @@ async function handleStatus() {
     tabGroupId,
     tabs: Array.from(tabGroupTabs),
     activeTabId,
-    extensionVersion: "0.1.11",
+    targetCount: tabGroupTabs.size,
+    activeTargetId: String(activeTabId || ""),
+    mode: "extension",
+    version: "0.1.13",
   };
+}
+
+async function handleTabList() {
+  await ensureTabGroup(false);
+  let tabs = [];
+  if (tabGroupId !== null) {
+    tabs = await chrome.tabs.query({ groupId: tabGroupId });
+  }
+  if (tabs.length === 0) {
+    tabs = await chrome.tabs.query({ currentWindow: true });
+  }
+  return {
+    tabs: tabs.map((t) => ({
+      id: String(t.id),
+      title: t.title || "Untitled",
+      url: t.url || "",
+      active: t.active || t.id === activeTabId,
+    })),
+    activeId: String(activeTabId || (tabs.length > 0 ? tabs[0].id : "")),
+  };
+}
+
+async function handleTabSwitch(params) {
+  const target = params.targetId || params.tabId;
+  const tabId = parseInt(target, 10);
+  if (isNaN(tabId)) {
+    throw new Error(`Invalid tab ID: ${target}`);
+  }
+  await chrome.tabs.update(tabId, { active: true });
+  activeTabId = tabId;
+  await ensureAttached(tabId);
+  return { ok: true, activeId: String(tabId) };
 }
 
 // --- Request Router ---
@@ -467,6 +502,12 @@ async function handleNativeMessage(msg) {
         break;
       case "browser.status":
         result = await handleStatus();
+        break;
+      case "browser.tab.list":
+        result = await handleTabList();
+        break;
+      case "browser.tab.switch":
+        result = await handleTabSwitch(params);
         break;
       default:
         sendError(id, -32601, `Method ${method} not found in extension dispatcher`);

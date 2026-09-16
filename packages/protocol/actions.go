@@ -3,7 +3,7 @@ package protocol
 // Standard method names for browser automation over JSON-RPC.
 const (
 	// Version is the current release version of tether-browser.
-	Version = "0.1.12"
+	Version = "0.1.13"
 
 	MethodOpen        = "browser.open"
 	MethodSnapshot    = "browser.snapshot"
@@ -20,6 +20,8 @@ const (
 	MethodPDF         = "browser.pdf"
 	MethodClose       = "browser.close"
 	MethodStatus      = "browser.status"
+	MethodTabList     = "browser.tab.list"
+	MethodTabSwitch   = "browser.tab.switch"
 	MethodAttach      = "browser.attach"
 	MethodDetach      = "browser.detach"
 	MethodReviewStart = "browser.review.start"
@@ -30,6 +32,25 @@ const (
 
 // TargetID is an opaque identifier representing an active browser tab.
 type TargetID string
+
+// TabInfo describes an open browser tab.
+type TabInfo struct {
+	ID     TargetID `json:"id"`
+	Title  string   `json:"title"`
+	URL    string   `json:"url"`
+	Active bool     `json:"active"`
+}
+
+// TabListResult returns all discovered open tabs in the browser.
+type TabListResult struct {
+	Tabs     []TabInfo `json:"tabs"`
+	ActiveID TargetID  `json:"activeId"`
+}
+
+// TabSwitchParams specifies a target tab to focus and switch to.
+type TabSwitchParams struct {
+	TargetID TargetID `json:"targetId"`
+}
 
 // OpenParams specifies the parameters for navigating to a URL.
 type OpenParams struct {

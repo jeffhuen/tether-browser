@@ -539,6 +539,22 @@ func (d *ExtensionDriver) Status(ctx context.Context, params protocol.StatusPara
 	}
 	return &out, nil
 }
+func (d *ExtensionDriver) ListTabs(ctx context.Context) (*protocol.TabListResult, error) {
+	res, err := d.call(ctx, protocol.MethodTabList, nil)
+	if err != nil {
+		return nil, err
+	}
+	var out protocol.TabListResult
+	if len(res) > 0 {
+		_ = json.Unmarshal(res, &out)
+	}
+	return &out, nil
+}
+
+func (d *ExtensionDriver) SwitchTab(ctx context.Context, params protocol.TabSwitchParams) error {
+	_, err := d.call(ctx, protocol.MethodTabSwitch, params)
+	return err
+}
 
 func (d *ExtensionDriver) Close() error {
 	d.mu.Lock()

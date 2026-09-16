@@ -540,6 +540,24 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		}
 		resp, _ := protocol.NewResponse(req.ID, res, req.Seq, req.Epoch)
 		return resp
+	case protocol.MethodTabList:
+		res, err := s.driver.ListTabs(ctx)
+		if err != nil {
+			return mapDriverError(req, err)
+		}
+		resp, _ := protocol.NewResponse(req.ID, res, req.Seq, req.Epoch)
+		return resp
+
+	case protocol.MethodTabSwitch:
+		var p protocol.TabSwitchParams
+		if err := req.UnmarshalParams(&p); err != nil {
+			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
+		}
+		if err := s.driver.SwitchTab(ctx, p); err != nil {
+			return mapDriverError(req, err)
+		}
+		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
+		return resp
 
 	case protocol.MethodReviewStart:
 		var p protocol.ReviewParams

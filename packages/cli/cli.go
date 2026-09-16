@@ -14,6 +14,7 @@ type GlobalFlags struct {
 	JSON      bool
 	TimeoutMs int
 	Session   string
+	Tab       string
 }
 
 // Command represents a parsed CLI command ready for execution.
@@ -80,6 +81,14 @@ func ParseArgs(args []string) (*Command, error) {
 			global.Session = args[i]
 		case strings.HasPrefix(arg, "--session="):
 			global.Session = strings.TrimPrefix(arg, "--session=")
+		case arg == "--tab" || arg == "-t":
+			if i+1 >= len(args) {
+				return nil, errors.New("flag --tab requires an argument")
+			}
+			i++
+			global.Tab = args[i]
+		case strings.HasPrefix(arg, "--tab="):
+			global.Tab = strings.TrimPrefix(arg, "--tab=")
 		default:
 			optionTokens = append(optionTokens, arg)
 		}
@@ -298,6 +307,16 @@ func ParseArgs(args []string) (*Command, error) {
 		cmd.Method = protocol.MethodStatus
 		cmd.Params = protocol.StatusParams{}
 
+	case "tabs":
+		cmd.Method = protocol.MethodTabList
+		cmd.Params = nil
+
+	case "switch", "tab":
+		if len(allArgs) == 0 {
+			return nil, errors.New("switch requires a tab target ID (e.g. tether switch <targetId>)")
+		}
+		cmd.Method = protocol.MethodTabSwitch
+		cmd.Params = protocol.TabSwitchParams{TargetID: protocol.TargetID(allArgs[0])}
 	case "broker":
 		subcmd := "run"
 		if len(allArgs) > 0 {
