@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Tether Browser Bridge",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "High-performance remote browser automation bridge for AI coding agents with native tab groups",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyomUYGqZG2MOKSvx6lxhFVdmuIBqJegMGXZW1JCQ2cSERYc9VHp4FS7v7ccXQ7SHSUUeFQ3SKhCZKpiA3lFds3pmhhKdmaL7N8GvNPkvME9LZSDLHHAoHKpy275MuZLCHqnRAfFZLF4pM0CF0EYacQJyM15D9eAdibOCjHPjKgENnZ8XyAO7n4ixzDTdAFcDzicRMb8FbTUmGUe3fru1RcVTwLyfUgfmi1QvBbJ6K54EWKfHjh8DKKbVDlIkrrxQje2TWkjPxobvztMH7X0DL5vxBiEdK9JNS7x++DYT8YcKE4WaPnAVeGyVS1E0h7LwvFH2gYByT27opXoEh1IsLwIDAQAB",
   "permissions": [
