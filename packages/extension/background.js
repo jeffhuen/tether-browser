@@ -18,7 +18,28 @@ const attachingTabs = new Map();
 
 // Node reference registry for compact @e1, @e2 element references: tabId -> Map<ref, nodeInfo>
 let activeNotesCache = [];
+let isDaemonConnected = false;
+const pendingNative = new Map();
+let nativeReqSeq = 0;
 
+function nativeRequest(msg) {
+  return new Promise((resolve, reject) => {
+    if (!nativePort) {
+      reject(new Error("Native host not connected"));
+      return;
+    }
+    const id = `nr_${Date.now()}_${nativeReqSeq++}`;
+    pendingNative.set(id, { resolve, reject });
+    nativePort.postMessage({ ...msg, id });
+    setTimeout(() => {
+      const p = pendingNative.get(id);
+      if (p) {
+        pendingNative.delete(id);
+        p.reject(new Error("Native request timed out"));
+      }
+    }, 15000);
+  });
+}
 // Prevent unhandled rejections from terminating the service worker
 self.addEventListener("unhandledrejection", (event) => {
   event.preventDefault();
@@ -236,20 +257,16 @@ function resolveTargetTabId(params = {}) {
   return activeTabId;
 }
 async function getLiveTabs() {
-  let tabs = [];
-  try {
-    const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
-    if (windows && windows.length > 0) {
-      const targetWin = windows.find((w) => w.focused) || windows[0];
-      tabs = targetWin.tabs || [];
-    }
-  } catch {}
-  if (tabs.length === 0) {
+  if (tabGroupId === null) {
+    await ensureTabGroup(true);
+  }
+  if (tabGroupId !== null) {
     try {
-      tabs = await chrome.tabs.query({});
+      const tabs = await chrome.tabs.query({ groupId: tabGroupId });
+      if (tabs.length > 0) return tabs;
     } catch {}
   }
-  return tabs;
+  return [];
 }
 
 // Track user tab switching in Chrome
@@ -502,6 +519,7 @@ async function handleStatus() {
     activeTargetId: String(activeTabId || (tabs.length > 0 ? tabs[0].id : "")),
     mode: "extension",
     version: chrome.runtime.getManifest().version,
+    connected: isDaemonConnected,
   };
 }
 
@@ -511,10 +529,10 @@ async function handleTabList() {
   return {
     tabs: tabs.map((t) => ({
       id: String(t.id),
-      title: (tabGroupId !== null && t.groupId === tabGroupId ? "[Tether] " : "") + (t.title || "Untitled"),
+      title: t.title || "Untitled",
       url: t.url || "",
-      active: t.active || t.id === activeTabId,
-      inGroup: tabGroupId !== null && t.groupId === tabGroupId,
+      active: t.id === activeTabId || t.active,
+      inGroup: true,
     })),
     activeId: String(activeTabId || (tabs.length > 0 ? tabs[0].id : "")),
     tabGroupId,
@@ -530,7 +548,6 @@ async function handleTabSwitch(params = {}) {
   await chrome.tabs.update(tabId, { active: true });
   activeTabId = tabId;
 
-  // Bring the switched tab into the Tether group if not already grouped
   if (tabGroupId !== null) {
     try {
       const tab = await chrome.tabs.get(tabId);
@@ -604,9 +621,26 @@ async function handleReviewClear(params = {}) {
 // --- Request Router ---
 
 async function handleNativeMessage(msg) {
-  if (!msg || !msg.id) return;
-  const { id, method, params = {} } = msg;
+  if (!msg) return;
 
+  if (msg.type === "bridge_status") {
+    isDaemonConnected = (msg.clientCount || 0) > 0;
+    return;
+  }
+
+  if (msg.id && pendingNative.has(msg.id)) {
+    const p = pendingNative.get(msg.id);
+    pendingNative.delete(msg.id);
+    if (msg.error) {
+      p.reject(new Error(msg.error.message || String(msg.error)));
+    } else {
+      p.resolve(msg.result || {});
+    }
+    return;
+  }
+
+  if (!msg.id) return;
+  const { id, method, params = {} } = msg;
   try {
     let result;
     switch (method) {
@@ -670,11 +704,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
           const tabList = await handleTabList();
           sendResponse({
-            connected: nativePort !== null,
+            connected: nativePort !== null && isDaemonConnected,
             activeTabId,
             tabs: tabList.tabs,
             notes: activeNotesCache || [],
           });
+          break;
+        }
+        case "popup_ssh_disconnect": {
+          try {
+            const res = await nativeRequest({ type: "system_ssh_disconnect" });
+            isDaemonConnected = false;
+            sendResponse(res);
+          } catch (err) {
+            sendResponse({ error: err.message || String(err) });
+          }
           break;
         }
         case "popup_ssh_connect": {

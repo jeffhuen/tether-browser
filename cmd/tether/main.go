@@ -18,8 +18,7 @@ import (
 	"github.com/jeffhuen/tether-browser/packages/client"
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
-
-const helpText = `tether v0.1.24 - zero-latency remote browser automation bridge for AI coding agents
+const helpText = `tether v0.1.25 - zero-latency remote browser automation bridge for AI coding agents
 Usage:
   tether connect <host>        Link local Chrome to a remote server via SSH in one command
   tether extension install     Register native messaging host for Chrome, Brave, and Edge
@@ -256,6 +255,9 @@ func runNativeHost(args []string) int {
 			go func(host string) {
 				_ = runSSHBackground(host)
 			}(req.TargetHost)
+			return map[string]any{"ok": true}, nil
+		case "system_ssh_disconnect":
+			_ = exec.Command("pkill", "-f", "ssh .* -R 9333:localhost:9333").Run()
 			return map[string]any{"ok": true}, nil
 		default:
 			return nil, fmt.Errorf("unknown system message type: %s", msgType)

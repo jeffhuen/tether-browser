@@ -188,18 +188,28 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  const btnDisconnect = document.getElementById("btn-disconnect");
+  if (btnDisconnect) {
+    btnDisconnect.addEventListener("click", async () => {
+      if (confirm("Disconnect SSH tunnel?")) {
+        await sendMessage({ type: "popup_ssh_disconnect" });
+        refresh();
+      }
+    });
+  }
+
   function updateStatusUI(status) {
     if (status && status.connected) {
       statusBadge.className = "badge badge-connected";
-      statusText.textContent = "Bridge Active";
+      statusText.textContent = "Connected";
       if (connectSection) connectSection.style.display = "none";
+      if (btnDisconnect) btnDisconnect.style.display = "inline-flex";
     } else {
       statusBadge.className = "badge badge-disconnected";
-      statusText.textContent = "Disconnected (Click to Connect)";
-      if (connectSection && connectSection.style.display === "none") {
-        connectSection.style.display = "block";
-        loadRecentHosts();
-      }
+      statusText.textContent = "Disconnected";
+      if (connectSection) connectSection.style.display = "block";
+      if (btnDisconnect) btnDisconnect.style.display = "none";
+      loadRecentHosts();
     }
   }
 
@@ -238,7 +248,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function updateNotesUI(notes, activeTab) {
     currentNotes = notes || [];
-    notesCount.textContent = currentNotes.length;
+    const notesBadge = document.getElementById("notes-badge") || document.getElementById("notes-count");
+    if (notesBadge) notesBadge.textContent = currentNotes.length;
 
     if (activeTabTitleEl) {
       if (activeTab && activeTab.title) {
@@ -254,6 +265,8 @@ document.addEventListener("DOMContentLoaded", () => {
       notesList.innerHTML = '<div class="empty-state">No pinned notes yet. Click <b>Inspect & Pin Notes</b> to review elements on this page.</div>';
       return;
     }
+
+    notesList.innerHTML = "";
     currentNotes.forEach((note) => {
       const item = document.createElement("div");
       item.className = "note-item";

@@ -328,6 +328,17 @@ func RunNativeHostServer(ctx context.Context, in io.Reader, out io.Writer, onSys
 		_ = ln.Close()
 	}()
 
+	var activeClients atomic.Int32
+	notifyClientCount := func(count int32) {
+		statusPayload, _ := json.Marshal(map[string]any{
+			"type":        "bridge_status",
+			"clientCount": count,
+		})
+		bridge.writeMu.Lock()
+		_ = WriteNativeMessage(bridge.out, statusPayload)
+		bridge.writeMu.Unlock()
+	}
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -336,7 +347,13 @@ func RunNativeHostServer(ctx context.Context, in io.Reader, out io.Writer, onSys
 			}
 			return err
 		}
-		go handleBridgeConnection(serverCtx, bridge, conn)
+		active := activeClients.Add(1)
+		notifyClientCount(active)
+		go func(c net.Conn) {
+			handleBridgeConnection(serverCtx, bridge, c)
+			remaining := activeClients.Add(-1)
+			notifyClientCount(remaining)
+		}(conn)
 	}
 }
 
