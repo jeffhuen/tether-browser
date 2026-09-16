@@ -146,3 +146,48 @@ func TestKillStaleProfileProcessesScoped(t *testing.T) {
 		t.Fatalf("cleanup killed an unrelated process")
 	}
 }
+
+func TestEnsureProfileName(t *testing.T) {
+	dir := t.TempDir()
+	prefsPath := filepath.Join(dir, "Preferences")
+
+	// Missing file: created with the Tether name.
+	ensureProfileName(dir)
+	data, err := os.ReadFile(prefsPath)
+	if err != nil {
+		t.Fatalf("expected Preferences to be created: %v", err)
+	}
+	if !strings.Contains(string(data), `"name":"Tether"`) {
+		t.Fatalf("expected Tether name in fresh Preferences, got: %s", data)
+	}
+
+	// Existing file: merged, other keys preserved.
+	if err := os.WriteFile(prefsPath, []byte(`{"profile":{"avatar_index":7},"browser":{"show_home_button":true}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ensureProfileName(dir)
+	data, err = os.ReadFile(prefsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, `"name":"Tether"`) {
+		t.Errorf("expected merged Tether name, got: %s", content)
+	}
+	if !strings.Contains(content, `"avatar_index":7`) || !strings.Contains(content, `"show_home_button":true`) {
+		t.Errorf("expected other keys preserved, got: %s", content)
+	}
+
+	// Corrupt file: left alone.
+	if err := os.WriteFile(prefsPath, []byte(`{not json`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ensureProfileName(dir)
+	data, err = os.ReadFile(prefsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{not json` {
+		t.Errorf("expected corrupt file untouched, got: %s", data)
+	}
+}

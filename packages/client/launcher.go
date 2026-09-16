@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -141,17 +142,17 @@ func LaunchChrome(ctx context.Context, workspaceID string, proxyPort int) (*Chro
 	}
 	killStaleProfileProcesses(profileDir)
 
+	// Name our dedicated profile "Tether" so Chrome's own profile chip
+	// identifies the driven browser. Merges into existing Preferences so
+	// long-lived profiles (which predate the feature) get labeled too;
+	// other keys are never touched.
+	// (A custom banner is impossible via flags: bad_flags_prompt.cc renders the
+	// raw flag text, and --enable-automation would disable password managers.)
+	ensureProfileName(profileDir)
+
 	// Clean up any stale DevToolsActivePort file from previous crashes
 	activePortFile := filepath.Join(profileDir, "DevToolsActivePort")
 	_ = os.Remove(activePortFile)
-
-	// Name fresh profiles "Tether" so Chrome's own profile chip identifies the
-	// driven browser. Only written when absent; never clobbers existing state.
-	// (A custom banner is impossible via flags: bad_flags_prompt.cc renders the
-	// raw flag text, and --enable-automation would disable password managers.)
-	if _, err := os.Stat(filepath.Join(profileDir, "Preferences")); os.IsNotExist(err) {
-		_ = os.WriteFile(filepath.Join(profileDir, "Preferences"), []byte(`{"profile":{"name":"Tether"}}`), 0600)
-	}
 
 	chromePath, err := FindChromeExecutable()
 	if err != nil {
@@ -267,4 +268,33 @@ func killStaleProfileProcesses(profileDir string) {
 	default:
 		_ = exec.Command("pkill", "-f", regexp.QuoteMeta(profileDir)).Run()
 	}
+}
+
+// ensureProfileName labels our dedicated profile "Tether" in Chrome's own
+// profile chip. Merges into any existing Preferences file so profiles that
+// predate the feature are labeled without touching other keys. A corrupt
+// file is left alone for Chrome to rebuild.
+func ensureProfileName(profileDir string) {
+	prefsPath := filepath.Join(profileDir, "Preferences")
+	prefs := map[string]any{}
+	if data, err := os.ReadFile(prefsPath); err != nil {
+		_ = os.WriteFile(prefsPath, []byte(`{"profile":{"name":"Tether"}}`), 0600)
+		return
+	} else if err := json.Unmarshal(data, &prefs); err != nil {
+		return
+	}
+	prof, _ := prefs["profile"].(map[string]any)
+	if prof == nil {
+		prof = map[string]any{}
+		prefs["profile"] = prof
+	}
+	if name, _ := prof["name"].(string); name == "Tether" {
+		return
+	}
+	prof["name"] = "Tether"
+	data, err := json.Marshal(prefs)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(prefsPath, data, 0600)
 }

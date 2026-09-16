@@ -233,16 +233,18 @@ func runConnect(args []string) int {
 			}
 		}()
 
-		// Wait up to 5s for daemon readiness
+		// Wait up to 45s for daemon readiness. The RPC port opens only after
+		// Chrome is up, and the launcher allows cold starts 30s. A bare TCP
+		// dial is not enough: confirm the daemon actually serves RPC with our
+		// token, so a slow-but-healthy startup is never killed.
 		ready := false
-		for i := 0; i < 50; i++ {
-			c, err := net.DialTimeout("tcp", "127.0.0.1:9333", 100*time.Millisecond)
-			if err == nil {
-				_ = c.Close()
+		deadline := time.Now().Add(45 * time.Second)
+		for time.Now().Before(deadline) {
+			if daemonHealthy(token) {
 				ready = true
 				break
 			}
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(500 * time.Millisecond)
 		}
 		if !ready {
 			fmt.Fprintln(os.Stderr, "Error: local daemon failed to become ready on 127.0.0.1:9333")
@@ -274,4 +276,19 @@ func runConnect(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// daemonHealthy dials the local daemon and performs an authenticated status
+// call, proving the port serves RPC and the token matches.
+func daemonHealthy(token string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	c := cli.NewClient("127.0.0.1:9333")
+	c.SetTimeout(2 * time.Second)
+	c.SetToken(token)
+	resp, err := c.Call(ctx, protocol.MethodStatus, protocol.StatusParams{})
+	if err != nil {
+		return false
+	}
+	return resp != nil && resp.Error == nil
 }
