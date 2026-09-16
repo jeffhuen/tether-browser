@@ -239,3 +239,32 @@ func FormatReview(subcmd string, resp *protocol.Response, jsonOutput bool) (stri
 		return string(resp.Result) + "\n", nil
 	}
 }
+
+// FormatTabList formats a TabListResult as JSON or a numbered list of open browser tabs.
+func FormatTabList(res *protocol.TabListResult, jsonOutput bool) (string, error) {
+	if res == nil || len(res.Tabs) == 0 {
+		return "No open tabs found.\n", nil
+	}
+	if jsonOutput {
+		data, err := json.MarshalIndent(res, "", "  ")
+		if err != nil {
+			return "", fmt.Errorf("marshal tab list json: %w", err)
+		}
+		return string(data), nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Open Tabs (%d):\n", len(res.Tabs)))
+	for i, t := range res.Tabs {
+		marker := " "
+		if t.Active || t.ID == res.ActiveID {
+			marker = "*"
+		}
+		title := t.Title
+		if title == "" {
+			title = "Untitled"
+		}
+		sb.WriteString(fmt.Sprintf(" %s [%d] %q\n     URL: %s\n     ID:  %s\n", marker, i+1, title, t.URL, t.ID))
+	}
+	return sb.String(), nil
+}

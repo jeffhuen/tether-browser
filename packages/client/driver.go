@@ -32,6 +32,8 @@ type BrowserDriver interface {
 	Wait(ctx context.Context, params protocol.WaitParams) error
 	Screenshot(ctx context.Context, params protocol.ScreenshotParams) (*protocol.ScreenshotResult, error)
 	Status(ctx context.Context, params protocol.StatusParams) (*protocol.StatusResult, error)
+	ListTabs(ctx context.Context) (*protocol.TabListResult, error)
+	SwitchTab(ctx context.Context, params protocol.TabSwitchParams) error
 	StartReview(ctx context.Context, params protocol.ReviewParams) error
 	GetReviewNotes(ctx context.Context, params protocol.ReviewParams) ([]*protocol.ReviewNote, error)
 	ClearReview(ctx context.Context, params protocol.ReviewParams) error
@@ -203,23 +205,177 @@ func (d *CDPDriver) CloseTab(ctx context.Context, params protocol.CloseParams) e
 	return nil
 }
 
-func (d *CDPDriver) getTargetClient(targetID protocol.TargetID) (*CDPClient, protocol.TargetID, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+func (d *CDPDriver) discoverTargets(ctx context.Context) ([]targetInfo, error) {
+	endpoint := fmt.Sprintf("%s/json/list", d.browserURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := d.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("list targets failed with status %d", resp.StatusCode)
+	}
+	var all []targetInfo
+	if err := json.NewDecoder(resp.Body).Decode(&all); err != nil {
+		return nil, err
+	}
+	var pages []targetInfo
+	for _, t := range all {
+		if t.Type == "page" && !strings.HasPrefix(t.URL, "chrome-extension://") {
+			pages = append(pages, t)
+		}
+	}
+	return pages, nil
+}
 
+func (d *CDPDriver) ListTabs(ctx context.Context) (*protocol.TabListResult, error) {
+	pages, err := d.discoverTargets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	d.mu.RLock()
+	activeID := d.activeTarget
+	d.mu.RUnlock()
+
+	res := &protocol.TabListResult{
+		Tabs:     make([]protocol.TabInfo, 0, len(pages)),
+		ActiveID: activeID,
+	}
+
+	for _, p := range pages {
+		tid := protocol.TargetID(p.ID)
+		res.Tabs = append(res.Tabs, protocol.TabInfo{
+			ID:     tid,
+			Title:  p.Title,
+			URL:    p.URL,
+			Active: tid == activeID,
+		})
+	}
+	if (activeID == "" || len(res.Tabs) == 1) && len(pages) > 0 {
+		latest := protocol.TargetID(pages[len(pages)-1].ID)
+		d.mu.Lock()
+		d.activeTarget = latest
+		d.mu.Unlock()
+		res.ActiveID = latest
+		for i := range res.Tabs {
+			if res.Tabs[i].ID == latest {
+				res.Tabs[i].Active = true
+			}
+		}
+	}
+	return res, nil
+}
+
+func (d *CDPDriver) SwitchTab(ctx context.Context, params protocol.TabSwitchParams) error {
+	if params.TargetID == "" {
+		return errors.New("targetId cannot be empty")
+	}
+	pages, err := d.discoverTargets(ctx)
+	if err != nil {
+		return err
+	}
+	var found *targetInfo
+	for _, p := range pages {
+		if protocol.TargetID(p.ID) == params.TargetID {
+			found = &p
+			break
+		}
+	}
+	if found == nil {
+		return fmt.Errorf("target tab %q not found in open browser tabs", params.TargetID)
+	}
+
+	d.mu.Lock()
+	client, exists := d.targets[params.TargetID]
+	d.activeTarget = params.TargetID
+	d.mu.Unlock()
+
+	if !exists {
+		wsConn, err := DialWebSocket(ctx, found.WebSocketDebuggerURL)
+		if err != nil {
+			return fmt.Errorf("connect to target %s: %w", params.TargetID, err)
+		}
+		newClient := NewCDPClient(wsConn)
+		_, _ = newClient.Call(ctx, "Page.enable", nil)
+		_, _ = newClient.Call(ctx, "Runtime.enable", nil)
+		_, _ = newClient.Call(ctx, "DOM.enable", nil)
+
+		d.mu.Lock()
+		d.targets[params.TargetID] = newClient
+		d.mu.Unlock()
+		client = newClient
+	}
+
+	_, _ = client.Call(ctx, "Page.bringToFront", nil)
+	return nil
+}
+
+func (d *CDPDriver) getTargetClient(targetID protocol.TargetID) (*CDPClient, protocol.TargetID, error) {
 	tid := targetID
+	d.mu.RLock()
 	if tid == "" {
 		tid = d.activeTarget
 	}
-	if tid == "" {
-		return nil, "", protocol.ErrTargetNotFound
+	client, exists := d.targets[tid]
+	d.mu.RUnlock()
+
+	if exists && client != nil {
+		return client, tid, nil
 	}
 
-	client, exists := d.targets[tid]
-	if !exists {
+	// Auto-discovery: connect to the target or most recent live page in Chrome
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	pages, err := d.discoverTargets(ctx)
+	if err != nil || len(pages) == 0 {
 		return nil, tid, protocol.ErrTargetNotFound
 	}
-	return client, tid, nil
+
+	var targetToAttach *targetInfo
+	if tid != "" {
+		for _, p := range pages {
+			if protocol.TargetID(p.ID) == tid {
+				targetToAttach = &p
+				break
+			}
+		}
+	}
+	if targetToAttach == nil {
+		targetToAttach = &pages[len(pages)-1]
+	}
+
+	resolvedTID := protocol.TargetID(targetToAttach.ID)
+	d.mu.RLock()
+	existingClient, exists := d.targets[resolvedTID]
+	d.mu.RUnlock()
+	if exists && existingClient != nil {
+		d.mu.Lock()
+		d.activeTarget = resolvedTID
+		d.mu.Unlock()
+		return existingClient, resolvedTID, nil
+	}
+
+	wsConn, err := DialWebSocket(ctx, targetToAttach.WebSocketDebuggerURL)
+	if err != nil {
+		return nil, resolvedTID, fmt.Errorf("connect to target %s: %w", resolvedTID, err)
+	}
+
+	newClient := NewCDPClient(wsConn)
+	_, _ = newClient.Call(ctx, "Page.enable", nil)
+	_, _ = newClient.Call(ctx, "Runtime.enable", nil)
+	_, _ = newClient.Call(ctx, "DOM.enable", nil)
+
+	d.mu.Lock()
+	d.targets[resolvedTID] = newClient
+	d.activeTarget = resolvedTID
+	d.mu.Unlock()
+
+	return newClient, resolvedTID, nil
 }
 
 // Snapshot generates an accessibility tree snapshot with @eN action refs.
@@ -1010,13 +1166,17 @@ func (d *CDPDriver) Screenshot(ctx context.Context, params protocol.ScreenshotPa
 
 // Status returns driver and connected tab status.
 func (d *CDPDriver) Status(ctx context.Context, params protocol.StatusParams) (*protocol.StatusResult, error) {
+	pages, _ := d.discoverTargets(ctx)
+	targetCount := len(pages)
+
 	d.mu.RLock()
-	defer d.mu.RUnlock()
+	activeTarget := d.activeTarget
+	d.mu.RUnlock()
 
 	return &protocol.StatusResult{
-		Connected:      len(d.targets) > 0,
-		ActiveTargetID: d.activeTarget,
-		TargetCount:    len(d.targets),
+		Connected:      targetCount > 0,
+		ActiveTargetID: activeTarget,
+		TargetCount:    targetCount,
 		Version:        protocol.Version,
 		Mode:           "managed",
 		DaemonUptimeS:  int64(time.Since(d.startTime).Seconds()),

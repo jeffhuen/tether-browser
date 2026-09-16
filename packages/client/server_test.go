@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"github.com/jeffhuen/tether-browser/packages/protocol"
 	"io"
 	"net"
 	"net/http"
@@ -15,7 +16,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
 type mockDriver struct {
@@ -167,6 +167,21 @@ func (m *mockDriver) Status(ctx context.Context, p protocol.StatusParams) (*prot
 		TargetCount: 1,
 		Version:     "1.0.0",
 	}, nil
+}
+func (m *mockDriver) ListTabs(ctx context.Context) (*protocol.TabListResult, error) {
+	return &protocol.TabListResult{
+		Tabs: []protocol.TabInfo{
+			{ID: "t-1", Title: "Test Page", URL: "https://example.com", Active: true},
+		},
+		ActiveID: "t-1",
+	}, nil
+}
+
+func (m *mockDriver) SwitchTab(ctx context.Context, p protocol.TabSwitchParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "SwitchTab")
+	return m.errToReturn
 }
 
 func (m *mockDriver) StartReview(ctx context.Context, p protocol.ReviewParams) error {
