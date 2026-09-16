@@ -19,12 +19,19 @@
         </div>
         <div>
           <h1 class="title">Tether</h1>
-          <span class="version">v0.1.14</span>
+          <span id="ext-version" class="version"></span>
         </div>
       </div>
-      <div id="status-badge" class="badge badge-disconnected">
-        <span class="dot"></span>
-        <span id="status-text">Disconnected</span>
+      <div class="header-actions" style="display:flex;align-items:center;gap:6px;">
+        <button id="btn-reload-ext" class="btn-icon" title="Reload extension from disk (after git pull)">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+          </svg>
+        </button>
+        <div id="status-badge" class="badge badge-disconnected">
+          <span class="dot"></span>
+          <span id="status-text">Disconnected</span>
+        </div>
       </div>
     </header>
 
@@ -58,9 +65,9 @@
     <!-- Review Notes Section -->
     <section id="review-section" class="section">
       <div class="section-header">
-        <span class="section-title">Review Notes (<span id="notes-count">0</span>)</span>
+        <span class="section-title">Review Notes — <span id="active-tab-title" style="color:var(--accent);text-transform:none;font-weight:500;">Active Tab</span> (<span id="notes-count">0</span>)</span>
         <div class="section-actions">
-          <button id="btn-copy-notes" class="btn-text" title="Copy notes formatted as Markdown for AI agents">Copy for Agent</button>
+          <button id="btn-copy-notes" class="btn-text" title="Copy formatted design feedback to clipboard">Copy to Clipboard</button>
           <button id="btn-clear-notes" class="btn-text btn-danger" title="Clear all notes">Clear</button>
         </div>
       </div>
@@ -87,10 +94,10 @@
     <!-- Quick Navigation -->
     <footer class="footer">
       <form id="nav-form" class="nav-form">
-        <input type="text" id="nav-input" class="nav-input" placeholder="Open URL in Tether group..." autocomplete="off">
-        <button type="submit" class="btn-primary">Go</button>
+        <input type="text" id="nav-input" class="nav-input" placeholder="Enter URL Address..." autocomplete="off">
+        <button type="submit" id="btn-nav-go" class="btn-primary" title="Open in active tab">Go</button>
+        <button type="button" id="btn-nav-new" class="btn-primary" style="background:#334155;color:#f8fafc;white-space:nowrap;" title="Open in new tab in Tether group">+ New Tab</button>
       </form>
-    </footer>
   </div>
 
   <script src="popup.js"></script>

@@ -14,6 +14,28 @@ document.addEventListener("DOMContentLoaded", () => {
   const tabsList = document.getElementById("tabs-list");
   const navForm = document.getElementById("nav-form");
   const navInput = document.getElementById("nav-input");
+  const activeTabTitleEl = document.getElementById("active-tab-title");
+  const extVersionEl = document.getElementById("ext-version");
+  const btnReloadExt = document.getElementById("btn-reload-ext");
+
+  // Set dynamic version from manifest
+  try {
+    const manifest = chrome.runtime.getManifest();
+    if (extVersionEl && manifest.version) {
+      extVersionEl.textContent = "v" + manifest.version;
+    }
+  } catch {}
+
+  // Reload extension directly from disk (after git pull)
+  if (btnReloadExt) {
+    btnReloadExt.addEventListener("click", () => {
+      btnReloadExt.style.transform = "rotate(360deg)";
+      btnReloadExt.style.transition = "transform 0.4s ease";
+      setTimeout(() => {
+        chrome.runtime.reload();
+      }, 100);
+    });
+  }
 
   let currentNotes = [];
 
@@ -21,9 +43,11 @@ document.addEventListener("DOMContentLoaded", () => {
   async function refresh() {
     try {
       const status = await sendMessage({ type: "popup_get_status" });
+      const tabs = status.tabs || [];
+      const activeTab = tabs.find((t) => t.id === status.activeTabId || t.active);
       updateStatusUI(status);
-      updateTabsUI(status.tabs || [], status.activeTabId);
-      updateNotesUI(status.notes || []);
+      updateTabsUI(tabs, status.activeTabId);
+      updateNotesUI(status.notes || [], activeTab);
     } catch (err) {
       console.warn("Failed to load status:", err);
       updateStatusUI({ connected: false });
@@ -73,16 +97,24 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  function updateNotesUI(notes) {
+  function updateNotesUI(notes, activeTab) {
     currentNotes = notes || [];
     notesCount.textContent = currentNotes.length;
+
+    if (activeTabTitleEl) {
+      if (activeTab && activeTab.title) {
+        const cleanTitle = activeTab.title.replace(/^\[Tether\]\s*/, "");
+        activeTabTitleEl.textContent = cleanTitle.length > 25 ? cleanTitle.slice(0, 25) + "..." : cleanTitle;
+        activeTabTitleEl.title = activeTab.title + "\n" + (activeTab.url || "");
+      } else {
+        activeTabTitleEl.textContent = "Active Tab";
+      }
+    }
 
     if (currentNotes.length === 0) {
       notesList.innerHTML = '<div class="empty-state">No pinned notes yet. Click <b>Inspect & Pin Notes</b> to review elements on this page.</div>';
       return;
     }
-
-    notesList.innerHTML = "";
     currentNotes.forEach((note) => {
       const item = document.createElement("div");
       item.className = "note-item";
@@ -148,6 +180,8 @@ document.addEventListener("DOMContentLoaded", () => {
   btnClearNotes.addEventListener("click", async () => {
     if (confirm("Clear all review notes on this page?")) {
       await sendMessage({ type: "popup_clear_notes" });
+      currentNotes = [];
+      updateNotesUI([]);
       refresh();
     }
   });
@@ -166,10 +200,23 @@ document.addEventListener("DOMContentLoaded", () => {
       url = "https://" + url;
     }
     navInput.value = "";
-    await sendMessage({ type: "popup_navigate", url });
+    await sendMessage({ type: "popup_navigate", url, newTab: false });
     refresh();
   });
 
+  const btnNavNew = document.getElementById("btn-nav-new");
+  if (btnNavNew) {
+    btnNavNew.addEventListener("click", async () => {
+      let url = navInput.value.trim();
+      if (!url) url = "about:blank";
+      if (url !== "about:blank" && !url.startsWith("http://") && !url.startsWith("https://")) {
+        url = "https://" + url;
+      }
+      navInput.value = "";
+      await sendMessage({ type: "popup_navigate", url, newTab: true });
+      refresh();
+    });
+  }
   // Helpers
   function sendMessage(msg) {
     return new Promise((resolve, reject) => {

@@ -42,7 +42,7 @@
 
   function sanitizeText(str, maxLen = 200) {
     if (!str) return '';
-    let s = String(str).trim();
+    let s = String(str).replace(/\s+/g, ' ').trim();
     if (containsSecret(s)) {
       return '[redacted]';
     }
@@ -1062,14 +1062,42 @@
     getElementUnderPointer(x, y) {
       if (typeof document.elementsFromPoint === 'function') {
         const els = document.elementsFromPoint(x, y);
+        const valid = [];
         for (let i = 0; i < els.length; i++) {
           const el = els[i];
-          if (el && el !== this.host && !this.host.contains(el)) {
-            return el;
+          if (el && el !== this.host && !this.host.contains(el) && el !== document.body && el !== document.documentElement) {
+            valid.push(el);
           }
         }
+        if (valid.length === 0) return null;
+
+        // Leaf snapping: prioritize interactive or content leaf elements over broad layout containers
+        const leafTags = new Set(['a', 'button', 'input', 'select', 'textarea', 'label', 'img', 'svg', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'span', 'strong', 'em', 'code', 'b', 'i', 'li', 'td', 'th']);
+        for (let i = 0; i < valid.length; i++) {
+          const tag = valid[i].tagName.toLowerCase();
+          if (leafTags.has(tag)) {
+            return valid[i];
+          }
+        }
+
+        // Otherwise pick the most specific (smallest area) element
+        let best = valid[0];
+        let bestArea = Infinity;
+        for (let i = 0; i < Math.min(valid.length, 5); i++) {
+          const r = valid[i].getBoundingClientRect();
+          const area = r.width * r.height;
+          if (area > 0 && area < bestArea) {
+            bestArea = area;
+            best = valid[i];
+          }
+        }
+        return best;
       }
       return null;
+    }
+
+    clearNotes() {
+      this.clear();
     }
 
     onPointerMove(e) {
