@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -27,6 +28,7 @@ type Client struct {
 	epoch   string
 	seq     uint64
 	timeout time.Duration
+	token   string
 }
 
 // NewClient initializes a Client pointing to the given network address.
@@ -48,7 +50,13 @@ func NewClient(addr string) *Client {
 		addr:    addr,
 		epoch:   fmt.Sprintf("epoch-%d", time.Now().UnixNano()),
 		timeout: 30 * time.Second,
+		token:   os.Getenv("TETHER_AUTH_TOKEN"),
 	}
+}
+
+// SetToken configures the bearer authentication token.
+func (c *Client) SetToken(token string) {
+	c.token = token
 }
 
 // SetTimeout configures the request timeout duration.
@@ -104,7 +112,7 @@ func (c *Client) Call(ctx context.Context, method string, params any) (*protocol
 
 	seq := c.NextSeq()
 	reqID := fmt.Sprintf("req-%d", seq)
-	req, err := protocol.NewRequest(reqID, method, params, seq, c.epoch)
+	req, err := protocol.NewRequestWithToken(reqID, method, params, seq, c.epoch, c.token)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
