@@ -4,8 +4,7 @@
 
 set -euo pipefail
 REPO="jeffhuen/tether-browser"
-VERSION="0.1.1"
-
+VERSION="0.1.2"
 # Color helpers
 if [ -t 1 ]; then
     BOLD="\033[1m"

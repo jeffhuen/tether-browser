@@ -143,7 +143,6 @@ func LaunchChrome(ctx context.Context, workspaceID string, proxyPort int) (*Chro
 		"--remote-debugging-port=0", // Ephemeral port allocation
 		"--no-first-run",
 		"--no-default-browser-check",
-		"--disable-blink-features=AutomationControlled",
 		"--new-window",
 		"about:blank",
 	}
