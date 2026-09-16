@@ -85,13 +85,35 @@ func safeHTMLFence(snippet string) (string, string) {
 	fence := strings.Repeat("`", fenceLen)
 	return fence + "html\n", "\n" + fence + "\n"
 }
+func sanitizeMarkdownLine(s string) string {
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+	s = strings.TrimSpace(s)
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+	return s
+}
+
+func sanitizeComment(comment string) string {
+	lines := strings.Split(strings.TrimSpace(comment), "\n")
+	var out []string
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if strings.HasPrefix(trimmed, "#") {
+			trimmed = "\\" + trimmed
+		}
+		out = append(out, trimmed)
+	}
+	return strings.Join(out, "\n")
+}
 
 // FormatDesignFeedbackReport formats a collection of review notes into structured markdown for AI agents.
 func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport string) string {
 	if len(notes) == 0 {
 		return ""
 	}
-
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("## Design Feedback: %s\n\n", pageURL))
 	sb.WriteString(fmt.Sprintf("**URL:** %s\n", pageURL))
@@ -113,7 +135,6 @@ func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport st
 		if pinIndex <= 0 {
 			pinIndex = 1
 		}
-
 		componentLabel := target.TagName
 		if target.Role != "" && target.Role != target.TagName {
 			componentLabel = fmt.Sprintf("%s (%s)", componentLabel, target.Role)
@@ -122,9 +143,9 @@ func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport st
 			componentLabel = fmt.Sprintf("%s %s", fw.Component, componentLabel)
 		}
 		if target.AccessibleName != "" {
-			componentLabel = fmt.Sprintf("%s %q", componentLabel, target.AccessibleName)
+			componentLabel = fmt.Sprintf("%s %q", componentLabel, sanitizeMarkdownLine(target.AccessibleName))
 		} else if target.TextSnippet != "" {
-			snip := strings.TrimSpace(target.TextSnippet)
+			snip := sanitizeMarkdownLine(target.TextSnippet)
 			if len(snip) > 40 {
 				snip = snip[:40] + "..."
 			}
@@ -133,7 +154,7 @@ func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport st
 
 		sb.WriteString(fmt.Sprintf("### %d. %s\n", pinIndex, componentLabel))
 		if note.Intent != "" {
-			sb.WriteString(fmt.Sprintf("**Intent:** %s\n", note.Intent))
+			sb.WriteString(fmt.Sprintf("**Intent:** %s\n", sanitizeMarkdownLine(note.Intent)))
 		}
 		if fw.Name != "" && fw.Name != "Static" {
 			fwLine := fw.Name
@@ -145,9 +166,9 @@ func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport st
 		if fw.SourceLocation != "" {
 			sb.WriteString(fmt.Sprintf("**Source:** %s (provenance: %s)\n", fw.SourceLocation, fw.Provenance))
 		}
-		sb.WriteString(fmt.Sprintf("**Selector:** %s\n", target.Selector))
+		sb.WriteString(fmt.Sprintf("**Selector:** %s\n", sanitizeMarkdownLine(target.Selector)))
 		if target.ElementPath != "" {
-			sb.WriteString(fmt.Sprintf("**Location:** %s\n", target.ElementPath))
+			sb.WriteString(fmt.Sprintf("**Location:** %s\n", sanitizeMarkdownLine(target.ElementPath)))
 		}
 		sb.WriteString(fmt.Sprintf("**Bounds:** x=%.0f, y=%.0f, %.0fx%.0f\n",
 			target.RectViewport.X, target.RectViewport.Y, target.RectViewport.Width, target.RectViewport.Height))
@@ -163,7 +184,10 @@ func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport st
 		if len(note.Payload.NearbyText) > 0 {
 			sb.WriteString("**Nearby text:**\n")
 			for _, t := range note.Payload.NearbyText {
-				sb.WriteString(fmt.Sprintf("- %s\n", t))
+				clean := sanitizeMarkdownLine(t)
+				if clean != "" {
+					sb.WriteString(fmt.Sprintf("- %s\n", clean))
+				}
 			}
 		}
 		if target.HTMLSnippet != "" {
@@ -173,7 +197,7 @@ func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport st
 			sb.WriteString(strings.TrimSpace(target.HTMLSnippet))
 			sb.WriteString(endFence)
 		}
-		sb.WriteString(fmt.Sprintf("**Feedback:** %s\n\n", strings.TrimSpace(note.Comment)))
+		sb.WriteString(fmt.Sprintf("**Feedback:** %s\n\n", sanitizeComment(note.Comment)))
 	}
 
 	return strings.TrimSpace(sb.String())

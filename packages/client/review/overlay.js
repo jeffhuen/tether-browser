@@ -176,13 +176,11 @@
 
   function getAccessibility(el) {
     const role = el.getAttribute('role') || el.tagName.toLowerCase();
-    const ariaLabel = el.getAttribute('aria-label');
-    const ariaLabelledBy = el.getAttribute('aria-labelledby');
     let accessibleName = '';
 
-    if (ariaLabel) {
-      accessibleName = ariaLabel;
-    } else if (ariaLabelledBy) {
+    // 1. aria-labelledby takes top precedence
+    const ariaLabelledBy = el.getAttribute('aria-labelledby');
+    if (ariaLabelledBy) {
       const ids = ariaLabelledBy.trim().split(/\s+/);
       const names = [];
       for (const id of ids) {
@@ -195,11 +193,45 @@
       if (names.length > 0) {
         accessibleName = names.join(' ');
       }
-    } else if (el.getAttribute('title')) {
-      accessibleName = el.getAttribute('title');
-    } else if (el.getAttribute('alt')) {
-      accessibleName = el.getAttribute('alt');
-    } else if (el.innerText) {
+    }
+
+    // 2. aria-label
+    if (!accessibleName) {
+      const ariaLabel = el.getAttribute('aria-label');
+      if (ariaLabel) {
+        accessibleName = ariaLabel.trim();
+      }
+    }
+
+    // 3. HTML label for form controls
+    if (!accessibleName && el.id) {
+      try {
+        const label = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+        if (label) {
+          accessibleName = (label.innerText || label.textContent || '').trim();
+        }
+      } catch (e) {}
+    }
+    if (!accessibleName) {
+      const parentLabel = el.closest('label');
+      if (parentLabel) {
+        accessibleName = (parentLabel.innerText || parentLabel.textContent || '').trim();
+      }
+    }
+
+    // 4. title, alt, placeholder
+    if (!accessibleName && el.getAttribute('title')) {
+      accessibleName = el.getAttribute('title').trim();
+    }
+    if (!accessibleName && el.getAttribute('alt')) {
+      accessibleName = el.getAttribute('alt').trim();
+    }
+    if (!accessibleName && el.getAttribute('placeholder')) {
+      accessibleName = el.getAttribute('placeholder').trim();
+    }
+
+    // 5. innerText for non-input elements
+    if (!accessibleName && el.tagName.toLowerCase() !== 'input' && el.innerText) {
       accessibleName = el.innerText.trim().slice(0, 60);
     }
 
@@ -287,10 +319,10 @@
       const s = siblings[i];
       const tag = s.tagName.toLowerCase();
       let desc = tag;
-      if (s.id) desc += '#' + s.id;
+      if (s.id && !containsSecret(s.id)) desc += '#' + s.id;
       if (s.className && typeof s.className === 'string') {
         const c = s.className.trim().split(/\s+/)[0];
-        if (c) desc += '.' + c;
+        if (c && !containsSecret(c)) desc += '.' + c;
       }
       elements.push(desc);
     }
@@ -501,9 +533,9 @@
     const scrollX = window.scrollX || window.pageXOffset || 0;
     const scrollY = window.scrollY || window.pageYOffset || 0;
 
-    const role = el.getAttribute('role') || el.tagName.toLowerCase();
-    const rawAccessibleName = el.getAttribute('aria-label') || el.getAttribute('alt') || (el.innerText ? el.innerText.trim().slice(0, 60) : '');
-    const accessibleName = sanitizeText(rawAccessibleName, 80);
+    const ax = getAccessibility(el);
+    const role = ax.role;
+    const accessibleName = ax.accessibleName;
 
     const textSnippet = extractSanitizedText(el);
 
@@ -687,6 +719,15 @@
       card.addEventListener('wheel', (e) => {
         e.stopPropagation();
       });
+      card.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+      });
+      card.addEventListener('keyup', (e) => {
+        e.stopPropagation();
+      });
+      card.addEventListener('keypress', (e) => {
+        e.stopPropagation();
+      });
 
       card.querySelector('#card-cancel').addEventListener('click', () => this.closeModal());
       card.querySelector('#card-save').addEventListener('click', () => this.saveModal());
@@ -722,6 +763,10 @@
 
     stop() {
       this.active = false;
+      if (this.rafId) {
+        cancelAnimationFrame(this.rafId);
+        this.rafId = 0;
+      }
       if (this.host) {
         this.host.style.pointerEvents = 'none';
         this.host.style.cursor = 'default';
@@ -1010,8 +1055,15 @@
     }
 
     startTracking() {
+      if (this.rafId) {
+        cancelAnimationFrame(this.rafId);
+        this.rafId = 0;
+      }
       const update = () => {
-        if (!this.active) return;
+        if (!this.active) {
+          this.rafId = 0;
+          return;
+        }
         this.updatePositions();
         this.rafId = requestAnimationFrame(update);
       };
