@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -18,7 +19,7 @@ import (
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
-const helpText = `tether v0.1.23 - zero-latency remote browser automation bridge for AI coding agents
+const helpText = `tether v0.1.24 - zero-latency remote browser automation bridge for AI coding agents
 Usage:
   tether connect <host>        Link local Chrome to a remote server via SSH in one command
   tether extension install     Register native messaging host for Chrome, Brave, and Edge
@@ -240,11 +241,55 @@ func runNativeHost(args []string) int {
 		cancel()
 	}()
 
-	if err := client.RunNativeHostServer(ctx, os.Stdin, os.Stdout); err != nil {
+	onSys := func(msgType string, payload []byte) (any, error) {
+		switch msgType {
+		case "system_ssh_connect":
+			var req struct {
+				TargetHost string `json:"targetHost"`
+			}
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			if req.TargetHost == "" {
+				return nil, errors.New("targetHost is required")
+			}
+			go func(host string) {
+				_ = runSSHBackground(host)
+			}(req.TargetHost)
+			return map[string]any{"ok": true}, nil
+		default:
+			return nil, fmt.Errorf("unknown system message type: %s", msgType)
+		}
+	}
+
+	if err := client.RunNativeHostServer(ctx, os.Stdin, os.Stdout, onSys); err != nil {
 		fmt.Fprintf(os.Stderr, "[Tether NativeHost] Error: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+func runSSHBackground(targetHost string) error {
+	token, err := cli.EnsureDaemonToken()
+	if err != nil {
+		return fmt.Errorf("resolve auth token: %w", err)
+	}
+
+	q := cli.ShellQuote(token)
+	remoteCmd := fmt.Sprintf("export TETHER_AUTH_TOKEN=%s; mkdir -p ~/.cache/tether && chmod 700 ~/.cache/tether && printf %%s %s > ~/.cache/tether/auth && chmod 600 ~/.cache/tether/auth", q, q)
+
+	sshArgs := []string{
+		"-f", "-N",
+		"-R", "9333:localhost:9333",
+		targetHost,
+		remoteCmd,
+	}
+
+	cmd := exec.Command("ssh", sshArgs...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("ssh background failed: %s (%w)", string(out), err)
+	}
+	return nil
 }
 
 func runConnect(args []string) int {

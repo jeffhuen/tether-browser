@@ -38,6 +38,26 @@
       </div>
     </header>
 
+    <!-- Connect to Remote Server Card (shows when disconnected or clicked) -->
+    <section id="connect-section" class="section" style="display:none;">
+      <div class="connect-card">
+        <div class="connect-header">
+          <span class="connect-title">Connect to Remote Server</span>
+          <span class="connect-hint">SSH reverse tunnel</span>
+        </div>
+        <form id="connect-form" class="connect-form">
+          <div class="connect-input-row">
+            <input type="text" id="connect-host-input" class="connect-input" placeholder="user@remote-host (or IP)..." autocomplete="off">
+            <button type="submit" id="btn-do-connect" class="btn-connect">Connect</button>
+          </div>
+        </form>
+        <div id="recent-hosts-wrapper" class="recent-hosts-wrapper" style="display:none;">
+          <span class="recent-label">Recent:</span>
+          <div id="recent-hosts-list" class="recent-chips"></div>
+        </div>
+      </div>
+    </section>
+
     <!-- Quick Actions (FireShot Style) -->
     <section class="section">
       <div class="action-grid">

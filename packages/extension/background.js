@@ -17,7 +17,7 @@ const attachedTabs = new Map();
 const attachingTabs = new Map();
 
 // Node reference registry for compact @e1, @e2 element references: tabId -> Map<ref, nodeInfo>
-const elementRefsByTab = new Map();
+let activeNotesCache = [];
 
 // Prevent unhandled rejections from terminating the service worker
 self.addEventListener("unhandledrejection", (event) => {
@@ -501,7 +501,7 @@ async function handleStatus() {
     targetCount: tabs.length,
     activeTargetId: String(activeTabId || (tabs.length > 0 ? tabs[0].id : "")),
     mode: "extension",
-    version: "0.1.14",
+    version: chrome.runtime.getManifest().version,
   };
 }
 
@@ -579,6 +579,7 @@ async function handleReviewList(params = {}) {
   let notes = [];
   try {
     notes = JSON.parse(res.result?.value || "[]");
+    activeNotesCache = notes;
   } catch {}
 
   return {
@@ -597,6 +598,7 @@ async function handleReviewClear(params = {}) {
     expression: "window.__tetherReview ? (window.__tetherReview.clear ? window.__tetherReview.clear() : (window.__tetherReview.clearNotes ? window.__tetherReview.clearNotes() : false)) : false",
   });
 
+  activeNotesCache = [];
   return { ok: true };
 }
 // --- Request Router ---
@@ -667,19 +669,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             connectNativeHost();
           }
           const tabList = await handleTabList();
-          let notes = [];
-          if (activeTabId) {
-            try {
-              const res = await handleReviewList({ tabId: activeTabId });
-              notes = res.notes || [];
-            } catch {}
-          }
           sendResponse({
             connected: nativePort !== null,
             activeTabId,
             tabs: tabList.tabs,
-            notes,
+            notes: activeNotesCache || [],
           });
+          break;
+        }
+        case "popup_ssh_connect": {
+          try {
+            const res = await nativeRequest({ type: "system_ssh_connect", targetHost: msg.targetHost });
+            sendResponse(res);
+          } catch (err) {
+            sendResponse({ error: err.message || String(err) });
+          }
           break;
         }
         case "popup_switch_tab": {

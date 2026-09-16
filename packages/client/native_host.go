@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -110,12 +111,19 @@ type ExtensionBridge struct {
 	closed       atomic.Bool
 	token        string
 	onClose      func()
+	onSystemMsg  func(msgType string, payload []byte) (any, error)
 }
 
 func (b *ExtensionBridge) SetOnClose(fn func()) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.onClose = fn
+}
+
+func (b *ExtensionBridge) SetOnSystemMessage(fn func(msgType string, payload []byte) (any, error)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.onSystemMsg = fn
 }
 
 type nativeRequest struct {
@@ -171,6 +179,37 @@ func (b *ExtensionBridge) StartReader(ctx context.Context) {
 			}
 
 			if resp.Type == "heartbeat" {
+				continue
+			}
+
+			if strings.HasPrefix(resp.Type, "system_") {
+				b.mu.Lock()
+				onSys := b.onSystemMsg
+				b.mu.Unlock()
+				if onSys != nil {
+					go func(msgType, reqID string, p []byte) {
+						res, err := onSys(msgType, p)
+						var outResp nativeResponse
+						if err != nil {
+							outResp = nativeResponse{
+								ID:    reqID,
+								Type:  "response",
+								Error: &nativeError{Code: -32000, Message: err.Error()},
+							}
+						} else {
+							resBytes, _ := json.Marshal(res)
+							outResp = nativeResponse{
+								ID:     reqID,
+								Type:   "response",
+								Result: resBytes,
+							}
+						}
+						outBytes, _ := json.Marshal(outResp)
+						b.writeMu.Lock()
+						_ = WriteNativeMessage(b.out, outBytes)
+						b.writeMu.Unlock()
+					}(resp.Type, resp.ID, payload)
+				}
 				continue
 			}
 
@@ -249,7 +288,7 @@ func (b *ExtensionBridge) Call(ctx context.Context, method string, params any) (
 
 // RunNativeHostServer runs the native messaging host loop. It listens on the private
 // Unix domain socket (or named pipe) and proxies incoming JSON-RPC calls to the Chrome extension.
-func RunNativeHostServer(ctx context.Context, in io.Reader, out io.Writer) error {
+func RunNativeHostServer(ctx context.Context, in io.Reader, out io.Writer, onSystemMsg func(string, []byte) (any, error)) error {
 	socketPath := GetBridgeSocketPath()
 	if err := EnsureBridgeSocketDir(socketPath); err != nil {
 		return fmt.Errorf("ensure socket dir: %w", err)
@@ -260,7 +299,7 @@ func RunNativeHostServer(ctx context.Context, in io.Reader, out io.Writer) error
 
 	network := "unix"
 	if runtime.GOOS == "windows" {
-		network = "tcp" // fallback for Windows socket testability
+		network = "tcp"
 	}
 
 	ln, err := net.Listen(network, socketPath)
@@ -270,10 +309,12 @@ func RunNativeHostServer(ctx context.Context, in io.Reader, out io.Writer) error
 	defer ln.Close()
 	defer os.Remove(socketPath)
 	_ = os.Chmod(socketPath, 0600)
+
 	serverCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	bridge := NewExtensionBridge(in, out, "")
+	bridge.SetOnSystemMessage(onSystemMsg)
 	bridge.SetOnClose(func() {
 		cancel()
 		_ = ln.Close()
