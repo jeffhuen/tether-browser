@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
@@ -201,12 +202,20 @@ func runConnect(args []string) int {
 		fmt.Fprintf(os.Stderr, "Error resolving auth token: %v\n", err)
 		return 1
 	}
-	// Check if local daemon is already running
-	conn, err := net.DialTimeout("tcp", "127.0.0.1:9333", 300*time.Millisecond)
-	if err == nil {
-		_ = conn.Close()
-		fmt.Println("✓ Local workstation daemon already running on 127.0.0.1:9333")
+	// Check if local daemon is already running and authenticated.
+	// A bare TCP dial is rejected: the port could belong to an alien service
+	// or a daemon with an unmatching token, which would fail subsequent RPCs.
+	if daemonHealthy(token) {
+		fmt.Println("✓ Local workstation daemon already running on 127.0.0.1:9333 (authenticated)")
 	} else {
+		// If port 9333 responds to TCP but failed daemonHealthy, reject rather
+		// than tunneling an unauthenticated or alien listener.
+		if conn, err := net.DialTimeout("tcp", "127.0.0.1:9333", 300*time.Millisecond); err == nil {
+			_ = conn.Close()
+			fmt.Fprintln(os.Stderr, "Error: port 127.0.0.1:9333 is occupied by an unauthenticated process or daemon with a different token")
+			return 1
+		}
+
 		fmt.Println("Starting local workstation daemon...")
 		selfExe, err := os.Executable()
 		if err != nil {
@@ -233,12 +242,13 @@ func runConnect(args []string) int {
 			}
 		}()
 
-		// Wait up to 45s for daemon readiness. The RPC port opens only after
-		// Chrome is up, and the launcher allows cold starts 30s. A bare TCP
-		// dial is not enough: confirm the daemon actually serves RPC with our
-		// token, so a slow-but-healthy startup is never killed.
+		// Wait up to 75s for daemon readiness. The RPC port opens only after
+		// Chrome is up, and the launcher allows cold starts 30s plus lock
+		// acquisition 30s and process termination 5s. A bare TCP dial is not
+		// enough: confirm the daemon actually serves authenticated RPC, so
+		// a slow-but-healthy startup is never killed.
 		ready := false
-		deadline := time.Now().Add(45 * time.Second)
+		deadline := time.Now().Add(75 * time.Second)
 		for time.Now().Before(deadline) {
 			if daemonHealthy(token) {
 				ready = true
@@ -247,7 +257,7 @@ func runConnect(args []string) int {
 			time.Sleep(500 * time.Millisecond)
 		}
 		if !ready {
-			fmt.Fprintln(os.Stderr, "Error: local daemon failed to become ready on 127.0.0.1:9333")
+			fmt.Fprintln(os.Stderr, "Error: local daemon failed to become ready on 127.0.0.1:9333 within 75s")
 			return 1
 		}
 		fmt.Println("✓ Local workstation daemon and Chrome started")
@@ -279,7 +289,8 @@ func runConnect(args []string) int {
 }
 
 // daemonHealthy dials the local daemon and performs an authenticated status
-// call, proving the port serves RPC and the token matches.
+// call, proving the port serves valid JSON-RPC 2.0, the token matches, and
+// the browser is actively connected.
 func daemonHealthy(token string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -287,8 +298,12 @@ func daemonHealthy(token string) bool {
 	c.SetTimeout(2 * time.Second)
 	c.SetToken(token)
 	resp, err := c.Call(ctx, protocol.MethodStatus, protocol.StatusParams{})
-	if err != nil {
+	if err != nil || resp == nil || resp.Error != nil || resp.JSONRPC != "2.0" || len(resp.Result) == 0 {
 		return false
 	}
-	return resp != nil && resp.Error == nil
+	var status protocol.StatusResult
+	if err := json.Unmarshal(resp.Result, &status); err != nil {
+		return false
+	}
+	return status.Connected
 }

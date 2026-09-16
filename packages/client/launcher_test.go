@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -78,7 +79,7 @@ func TestProbeActivePort(t *testing.T) {
 		t.Fatalf("garbage port file must report unhealthy")
 	}
 
-	// A live TCP listener that is NOT Chrome must be rejected.
+	// 1. A live TCP listener that is NOT Chrome (bare TCP) must be rejected.
 	plain, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +102,49 @@ func TestProbeActivePort(t *testing.T) {
 		t.Fatalf("non-CDP listener must report unhealthy")
 	}
 
-	// A fake Chrome speaking /json/version must be accepted.
+	// 2. An HTTP 503 response containing 200/retry-after must be rejected.
+	srv503 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintf(w, `{"webSocketDebuggerUrl":null,"retryAfter":200}`)
+	}))
+	defer srv503.Close()
+	p503 := srv503.Listener.Addr().(*net.TCPAddr).Port
+	if err := os.WriteFile(portFile, []byte(fmt.Sprintf("%d\n/devtools/browser/abc\n", p503)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := probeActivePort(dir); ok {
+		t.Fatalf("HTTP 503 status must report unhealthy")
+	}
+
+	// 3. A 200 response with plain text instead of JSON must be rejected.
+	srvPlain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `200 OK: webSocketDebuggerUrl is unavailable`)
+	}))
+	defer srvPlain.Close()
+	pPlain := srvPlain.Listener.Addr().(*net.TCPAddr).Port
+	if err := os.WriteFile(portFile, []byte(fmt.Sprintf("%d\n/devtools/browser/abc\n", pPlain)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := probeActivePort(dir); ok {
+		t.Fatalf("non-JSON 200 response must report unhealthy")
+	}
+
+	// 4. A response with mismatching browser target ID on line 2 must be rejected.
+	srvMismatch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `{"Browser":"Chrome/153.0","webSocketDebuggerUrl":"ws://127.0.0.1:%d/devtools/browser/OTHER_ID"}`, 0)
+	}))
+	defer srvMismatch.Close()
+	pMismatch := srvMismatch.Listener.Addr().(*net.TCPAddr).Port
+	if err := os.WriteFile(portFile, []byte(fmt.Sprintf("%d\n/devtools/browser/abc\n", pMismatch)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := probeActivePort(dir); ok {
+		t.Fatalf("mismatching browser ID must report unhealthy")
+	}
+
+	// 5. A fake Chrome speaking valid /json/version matching line 2 must be accepted.
 	chrome := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/json/version" {
 			http.NotFound(w, r)
@@ -126,6 +169,9 @@ func TestProfileKillPattern(t *testing.T) {
 	mustMatch := []string{
 		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/tmp/xyz/kill-profile --remote-debugging-port=0",
 		"google-chrome --user-data-dir=/tmp/xyz/kill-profile",
+		`google-chrome "--user-data-dir=/tmp/xyz/kill-profile"`,
+		`google-chrome --user-data-dir="/tmp/xyz/kill-profile"`,
+		`chrome.exe "--user-data-dir=/tmp/xyz/kill-profile"`,
 		"python3 sleeper.py --user-data-dir=/tmp/xyz/kill-profile",
 	}
 	for _, cmd := range mustMatch {
@@ -134,10 +180,18 @@ func TestProfileKillPattern(t *testing.T) {
 		}
 	}
 
+	// Test Windows path with spaces quoted
+	winDir := `C:\Users\Jane Doe\AppData\Roaming\Tether\Profiles\default`
+	winRe := regexp.MustCompile(profileKillPattern(winDir))
+	if !winRe.MatchString(`chrome.exe "--user-data-dir=` + winDir + `"`) {
+		t.Errorf("expected pattern to match quoted Windows path with spaces")
+	}
+
 	// Reviewer's exact decoys: sibling-suffix dir and lookalike flag.
 	mustNotMatch := []string{
 		"python3 sleeper.py --user-data-dir=/tmp/xyz/kill-profile2",
 		"python3 sleeper.py --backup=/tmp/xyz/kill-profile",
+		"python3 backup.py --saved-arg=--user-data-dir=/tmp/xyz/kill-profile",
 		"/usr/bin/google-chrome --user-data-dir=/home/u/.config/other",
 		"tether daemon --workspace default",
 	}
@@ -191,11 +245,56 @@ func TestKillStaleProfileProcessesScoped(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("stale profile process was not reaped")
 	}
-	if sibling.ProcessState != nil && sibling.ProcessState.Exited() {
-		t.Fatalf("cleanup killed the sibling-suffix process")
+	// Confirm decoys are STILL ALIVE using Signal(0)
+	if err := sibling.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("cleanup killed the sibling-suffix process: %v", err)
 	}
-	if unrelated.ProcessState != nil && unrelated.ProcessState.Exited() {
-		t.Fatalf("cleanup killed a process with a lookalike flag")
+	if err := unrelated.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("cleanup killed a process with a lookalike flag: %v", err)
+	}
+}
+
+func TestAcquireProfileLaunchLockOwnershipSafe(t *testing.T) {
+	dir := t.TempDir()
+	unlock1, err := acquireProfileLaunchLock(dir, time.Second)
+	if err != nil {
+		t.Fatalf("failed to acquire initial lock: %v", err)
+	}
+
+	// A second concurrent acquisition within timeout must fail
+	_, err = acquireProfileLaunchLock(dir, 100*time.Millisecond)
+	if err == nil {
+		t.Fatalf("expected concurrent lock attempt to fail, got nil")
+	}
+
+	// Simulate a delayed release running AFTER someone else broke the lock
+	// and acquired a replacement lock.
+	// 1. Manually rewrite the owner file to simulate replacement lock holder.
+	ownerFile := filepath.Join(dir, "tether-launch.lock", "owner")
+	replacementToken := fmt.Sprintf("999999-%d", time.Now().UnixNano())
+	_ = os.WriteFile(ownerFile, []byte(replacementToken), 0600)
+
+	// 2. Call the old release function
+	unlock1()
+
+	// 3. The replacement lock directory and owner file must STILL exist!
+	if _, err := os.Stat(ownerFile); err != nil {
+		t.Fatalf("delayed release erroneously deleted replacement owner file: %v", err)
+	}
+
+	// Clean up simulated replacement lock
+	_ = os.RemoveAll(filepath.Join(dir, "tether-launch.lock"))
+
+	// Now fresh acquisition succeeds
+	unlock2, err := acquireProfileLaunchLock(dir, time.Second)
+	if err != nil {
+		t.Fatalf("failed to acquire lock after cleanup: %v", err)
+	}
+	unlock2()
+
+	// And lock dir is cleanly removed on matching token
+	if _, err := os.Stat(filepath.Join(dir, "tether-launch.lock")); !os.IsNotExist(err) {
+		t.Fatalf("matching release must remove lock dir, got err: %v", err)
 	}
 }
 

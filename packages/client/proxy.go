@@ -26,9 +26,11 @@ var (
 const proxyPortFileName = "tether-proxy.port"
 
 // ResolveProxyListener binds the Mode A proxy listener. An explicit request
-// wins and is never persisted. Otherwise the workspace-persisted port is
-// reused so a relaunched daemon re-matches an adopted Chrome instance;
-// on conflict it falls back to ephemeral and persists the replacement.
+// wins. Otherwise, it attempts to bind the proxy port previously recorded
+// for this workspace so a relaunched daemon re-matches an adopted Chrome
+// instance. If that port is occupied or unrecorded, it falls back to an
+// ephemeral port without overwriting the record (so Chrome adoption can
+// correctly detect the mismatch and launch fresh).
 func ResolveProxyListener(workspace string, requested int) (net.Listener, int, error) {
 	if requested != 0 {
 		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", requested))
@@ -54,17 +56,27 @@ func ResolveProxyListener(workspace string, requested int) (net.Listener, int, e
 		return nil, 0, err
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
-	_ = os.MkdirAll(profileDir, 0700)
-	if err := os.WriteFile(portFile, []byte(strconv.Itoa(port)), 0600); err != nil {
-		_ = os.Chmod(portFile, 0600)
-		return ln, port, nil
-	}
-	_ = os.Chmod(portFile, 0600)
 	return ln, port, nil
 }
 
-// proxyPortPersisted reports whether port is the workspace's persisted proxy
-// port. Adoption is only safe in that case: Chrome's launch flags pin it.
+// recordChromeProxyPort persists the proxy port configured for the currently
+// launched Chrome process. Called only when a new Chrome is launched.
+func recordChromeProxyPort(profileDir string, port int) error {
+	if port <= 0 {
+		_ = os.Remove(filepath.Join(profileDir, proxyPortFileName))
+		return nil
+	}
+	_ = os.MkdirAll(profileDir, 0700)
+	portFile := filepath.Join(profileDir, proxyPortFileName)
+	if err := os.WriteFile(portFile, []byte(strconv.Itoa(port)), 0600); err != nil {
+		return err
+	}
+	return os.Chmod(portFile, 0600)
+}
+
+// proxyPortPersisted reports whether port matches the proxy port recorded
+// for the Chrome instance running in profileDir. Adoption is only safe
+// when this matches: Chrome's launch-time proxy flags are immutable.
 func proxyPortPersisted(profileDir string, port int) bool {
 	if port <= 0 {
 		return false
@@ -135,6 +147,7 @@ func (p *Proxy) Serve(ln net.Listener) error {
 	p.mu.Unlock()
 	return p.server.Serve(ln)
 }
+
 // ListenAndServe binds to 127.0.0.1 on the requested port (or 0 for ephemeral).
 func (p *Proxy) ListenAndServe(port int) error {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
@@ -148,6 +161,7 @@ func (p *Proxy) ListenAndServe(port int) error {
 func (p *Proxy) Port() int {
 	return int(p.port.Load())
 }
+
 // Close gracefully terminates the proxy server and all active hijacked tunnel connections.
 func (p *Proxy) Close() error {
 	p.mu.Lock()
