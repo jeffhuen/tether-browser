@@ -868,6 +868,13 @@
             this.closeModal();
             return;
           }
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            this.saveModal();
+            return;
+          }
           e.stopPropagation();
           e.stopImmediatePropagation();
           return;
