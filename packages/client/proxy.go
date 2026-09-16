@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,7 +22,7 @@ var (
 type Proxy struct {
 	listener    net.Listener
 	server      *http.Server
-	port        int
+	port        atomic.Int32
 	dialTimeout time.Duration
 
 	mu          sync.RWMutex
@@ -61,16 +62,20 @@ func (p *Proxy) ResolveTarget(hostPort string) (string, bool) {
 	return target, ok
 }
 
-// Serve starts serving proxy connections on an existing listener.
 func (p *Proxy) Serve(ln net.Listener) error {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return ln.Close()
+	}
 	p.listener = ln
-	p.port = ln.Addr().(*net.TCPAddr).Port
+	p.port.Store(int32(ln.Addr().(*net.TCPAddr).Port))
 	p.server = &http.Server{
 		Handler: p,
 	}
+	p.mu.Unlock()
 	return p.server.Serve(ln)
 }
-
 // ListenAndServe binds to 127.0.0.1 on the requested port (or 0 for ephemeral).
 func (p *Proxy) ListenAndServe(port int) error {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
@@ -81,11 +86,9 @@ func (p *Proxy) ListenAndServe(port int) error {
 	return p.Serve(ln)
 }
 
-// Port returns the listening port of the proxy.
 func (p *Proxy) Port() int {
-	return p.port
+	return int(p.port.Load())
 }
-
 // Close gracefully terminates the proxy server and all active hijacked tunnel connections.
 func (p *Proxy) Close() error {
 	p.mu.Lock()
@@ -95,17 +98,18 @@ func (p *Proxy) Close() error {
 		conns = append(conns, c)
 	}
 	p.activeConns = make(map[net.Conn]struct{})
+	srv := p.server
+	ln := p.listener
 	p.mu.Unlock()
 
 	for _, c := range conns {
 		_ = c.Close()
 	}
-
-	if p.server != nil {
-		return p.server.Close()
+	if srv != nil {
+		return srv.Close()
 	}
-	if p.listener != nil {
-		return p.listener.Close()
+	if ln != nil {
+		return ln.Close()
 	}
 	return nil
 }
@@ -135,6 +139,21 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	p.handlePlainHTTP(w, req)
 }
 
+func isRestrictedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+	if v4 := ip.To4(); v4 != nil {
+		if v4.IsLoopback() || v4.IsUnspecified() || v4.IsMulticast() || v4.IsLinkLocalUnicast() || v4.IsLinkLocalMulticast() {
+			return true
+		}
+	}
+	return false
+}
+
 func resolveAndValidateDestination(hostPort string) (string, error) {
 	host := hostPort
 	port := ""
@@ -152,7 +171,7 @@ func resolveAndValidateDestination(hostPort string) (string, error) {
 	}
 
 	if ip := net.ParseIP(hostClean); ip != nil {
-		if ip.IsLoopback() {
+		if isRestrictedIP(ip) {
 			return "", ErrUnenrolledLoopback
 		}
 		if port != "" {
@@ -169,11 +188,10 @@ func resolveAndValidateDestination(hostPort string) (string, error) {
 		return "", fmt.Errorf("resolve %s: %w", hostClean, err)
 	}
 	for _, ip := range ips {
-		if ip.IsLoopback() {
+		if isRestrictedIP(ip) {
 			return "", ErrUnenrolledLoopback
 		}
 	}
-
 	// Use first validated IP to eliminate DNS rebinding
 	validatedIP := ips[0].String()
 	if port != "" {

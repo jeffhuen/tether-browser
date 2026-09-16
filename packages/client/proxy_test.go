@@ -159,3 +159,53 @@ func TestProxyPlainHTTPEnrolled(t *testing.T) {
 		t.Fatalf("expected body with preserved Host, got: %s", string(body))
 	}
 }
+
+func TestProxyRestrictedIPRejection(t *testing.T) {
+	proxy := NewProxy()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	proxy.listener = ln
+	proxy.port.Store(int32(ln.Addr().(*net.TCPAddr).Port))
+	go func() {
+		_ = http.Serve(ln, proxy)
+	}()
+	defer proxy.Close()
+
+	restrictedTargets := []string{
+		"127.0.0.1:3000",
+		"localhost:3000",
+		"test.localhost:8080",
+		"[::1]:3000",
+		"0.0.0.0:3000",
+		"[::]:3000",
+		"169.254.169.254:80",
+	}
+
+	for _, target := range restrictedTargets {
+		t.Run(target, func(t *testing.T) {
+			conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", proxy.Port()))
+			if err != nil {
+				t.Fatalf("dial proxy: %v", err)
+			}
+			defer conn.Close()
+
+			connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+			if _, err := conn.Write([]byte(connectReq)); err != nil {
+				t.Fatalf("write connect: %v", err)
+			}
+
+			br := bufio.NewReader(conn)
+			resp, err := http.ReadResponse(br, nil)
+			if err != nil {
+				t.Fatalf("read response: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("expected 403 Forbidden for restricted target %s, got: %d", target, resp.StatusCode)
+			}
+		})
+	}
+}

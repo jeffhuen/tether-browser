@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
@@ -370,4 +374,38 @@ func TestParseArgsEndOfOptionsDelimiter(t *testing.T) {
 	if fillParams.Text != "--json" {
 		t.Errorf("expected text to be '--json', got %q", fillParams.Text)
 	}
+}
+
+func TestBrokerSocketHardening(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test-secure-broker.sock")
+
+	broker := NewBroker(sockPath, "127.0.0.1:9333")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = broker.Run(ctx)
+	}()
+
+	var info os.FileInfo
+	var err error
+	for i := 0; i < 50; i++ {
+		info, err = os.Lstat(sockPath)
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("broker socket not created: %v", err)
+	}
+
+	perm := info.Mode().Perm()
+	if perm != 0600 {
+		t.Errorf("expected socket permissions 0600, got: %04o", perm)
+	}
+
+	broker.Close()
+	cancel()
 }

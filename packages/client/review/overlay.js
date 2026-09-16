@@ -8,23 +8,28 @@
   const SECRET_PATTERNS = [
     /access_token/i,
     /auth_token/i,
-    /refresh_token/i,
     /id_token/i,
+    /session_?token/i,
     /\btoken\b/i,
-    /\bcode\b/i,
-    /\bstate\b/i,
-    /\bnonce\b/i,
-    /api_key/i,
-    /apikey/i,
-    /client_secret/i,
+    /auth_code/i,
     /oauth_state/i,
+    /\bnonce\b/i,
+    /api_?key/i,
+    /client_secret/i,
     /x-amz-/i,
-    /session_id/i,
-    /sessionid/i,
+    /session_?id/i,
     /csrf/i,
     /secret/i,
     /password/i,
-    /passwd/i
+    /passwd/i,
+    /bearer/i,
+    /\bjwt\b/i,
+    /\botp\b/i,
+    /\btotp\b/i,
+    /credit_?card/i,
+    /card_?number/i,
+    /\bcvv\b/i,
+    /\bssn\b/i
   ];
 
   function containsSecret(str) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -23,8 +24,15 @@ func DefaultBrokerSocket() string {
 	if sock := os.Getenv("TETHER_BROKER_SOCKET"); sock != "" {
 		return sock
 	}
-	tmp := os.TempDir()
-	return filepath.Join(tmp, "tether-broker.sock")
+	if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
+		dir := filepath.Join(runtimeDir, "tether")
+		_ = os.MkdirAll(dir, 0700)
+		return filepath.Join(dir, "broker.sock")
+	}
+	uid := os.Getuid()
+	dir := filepath.Join(os.TempDir(), fmt.Sprintf("tether-%d", uid))
+	_ = os.MkdirAll(dir, 0700)
+	return filepath.Join(dir, "broker.sock")
 }
 
 // Broker manages a persistent connection to the tether daemon and brokers CLI requests.
@@ -70,23 +78,36 @@ func IsBrokerAlive(socketPath string) bool {
 
 // Run starts the broker socket listener in the foreground and serves requests until stopped.
 func (b *Broker) Run(ctx context.Context) error {
-	if _, err := os.Stat(b.socketPath); err == nil {
+	if fi, err := os.Lstat(b.socketPath); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to use symlinked broker socket: %s", b.socketPath)
+		}
 		if IsBrokerAlive(b.socketPath) {
 			return fmt.Errorf("broker already running on %s", b.socketPath)
 		}
 		_ = os.Remove(b.socketPath)
 	}
 
+	dir := filepath.Dir(b.socketPath)
+	if err := os.MkdirAll(dir, 0700); err == nil {
+		_ = os.Chmod(dir, 0700)
+	}
+
 	listener, err := net.Listen("unix", b.socketPath)
 	if err != nil {
 		return fmt.Errorf("listen on unix socket %s: %w", b.socketPath, err)
 	}
+	_ = os.Chmod(b.socketPath, 0600)
+	b.mu.Lock()
 	b.listener = listener
+	b.mu.Unlock()
 	defer func() {
+		b.mu.Lock()
+		b.listener = nil
+		b.mu.Unlock()
 		_ = listener.Close()
 		_ = os.Remove(b.socketPath)
 	}()
-
 	errChan := make(chan error, 1)
 
 	go func() {
@@ -132,6 +153,7 @@ func (b *Broker) Close() {
 	}
 	if b.listener != nil {
 		_ = b.listener.Close()
+		b.listener = nil
 	}
 }
 
@@ -139,7 +161,12 @@ func (b *Broker) Close() {
 func (b *Broker) handleClient(conn net.Conn) {
 	defer conn.Close()
 
-	decoder := json.NewDecoder(conn)
+	if err := verifyPeerCredentials(conn); err != nil {
+		log.Printf("broker: rejected connection: %v", err)
+		return
+	}
+
+	decoder := json.NewDecoder(io.LimitReader(conn, 16*1024*1024))
 	var req protocol.Request
 	if err := decoder.Decode(&req); err != nil {
 		return
