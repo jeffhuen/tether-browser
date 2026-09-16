@@ -153,6 +153,12 @@ func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport st
 		}
 
 		sb.WriteString(fmt.Sprintf("### %d. %s\n", pinIndex, componentLabel))
+		if note.Payload.Page.SanitizedURL != "" || note.Payload.Page.Title != "" {
+			sb.WriteString(fmt.Sprintf("**Page:** %s (%s)\n", sanitizeMarkdownLine(note.Payload.Page.Title), sanitizeMarkdownLine(note.Payload.Page.SanitizedURL)))
+		}
+		if note.Payload.Page.CapturedAt != "" {
+			sb.WriteString(fmt.Sprintf("**Captured:** %s\n", sanitizeMarkdownLine(note.Payload.Page.CapturedAt)))
+		}
 		if note.Intent != "" {
 			sb.WriteString(fmt.Sprintf("**Intent:** %s\n", sanitizeMarkdownLine(note.Intent)))
 		}
@@ -170,8 +176,24 @@ func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport st
 		if target.ElementPath != "" {
 			sb.WriteString(fmt.Sprintf("**Location:** %s\n", sanitizeMarkdownLine(target.ElementPath)))
 		}
-		sb.WriteString(fmt.Sprintf("**Bounds:** x=%.0f, y=%.0f, %.0fx%.0f\n",
-			target.RectViewport.X, target.RectViewport.Y, target.RectViewport.Width, target.RectViewport.Height))
+		if len(note.Payload.AncestorPath) > 0 {
+			hier := make([]string, 0, len(note.Payload.AncestorPath))
+			for _, a := range note.Payload.AncestorPath {
+				if clean := sanitizeMarkdownLine(a); clean != "" {
+					hier = append(hier, clean)
+				}
+			}
+			if len(hier) > 0 {
+				sb.WriteString(fmt.Sprintf("**Hierarchy:** %s\n", strings.Join(hier, " > ")))
+			}
+		}
+		fixedMark := ""
+		if target.IsFixed {
+			fixedMark = " (fixed)"
+		}
+		sb.WriteString(fmt.Sprintf("**Bounds:** viewport x=%.0f, y=%.0f, %.0fx%.0f; page x=%.0f, y=%.0f%s\n",
+			target.RectViewport.X, target.RectViewport.Y, target.RectViewport.Width, target.RectViewport.Height,
+			target.RectPage.X, target.RectPage.Y, fixedMark))
 		if target.CSSClasses != "" {
 			sb.WriteString(fmt.Sprintf("**Classes:** `%s`\n", sanitizeMarkdownLine(target.CSSClasses)))
 		}
@@ -189,6 +211,20 @@ func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport st
 					sb.WriteString(fmt.Sprintf("- %s\n", clean))
 				}
 			}
+		}
+		if len(note.Payload.NearbyElements) > 0 {
+			elems := make([]string, 0, len(note.Payload.NearbyElements))
+			for _, el := range note.Payload.NearbyElements {
+				if clean := sanitizeMarkdownLine(el); clean != "" {
+					elems = append(elems, clean)
+				}
+			}
+			if len(elems) > 0 {
+				sb.WriteString(fmt.Sprintf("**Nearby elements:** %s\n", strings.Join(elems, ", ")))
+			}
+		}
+		if target.SelectedText != "" {
+			sb.WriteString(fmt.Sprintf("**Selected text:** %s\n", sanitizeMarkdownLine(target.SelectedText)))
 		}
 		if target.HTMLSnippet != "" {
 			startFence, endFence := safeHTMLFence(target.HTMLSnippet)
