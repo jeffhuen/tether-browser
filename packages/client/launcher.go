@@ -1,12 +1,14 @@
 package client
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -193,6 +196,9 @@ func LaunchChrome(ctx context.Context, workspaceID string, proxyPort int) (*Chro
 		_ = cmd.Process.Kill()
 		return nil, fmt.Errorf("wait for devtools active port: %w (profile %s)", err, profileDir)
 	}
+	// Persist the proxy port configured for this running Chrome instance.
+	// Only written when a new Chrome is successfully launched.
+	_ = recordChromeProxyPort(profileDir, proxyPort)
 
 	return &ChromeProcess{
 		Cmd:        cmd,
@@ -225,8 +231,13 @@ func (cp *ChromeProcess) Close() error {
 	}
 }
 
-// probeActivePort reads DevToolsActivePort and verifies the port answers.
-// A stale file from a dead instance fails the dial and reports unhealthy.
+// probeActivePort reads DevToolsActivePort and strictly validates the port.
+// It returns the CDP port only if: (1) the port responds to HTTP, (2) the
+// response status is 200, (3) the parsed /json/version body contains a
+// usable ws:// WebSocket debugger URL, and (4) the debugger's target path
+// matches the browser identity recorded on line 2 of DevToolsActivePort.
+// A stale file from a dead instance, an HTTP error page, a response without
+// a valid debugger URL, or a port reused by a different Chrome is rejected.
 func probeActivePort(profileDir string) (int, bool) {
 	data, err := os.ReadFile(filepath.Join(profileDir, "DevToolsActivePort"))
 	if err != nil || len(data) == 0 {
@@ -240,20 +251,45 @@ func probeActivePort(profileDir string) (int, bool) {
 	if err != nil || port <= 0 {
 		return 0, false
 	}
+	expectedTarget := ""
+	if len(lines) >= 2 {
+		expectedTarget = strings.TrimSpace(lines[1])
+	}
+
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
 	if err != nil {
 		return 0, false
 	}
 	defer conn.Close()
 	// A bare TCP dial proves nothing: the port may have been recycled by a
-	// non-CDP service. Require a real DevTools version handshake.
+	// non-CDP service. Require a real DevTools version handshake with a
+	// parsed HTTP 200 status and a ws:// debugger URL.
 	_ = conn.SetDeadline(time.Now().Add(time.Second))
 	_, _ = fmt.Fprintf(conn, "GET /json/version HTTP/1.0\r\n\r\n")
-	resp, err := io.ReadAll(io.LimitReader(conn, 8192))
+	reader := bufio.NewReader(io.LimitReader(conn, 65536))
+	resp, err := http.ReadResponse(reader, nil)
 	if err != nil {
 		return 0, false
 	}
-	if !strings.Contains(string(resp), "200") || !strings.Contains(string(resp), "webSocketDebuggerUrl") {
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	if err != nil {
+		return 0, false
+	}
+	var version struct {
+		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+	}
+	if err := json.Unmarshal(body, &version); err != nil {
+		return 0, false
+	}
+	wsURL := strings.TrimSpace(version.WebSocketDebuggerURL)
+	if !strings.HasPrefix(wsURL, "ws://") {
+		return 0, false
+	}
+	if expectedTarget != "" && !strings.HasSuffix(wsURL, expectedTarget) {
 		return 0, false
 	}
 	return port, true
@@ -273,13 +309,13 @@ func waitForActivePort(profileDir string, timeout time.Duration) (int, error) {
 	return 0, fmt.Errorf("timed out after %v waiting for %s", timeout, activePortFile)
 }
 
-// profileKillPattern matches only processes launched with exactly
-// our --user-data-dir argument. The trailing boundary rejects sibling dirs
-// (.../profile2) and the --user-data-dir= prefix rejects lookalike flags
-// (... --backup=<dir>). Any process carrying this exact flag claims our
-// dedicated profile dir, which only our Chrome instances do.
+// profileKillPattern matches only processes launched with our exact
+// --user-data-dir argument. An argument boundary prefix (^|[ \t"'])
+// rejects lookalike argument prefixes (e.g. --saved-arg=--user-data-dir=...),
+// and a boundary suffix ([ \t"']|$) rejects sibling directories
+// (.../profile2) while supporting Windows and Go argument quoting.
 func profileKillPattern(profileDir string) string {
-	return `--user-data-dir=` + regexp.QuoteMeta(profileDir) + `($| )`
+	return `(^|[ \t"'])--user-data-dir="?` + regexp.QuoteMeta(profileDir) + `"?([ \t"']|$)`
 }
 
 // killStaleProfileProcesses terminates leftover Chrome processes bound to our
@@ -295,38 +331,74 @@ func killStaleProfileProcesses(profileDir string) {
 		return
 	}
 	_ = exec.Command("pkill", "-f", "--", pattern).Run()
-	waitForPatternExit(pattern, 5*time.Second)
+	if !waitForPatternExit(pattern, 3*time.Second) {
+		// Escalate to SIGKILL if any processes refused graceful SIGTERM
+		_ = exec.Command("pkill", "-9", "-f", "--", pattern).Run()
+		_ = waitForPatternExit(pattern, 2*time.Second)
+	}
 }
 
 // waitForPatternExit polls until no process matches pattern (unix only).
-func waitForPatternExit(pattern string, timeout time.Duration) {
+// Returns true if all matching processes exited within timeout.
+func waitForPatternExit(pattern string, timeout time.Duration) bool {
 	if runtime.GOOS == "windows" {
-		return
+		return true
 	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		// "--" keeps patterns starting with "--" from parsing as options.
 		if err := exec.Command("pgrep", "-f", "--", pattern).Run(); err != nil {
-			return
+			return true
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
+	return false
 }
 
 // acquireProfileLaunchLock serializes concurrent launchers for one profile
-// via an atomic lock dir. Stale locks (crashed holder) break after 60s.
-// It returns a release func for defer.
+// via an atomic lock dir. An owner token written inside the directory prevents
+// delayed releases or breakers from deleting a replacement lock. Stale locks
+// from dead processes break immediately; abandoned locks break after timeout.
 func acquireProfileLaunchLock(profileDir string, timeout time.Duration) (func(), error) {
 	lockDir := filepath.Join(profileDir, "tether-launch.lock")
-	release := func() { _ = os.RemoveAll(lockDir) }
+	ownerFile := filepath.Join(lockDir, "owner")
+	token := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
+
+	release := func() {
+		data, err := os.ReadFile(ownerFile)
+		if err == nil && strings.TrimSpace(string(data)) == token {
+			_ = os.Remove(ownerFile)
+			_ = os.Remove(lockDir)
+		}
+	}
+
 	deadline := time.Now().Add(timeout)
 	for {
 		if err := os.Mkdir(lockDir, 0700); err == nil {
+			_ = os.WriteFile(ownerFile, []byte(token), 0600)
 			return release, nil
 		}
-		if fi, err := os.Stat(lockDir); err == nil && time.Since(fi.ModTime()) > time.Minute {
-			_ = os.RemoveAll(lockDir)
-			continue
+		// break immediately; abandoned locks break after 30s.
+		if fi, err := os.Stat(lockDir); err == nil {
+			isStale := false
+			data, err := os.ReadFile(ownerFile)
+			if err == nil {
+				parts := strings.Split(strings.TrimSpace(string(data)), "-")
+				if len(parts) >= 1 {
+					if pid, err := strconv.Atoi(parts[0]); err == nil && pid > 0 {
+						if p, err := os.FindProcess(pid); err == nil {
+							if err := p.Signal(syscall.Signal(0)); err != nil {
+								// Process is confirmed dead: break immediately
+								isStale = true
+							}
+						}
+					}
+				}
+			}
+			if isStale || time.Since(fi.ModTime()) > 30*time.Second {
+				_ = os.RemoveAll(lockDir)
+				continue
+			}
 		}
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf("another launcher holds %s", lockDir)
