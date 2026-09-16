@@ -22,6 +22,7 @@ func verifyPeerCredentials(conn net.Conn) error {
 	err = raw.Control(func(fd uintptr) {
 		ucred, err := syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
 		if err != nil {
+			credErr = fmt.Errorf("getsockopt SO_PEERCRED: %w", err)
 			return
 		}
 		expectedUID := os.Getuid()
