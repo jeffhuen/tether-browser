@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 	"github.com/jeffhuen/tether-browser/packages/protocol"
-	"github.com/klauspost/compress/zstd"
 )
 
 type mockDriver struct {
@@ -320,58 +319,72 @@ func TestServerZstdBinaryFraming(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// Create large request that exceeds 1024 bytes threshold to trigger zstd compression
-	largeText := strings.Repeat("A", 1200)
-	reqObj, _ := protocol.NewRequest("req-large", protocol.MethodFill, protocol.FillParams{Selector: "@e1", Text: largeText}, 1, "epoch-1")
-	reqBytes, _ := json.Marshal(reqObj)
-
-	compressed, err := protocol.CompressPayload(reqBytes)
-	if err != nil {
-		t.Fatalf("compress payload: %v", err)
-	}
-	if compressed[0] != protocol.FormatZstd {
-		t.Fatalf("expected FormatZstd for large payload, got 0x%02x", compressed[0])
-	}
-
-	if _, err := conn.Write(compressed); err != nil {
-		t.Fatalf("write compressed request: %v", err)
-	}
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		_ = tcpConn.CloseWrite()
-	}
-
-	br := bufio.NewReader(conn)
-	respHeader := make([]byte, 5)
-	if _, err := io.ReadFull(br, respHeader); err != nil {
-		t.Fatalf("read response header: %v", err)
-	}
-	uncompressedLen := binary.BigEndian.Uint32(respHeader[1:5])
-	var decompressed []byte
-	if respHeader[0] == protocol.FormatRaw {
-		respPayload := make([]byte, uncompressedLen)
-		if _, err := io.ReadFull(br, respPayload); err != nil {
-			t.Fatalf("read raw response: %v", err)
-		}
-		decompressed = respPayload
-	} else if respHeader[0] == protocol.FormatZstd {
-		dec, err := zstd.NewReader(br)
+	// Helper to send request and read framed response
+	sendAndReceive := func(id string, text string) *protocol.Response {
+		reqObj, _ := protocol.NewRequest(id, protocol.MethodFill, protocol.FillParams{Selector: "@e1", Text: text}, 1, "epoch-1")
+		reqBytes, _ := json.Marshal(reqObj)
+		compressed, err := protocol.CompressPayload(reqBytes)
 		if err != nil {
-			t.Fatalf("new zstd reader: %v", err)
+			t.Fatalf("compress payload: %v", err)
 		}
-		decompressed = make([]byte, uncompressedLen)
-		if _, err := io.ReadFull(dec, decompressed); err != nil {
-			t.Fatalf("read zstd response: %v", err)
+		if _, err := conn.Write(compressed); err != nil {
+			t.Fatalf("write compressed request: %v", err)
 		}
-		dec.Close()
-	} else {
-		t.Fatalf("unknown response format: 0x%02x", respHeader[0])
+
+		// Read response
+		br := bufio.NewReader(conn)
+		peek, err := br.Peek(1)
+		if err != nil {
+			t.Fatalf("peek response: %v", err)
+		}
+		var framedResp []byte
+		if peek[0] == protocol.FormatRaw {
+			hdr := make([]byte, 5)
+			if _, err := io.ReadFull(br, hdr); err != nil {
+				t.Fatalf("read raw header: %v", err)
+			}
+			rawLen := binary.BigEndian.Uint32(hdr[1:5])
+			payload := make([]byte, rawLen)
+			if _, err := io.ReadFull(br, payload); err != nil {
+				t.Fatalf("read raw payload: %v", err)
+			}
+			framedResp = append(hdr, payload...)
+		} else if peek[0] == protocol.FormatZstd {
+			hdr := make([]byte, 9)
+			if _, err := io.ReadFull(br, hdr); err != nil {
+				t.Fatalf("read zstd header: %v", err)
+			}
+			cLen := binary.BigEndian.Uint32(hdr[1:5])
+			payload := make([]byte, cLen)
+			if _, err := io.ReadFull(br, payload); err != nil {
+				t.Fatalf("read zstd payload: %v", err)
+			}
+			framedResp = append(hdr, payload...)
+		}
+
+		decompressed, err := protocol.DecompressPayload(framedResp)
+		if err != nil {
+			t.Fatalf("decompress response: %v", err)
+		}
+		var resp protocol.Response
+		if err := json.Unmarshal(decompressed, &resp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		return &resp
 	}
-	var resp protocol.Response
-	if err := json.Unmarshal(decompressed, &resp); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
+
+	// Request 1 on persistent connection
+	largeText1 := strings.Repeat("A", 1200)
+	resp1 := sendAndReceive("req-large-1", largeText1)
+	if protocol.IDString(resp1.ID) != "req-large-1" {
+		t.Errorf("expected ID req-large-1, got %s", protocol.IDString(resp1.ID))
 	}
-	if protocol.IDString(resp.ID) != "req-large" {
-		t.Errorf("expected ID req-large, got %s", protocol.IDString(resp.ID))
+
+	// Request 2 on the SAME persistent connection (proves no stream desync!)
+	largeText2 := strings.Repeat("B", 1500)
+	resp2 := sendAndReceive("req-large-2", largeText2)
+	if protocol.IDString(resp2.ID) != "req-large-2" {
+		t.Errorf("expected ID req-large-2, got %s", protocol.IDString(resp2.ID))
 	}
 }
 
@@ -396,17 +409,17 @@ func TestServerZstdBombRejection(t *testing.T) {
 		}
 	}()
 	defer server.Close()
-
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", server.Port()))
 	if err != nil {
 		t.Fatalf("dial server: %v", err)
 	}
 	defer conn.Close()
 
-	bombHeader := make([]byte, 5)
+	// Send FormatZstd 9-byte header with advertised uncompressed length exceeding MaxFramePayload (33MB)
+	bombHeader := make([]byte, 9)
 	bombHeader[0] = protocol.FormatZstd
-	binary.BigEndian.PutUint32(bombHeader[1:5], protocol.MaxFramePayload+1)
-
+	binary.BigEndian.PutUint32(bombHeader[1:5], 100)
+	binary.BigEndian.PutUint32(bombHeader[5:9], protocol.MaxFramePayload+1)
 	if _, err := conn.Write(bombHeader); err != nil {
 		t.Fatalf("write bomb header: %v", err)
 	}

@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/jeffhuen/tether-browser/packages/protocol"
-	"github.com/klauspost/compress/zstd"
 )
 
 // Server receives JSON-RPC commands from the remote CLI and dispatches them to BrowserDriver.
@@ -189,28 +188,26 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		// Binary framing: FormatZstd
 		if firstByte == protocol.FormatZstd {
-			header := make([]byte, 5)
+			header := make([]byte, 9)
 			if _, err := io.ReadFull(br, header); err != nil {
 				return
 			}
-			uncompressedLen := binary.BigEndian.Uint32(header[1:5])
-			if uncompressedLen > protocol.MaxFramePayload {
+			compressedLen := binary.BigEndian.Uint32(header[1:5])
+			uncompressedLen := binary.BigEndian.Uint32(header[5:9])
+			if uncompressedLen > protocol.MaxFramePayload || compressedLen > protocol.MaxFramePayload {
 				return
 			}
-			dec, err := zstd.NewReader(
-				io.LimitReader(br, int64(protocol.MaxFramePayload)),
-				zstd.WithDecoderMaxMemory(uint64(protocol.MaxFramePayload)),
-				zstd.WithDecodeAllCapLimit(true),
-			)
+
+			payload := make([]byte, compressedLen)
+			if _, err := io.ReadFull(br, payload); err != nil {
+				return
+			}
+
+			framed := append(header, payload...)
+			decompressed, err := protocol.DecompressPayload(framed)
 			if err != nil {
 				return
 			}
-			decompressed := make([]byte, uncompressedLen)
-			if _, err := io.ReadFull(dec, decompressed); err != nil {
-				dec.Close()
-				return
-			}
-			dec.Close()
 
 			var req protocol.Request
 			if err := json.Unmarshal(decompressed, &req); err != nil {

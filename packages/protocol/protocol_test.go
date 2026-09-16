@@ -149,9 +149,10 @@ func TestCompressionRoundtrip(t *testing.T) {
 
 func TestOversizedFrameRejection(t *testing.T) {
 	// Malicious frame advertising 4 GB uncompressed size
-	malicious := make([]byte, 5)
+	malicious := make([]byte, 9)
 	malicious[0] = FormatZstd
-	binary.BigEndian.PutUint32(malicious[1:5], 0xffffffff)
+	binary.BigEndian.PutUint32(malicious[1:5], 100)
+	binary.BigEndian.PutUint32(malicious[5:9], 0xffffffff)
 
 	_, err := DecompressPayload(malicious)
 	if err == nil {
