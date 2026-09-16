@@ -271,8 +271,13 @@ async function getLiveTabs() {
 
 // Track user tab switching in Chrome
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
-  activeTabId = activeInfo.tabId;
-  tabGroupTabs.add(activeInfo.tabId);
+  try {
+    const tab = await chrome.tabs.get(activeInfo.tabId);
+    if (tab && tabGroupId !== null && tab.groupId === tabGroupId) {
+      activeTabId = activeInfo.tabId;
+      tabGroupTabs.add(activeInfo.tabId);
+    }
+  } catch {}
 });
 
 // Track user navigation, redirects, and title updates
