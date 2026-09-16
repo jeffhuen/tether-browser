@@ -12,10 +12,9 @@ import (
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
-const usageText = `tether - remote browser automation for AI coding agents
+const usageText = `tether v0.1.0 - remote browser automation for AI coding agents
 
 Usage: tether <command> [args] [options]
-
 Commands:
   open <url>                 Navigate to URL
   snapshot                   Accessibility tree with [@eN] refs
@@ -58,6 +57,21 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	if args[0] == "version" || args[0] == "-v" || args[0] == "--version" || args[0] == "-version" {
+		isJSON := false
+		for _, a := range args[1:] {
+			if a == "--json" {
+				isJSON = true
+				break
+			}
+		}
+		if isJSON {
+			fmt.Fprintf(stdout, "{\"version\":%q}\n", protocol.Version)
+		} else {
+			fmt.Fprintf(stdout, "tether v%s\n", protocol.Version)
+		}
+		return 0
+	}
 	cmd, err := ParseArgs(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
