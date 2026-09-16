@@ -133,16 +133,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    let md = "# Developer Review Notes\n\n";
-    currentNotes.forEach((n, idx) => {
-      const t = n.payload?.target || {};
-      md += `### ${idx + 1}. \`${t.selector || t.tagName || "element"}\`\n`;
-      md += `* **Feedback**: ${n.comment || "No comment"}\n`;
-      if (t.elementPath) md += `* **DOM Path**: \`${t.elementPath}\`\n`;
-      if (t.framework?.component) md += `* **Component**: \`${t.framework.component}\`\n`;
-      md += "\n";
-    });
-
+    const md = formatDesignFeedbackReport(currentNotes);
     navigator.clipboard.writeText(md).then(() => {
       const orig = btnCopyNotes.textContent;
       btnCopyNotes.textContent = "Copied!";
@@ -201,3 +192,88 @@ document.addEventListener("DOMContentLoaded", () => {
   // Initial load
   refresh();
 });
+  function formatDesignFeedbackReport(notes) {
+    if (!notes || notes.length === 0) return '';
+    const first = notes[0];
+    const page = first.payload?.page || {};
+    const title = page.title || document.title || 'Page Review';
+    const url = page.sanitizedUrl || window.location.href;
+    const vp = page.viewportWidth ? (page.viewportWidth + 'x' + page.viewportHeight) : (window.innerWidth + 'x' + window.innerHeight);
+
+    const lines = [
+      '## Design Feedback: ' + title,
+      '',
+      '**URL:** ' + url,
+      '**Viewport:** ' + vp,
+      ''
+    ];
+
+    notes.forEach((n, idx) => {
+      const p = n.payload || {};
+      const t = p.target || {};
+      const fw = t.framework || {};
+      const rect = t.rectViewport || {};
+
+      const pinIndex = n.index || (idx + 1);
+      const componentName = fw.component || t.tagName || 'element';
+      const label = t.textSnippet ? t.textSnippet.slice(0, 50) : (t.accessibleName || t.selector || '');
+      lines.push('### ' + pinIndex + '. ' + componentName + (label ? (' - "' + label + '"') : ''));
+
+      if (n.intent) {
+        lines.push('**Intent:** ' + n.intent);
+      }
+      lines.push('**Selector:** `' + (t.selector || 'element') + '`');
+      if (t.elementPath) {
+        lines.push('**Location:** `' + t.elementPath + '`');
+      }
+      if (fw.name && fw.name !== 'Static') {
+        let fwLine = fw.name;
+        if (fw.component) fwLine += ' (' + fw.component + ')';
+        lines.push('**Framework:** ' + fwLine);
+      }
+      if (fw.sourceLocation) {
+        lines.push('**Source:** `' + fw.sourceLocation + '` (provenance: ' + (fw.provenance || 'inferred') + ')');
+      }
+      if (rect && typeof rect.width === 'number') {
+        lines.push('**Bounds:** viewport x=' + Math.round(rect.x) + ', y=' + Math.round(rect.y) + ', ' + Math.round(rect.width) + 'x' + Math.round(rect.height));
+      }
+      if (t.cssClasses) {
+        lines.push('**Classes:** `' + t.cssClasses + '`');
+      }
+      if (t.selectedText) {
+        lines.push('**Selected text:** "' + t.selectedText + '"');
+      } else if (t.textSnippet) {
+        lines.push('**Text:** "' + t.textSnippet + '"');
+      }
+      if (p.nearbyText && p.nearbyText.length > 0) {
+        lines.push('**Nearby text:**');
+        p.nearbyText.slice(0, 4).forEach(txt => {
+          if (txt && txt.trim()) lines.push('- "' + txt.trim() + '"');
+        });
+      }
+      if (p.nearbyElements && p.nearbyElements.length > 0) {
+        lines.push('**Nearby elements:**');
+        p.nearbyElements.slice(0, 4).forEach(el => {
+          if (el && el.trim()) lines.push('- `' + el.trim() + '`');
+        });
+      }
+      if (t.computedStyles && Object.keys(t.computedStyles).length > 0) {
+        lines.push('**Computed styles:**');
+        for (const [k, v] of Object.entries(t.computedStyles)) {
+          if (v && v !== 'auto' && v !== 'normal' && v !== 'static' && v !== 'rgba(0, 0, 0, 0)') {
+            lines.push('- ' + k + ': ' + v);
+          }
+        }
+      }
+      if (t.htmlSnippet) {
+        lines.push('**HTML:**');
+        lines.push('```html');
+        lines.push(t.htmlSnippet.trim());
+        lines.push('```');
+      }
+      lines.push('**Feedback:** ' + (n.comment || 'No comment'));
+      lines.push('');
+    });
+
+    return lines.join('\n').trim();
+  }
