@@ -20,10 +20,11 @@ import (
 
 const helpText = `tether v0.1.11 - zero-latency remote browser automation bridge for AI coding agents
 Usage:
-  tether connect <host>      Link local Chrome to a remote server via SSH in one command
-  tether daemon [options]    Start the local workstation daemon (drives Chrome via CDP)
-  tether broker [options]    Manage the remote session broker (run, start, stop, status)
-  tether <command> [args]    Run browser automation commands (open, snapshot, click, review, etc.)
+  tether connect <host>        Link local Chrome to a remote server via SSH in one command
+  tether extension install     Register native messaging host for Chrome, Brave, and Edge
+  tether daemon [options]      Start the local workstation daemon (drives Chrome via extension or CDP)
+  tether broker [options]      Manage the remote session broker (run, start, stop, status)
+  tether <command> [args]      Run browser automation commands (open, snapshot, click, review, etc.)
 
 Run 'tether help' or 'tether <command> --help' for details.
 `
@@ -93,8 +94,12 @@ func runDaemon(args []string) int {
 
 	var chromeProc *client.ChromeProcess
 	cdpURL := *chromeURL
-
-	if !*noChrome && cdpURL == "" {
+	var driver client.BrowserDriver
+	extDriver := client.NewExtensionDriver("")
+	if extDriver.IsAvailable() {
+		fmt.Printf("✓ Using Tether Chrome Extension bridge (%s)\n", client.GetBridgeSocketPath())
+		driver = extDriver
+	} else if !*noChrome && cdpURL == "" {
 		proc, err := client.LaunchChrome(ctx, *workspace, actualProxyPort)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error launching Chrome: %v\n", err)
@@ -103,16 +108,16 @@ func runDaemon(args []string) int {
 		chromeProc = proc
 		defer chromeProc.Close()
 		cdpURL = fmt.Sprintf("http://127.0.0.1:%d", proc.CDPPort)
+		driver = client.NewCDPDriver(cdpURL)
+	} else {
+		if cdpURL == "" {
+			cdpURL = "http://127.0.0.1:9222"
+		}
+		driver = client.NewCDPDriver(cdpURL)
 	}
 
-	if cdpURL == "" {
-		cdpURL = "http://127.0.0.1:9222"
-	}
-
-	driver := client.NewCDPDriver(cdpURL)
 	server := client.NewServer(driver)
 	server.SetAuthToken(token)
-	fmt.Printf("Tether daemon listening on 127.0.0.1:%d [authenticated] (Mode A proxy on 127.0.0.1:%d)\n", *port, actualProxyPort)
 	serverErrChan := make(chan error, 1)
 	go func() {
 		serverErrChan <- server.ListenAndServe(*port)
@@ -173,13 +178,64 @@ func main() {
 		code := runConnect(args[1:])
 		os.Exit(code)
 	}
-
+	if args[0] == "extension" {
+		code := runExtension(args[1:])
+		os.Exit(code)
+	}
+	if args[0] == "native-host" {
+		code := runNativeHost(args[1:])
+		os.Exit(code)
+	}
 	if args[0] == "daemon" {
 		code := runDaemon(args[1:])
 		os.Exit(code)
 	}
 	code := cli.Run(args, os.Stdout, os.Stderr)
 	os.Exit(code)
+}
+func runExtension(args []string) int {
+	if len(args) > 0 && args[0] == "install" {
+		paths, err := client.InstallNativeHostManifest("")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error installing native host manifest: %v\n", err)
+			return 1
+		}
+		if len(paths) == 0 {
+			fmt.Println("No Chromium browser installation directories found.")
+			fmt.Println("Supported: Google Chrome, Chromium, Brave, Microsoft Edge.")
+			return 1
+		}
+		fmt.Printf("✓ Registered Tether Native Messaging Host in %d browser location(s):\n", len(paths))
+		for _, p := range paths {
+			fmt.Printf("  • %s\n", p)
+		}
+		fmt.Println("\nTo load the extension:")
+		fmt.Println("  1. Open chrome://extensions (or brave://extensions / edge://extensions)")
+		fmt.Println("  2. Enable 'Developer mode' (toggle in top right)")
+		fmt.Println("  3. Click 'Load unpacked' and select the 'packages/extension' directory")
+		fmt.Println("  4. Extension ID will match automatically: " + client.ExtensionID)
+		return 0
+	}
+	fmt.Println("Usage: tether extension install")
+	return 0
+}
+
+func runNativeHost(args []string) int {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		cancel()
+	}()
+
+	if err := client.RunNativeHostServer(ctx, os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "[Tether NativeHost] Error: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func runConnect(args []string) int {
