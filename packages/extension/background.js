@@ -277,25 +277,12 @@ chrome.tabs.onCreated.addListener(async (tab) => {
     activeTabId = tab.id;
   }
 });
-
-chrome.tabs.onRemoved.addListener((tabId) => {
-  tabGroupTabs.delete(tabId);
-  attachedTabs.delete(tabId);
-  elementRefsByTab.delete(tabId);
-  if (activeTabId === tabId) {
-    const next = tabGroupTabs.values().next();
-    activeTabId = next.done ? null : next.value;
-  }
-});
-
-// --- Action Implementations ---
-
 async function handleOpen(params = {}) {
   const url = params.url || "about:blank";
   await ensureTabGroup(true);
 
   let targetTabId = resolveTargetTabId(params);
-  if (!targetTabId || !tabGroupTabs.has(targetTabId)) {
+  if (params.newTab || !targetTabId || !tabGroupTabs.has(targetTabId)) {
     // Create new tab in group
     const tab = await chrome.tabs.create({ url, active: true });
     await chrome.tabs.group({ tabIds: [tab.id], groupId: tabGroupId });
@@ -607,7 +594,7 @@ async function handleReviewClear(params = {}) {
   await ensureDomain(tabId, "Runtime");
 
   await cdp(tabId, "Runtime.evaluate", {
-    expression: "window.__tetherReview ? window.__tetherReview.clearNotes() : false",
+    expression: "window.__tetherReview ? (window.__tetherReview.clear ? window.__tetherReview.clear() : (window.__tetherReview.clearNotes ? window.__tetherReview.clearNotes() : false)) : false",
   });
 
   return { ok: true };
@@ -713,7 +700,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case "popup_navigate": {
-          await handleOpen({ url: msg.url });
+          await handleOpen({ url: msg.url, newTab: Boolean(msg.newTab) });
           sendResponse({ ok: true });
           break;
         }
