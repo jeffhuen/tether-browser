@@ -215,6 +215,51 @@ func (d *CDPDriver) Snapshot(ctx context.Context, params protocol.SnapshotParams
 	let refCounter = 1;
 	const refs = {};
 	const refMap = {};
+	const SECRET_PATTERNS = [
+		/access_token/i,
+		/auth_token/i,
+		/refresh_token/i,
+		/id_token/i,
+		/session_?token/i,
+		/\btoken\b/i,
+		/api_?key/i,
+		/client_secret/i,
+		/oauth_state/i,
+		/x-amz-/i,
+		/session_?id/i,
+		/csrf/i,
+		/secret/i,
+		/password/i,
+		/passwd/i,
+		/bearer/i,
+		/\bjwt\b/i,
+		/\botp\b/i,
+		/\btotp\b/i,
+		/credit_?card/i,
+		/card_?number/i,
+		/\bcvv\b/i,
+		/\bssn\b/i
+	];
+
+	function containsSecret(str) {
+		if (!str || typeof str !== 'string') return false;
+		return SECRET_PATTERNS.some(p => p.test(str));
+	}
+
+	function isSecretField(elem) {
+		if (!elem) return false;
+		if (elem.type === 'password') return true;
+		const name = (elem.name || '').toLowerCase();
+		const id = (elem.id || '').toLowerCase();
+		const rawType = (elem.type || '').toLowerCase();
+		const autocomplete = (elem.autocomplete || '').toLowerCase();
+		const placeholder = (elem.placeholder || '').toLowerCase();
+		const ariaLabel = (elem.getAttribute('aria-label') || '').toLowerCase();
+
+		return SECRET_PATTERNS.some(p =>
+			p.test(name) || p.test(id) || p.test(rawType) || p.test(autocomplete) || p.test(placeholder) || p.test(ariaLabel)
+		);
+	}
 
 	function isInteractive(el) {
 		if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
@@ -265,7 +310,7 @@ func (d *CDPDriver) Snapshot(ctx context.Context, params protocol.SnapshotParams
 
 		let val = "";
 		if (el.value !== undefined && el.value !== null) {
-			if (el.type === 'password') {
+			if (isSecretField(el) || containsSecret(String(el.value))) {
 				val = "[redacted]";
 			} else {
 				val = String(el.value).trim().slice(0, 80);

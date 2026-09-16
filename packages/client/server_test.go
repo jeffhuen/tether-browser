@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
+	"time"
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 	"github.com/klauspost/compress/zstd"
 )
@@ -302,8 +302,7 @@ func TestServerZstdBinaryFraming(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	server.listener = ln
-	server.port = ln.Addr().(*net.TCPAddr).Port
-
+	server.port.Store(int32(ln.Addr().(*net.TCPAddr).Port))
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -373,5 +372,52 @@ func TestServerZstdBinaryFraming(t *testing.T) {
 	}
 	if protocol.IDString(resp.ID) != "req-large" {
 		t.Errorf("expected ID req-large, got %s", protocol.IDString(resp.ID))
+	}
+}
+
+func TestServerZstdBombRejection(t *testing.T) {
+	driver := &mockDriver{}
+	server := NewServer(driver)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	server.listener = ln
+	server.port.Store(int32(ln.Addr().(*net.TCPAddr).Port))
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go server.handleConn(conn)
+		}
+	}()
+	defer server.Close()
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", server.Port()))
+	if err != nil {
+		t.Fatalf("dial server: %v", err)
+	}
+	defer conn.Close()
+
+	bombHeader := make([]byte, 5)
+	bombHeader[0] = protocol.FormatZstd
+	binary.BigEndian.PutUint32(bombHeader[1:5], protocol.MaxFramePayload+1)
+
+	if _, err := conn.Write(bombHeader); err != nil {
+		t.Fatalf("write bomb header: %v", err)
+	}
+
+	buf := make([]byte, 10)
+	_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	n, err := conn.Read(buf)
+	if n > 0 {
+		t.Errorf("expected connection close, got %d bytes: %v", n, buf[:n])
+	}
+	if err == nil {
+		t.Errorf("expected EOF or read error on bomb rejection, got nil")
 	}
 }

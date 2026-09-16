@@ -13,16 +13,17 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/jeffhuen/tether-browser/packages/protocol"
-	"github.com/klauspost/compress/zstd"
 )
 
 // Server receives JSON-RPC commands from the remote CLI and dispatches them to BrowserDriver.
 type Server struct {
 	driver   BrowserDriver
 	listener net.Listener
-	port     int
+	port     atomic.Int32
 	mu       sync.Mutex
 	closed   bool
 }
@@ -41,9 +42,16 @@ func (s *Server) ListenAndServe(port int) error {
 	if err != nil {
 		return fmt.Errorf("server listen on %s: %w", addr, err)
 	}
-	s.listener = ln
-	s.port = ln.Addr().(*net.TCPAddr).Port
 
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = ln.Close()
+		return nil
+	}
+	s.listener = ln
+	s.port.Store(int32(ln.Addr().(*net.TCPAddr).Port))
+	s.mu.Unlock()
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -59,19 +67,19 @@ func (s *Server) ListenAndServe(port int) error {
 	}
 }
 
-// Port returns the server listening port.
 func (s *Server) Port() int {
-	return s.port
+	return int(s.port.Load())
 }
 
 // Close gracefully closes the server listener.
 func (s *Server) Close() error {
 	s.mu.Lock()
 	s.closed = true
+	ln := s.listener
 	s.mu.Unlock()
 
-	if s.listener != nil {
-		return s.listener.Close()
+	if ln != nil {
+		return ln.Close()
 	}
 	return nil
 }
@@ -79,10 +87,12 @@ func (s *Server) Close() error {
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 	setTCPNoDelay(conn, true)
+	_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
 
 	br := bufio.NewReader(conn)
 
 	for {
+		_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
 		peek, err := br.Peek(1)
 		if err != nil {
 			return
@@ -187,16 +197,16 @@ func (s *Server) handleConn(conn net.Conn) {
 				return
 			}
 
-			dec, err := zstd.NewReader(br)
+			compressedPayload, err := io.ReadAll(io.LimitReader(br, int64(protocol.MaxFramePayload)))
+			if err != nil || len(compressedPayload) == 0 {
+				return
+			}
+
+			framed := append(header, compressedPayload...)
+			decompressed, err := protocol.DecompressPayload(framed)
 			if err != nil {
 				return
 			}
-			decompressed := make([]byte, uncompressedLen)
-			if _, err := io.ReadFull(dec, decompressed); err != nil {
-				dec.Close()
-				return
-			}
-			dec.Close()
 
 			var req protocol.Request
 			if err := json.Unmarshal(decompressed, &req); err != nil {
