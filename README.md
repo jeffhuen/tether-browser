@@ -6,19 +6,46 @@ No pixel streaming. No VNC. No cloud browser subscription.
 
 ---
 
-## 1. The Core Problem
+## 1. Workflow Context: Who Needs This (and Who Doesn't)
 
-When developers run coding agents on remote Linux servers or cloud VMs, browser automation breaks down:
+* **Local development**: If your coding agent runs directly on your workstation with a desktop screen, you do not need Tether. Use local browser automation or open Chrome directly.
+* **Remote development**: If your coding agent runs on a remote Linux server (AWS, Hetzner, dev containers, Herdr, or tmux over SSH), browser automation breaks down:
+  * **Headless servers lack authenticators**: A remote data center server cannot access your Touch ID sensor, Windows Hello camera, 1Password vault, or phone Passkeys.
+  * **Web services require human verification**: Portals like AWS console, Google Cloud, Shopify, and enterprise SaaS enforce two-factor authentication, TOTP codes, and Passkeys.
+---
 
-* **Commercial web services mandate human 2FA**: Portals like AWS, Google, Shopify, and enterprise SaaS require two-factor authentication, TOTP codes, and Passkeys.
-* **Server-side pixel streaming fails over remote networks**: Tools like VNC and Sixel stream raw or compressed graphical frames over SSH. At 1080p, raw frames produce up to 250 MB/s, saturating network bandwidth and introducing 150–300ms of input latency.
-* **Headless cloud servers lack authentication hardware**: A remote Linux box in a cloud data center cannot access your laptop's Touch ID sensor, Windows Hello camera, 1Password autofill, or Bluetooth proximity for phone passkeys.
+## 2. The Limits of Streaming Graphics and Pixel Data
+
+Streaming graphical display frames and raw pixel data over remote networks introduces fundamental physical limits. Over remote Wi-Fi, mobile cellular connections (4G or 5G), or tethered hotspots, pixel-streaming approaches struggle with three constraints:
+
+* **Bandwidth consumption**: Streaming 1080p graphical frames at 30 to 60 frames per second requires 10 to 30 Mbps. On metered cellular connections, video streaming exhausts data allowances in minutes.
+* **Input latency**: Transmitting visual frames across the network adds 150 to 300 milliseconds of round-trip delay. Typing, clicking, and waiting for visual confirmation feel sluggish.
+* **Compression artifacts**: Network packet loss and bitrate throttling degrade image sharpness, making small fonts and form inputs difficult to read.
+
+### The Command-Over-Wire Alternative
+
+Tether does not stream pixels or video frames. It sends lightweight ~200-byte JSON commands (`click`, `fill`, `open`) and returns structured ~20 KB accessibility trees:
+
+| Metric | Remote Pixel Streaming (VNC, Video, Sixel) | Tether Browser Bridge |
+|---|---|---|
+| **Bandwidth** | 10 to 30 Mbps continuous video | ~200 bytes per command (~0 MB/s) |
+| **Input Lag** | 150 to 300 ms video round-trip delay | 0 ms (renders on your local GPU at 120Hz) |
+| **Cellular Hotspot Support** | No (drains data caps, stutters on packet loss) | Yes (minimal packet size, immune to jitter) |
+| **Authentication** | Fails (remote server has no biometric hardware) | Native (uses your laptop Touch ID and 1Password) |
+| **Server RAM Usage** | 500 MB to 2 GB per browser instance | 0 MB (browser runs on your laptop) |
+---
+
+## 3. Primary Use Cases
+
+* **Cloud devboxes and remote agents**: Equip headless agents on AWS, Hetzner, GCP, or dev containers with full browser automation without configuring X11, VNC, or cloud browser subscriptions.
+* **Cellular and travel workflows**: Run browser automation over high-latency cellular connections, train Wi-Fi, or mobile hotspots without video bandwidth degradation.
+* **Protected enterprise portals**: Let coding agents test and interact with portals behind corporate SSO, Passkeys, YubiKeys, and hardware two-factor authentication.
+* **UI and layout verification**: Let remote agents capture full-resolution Retina screenshots and test web forms in your real browser without modifying personal tabs.
 
 ---
 
-## 2. The Solution: Remote-to-Local Bridge
-
-`tether-browser` moves browser execution to the developer's local machine where authenticators and sessions already live:
+## 4. The Solution: Remote-to-Local Bridge
+`tether-browser` moves browser execution to the developer local machine where authenticators and sessions already live:
 
 ```text
 ┌────────────────────────────────────────────────────────┐           SSH Reverse Tunnel (-R 9333:localhost:9333)           ┌────────────────────────────────────────────────────────┐
@@ -31,7 +58,7 @@ When developers run coding agents on remote Linux servers or cloud VMs, browser 
 │  │   • Dedicated "Tether" Tab Group                 │  │                                                                 │  │   $ tether tabs                                  │  │
 │  │   • In-Page Review Inspector & Pins              │  │                                                                 │  │   $ tether snapshot -i                           │  │
 │  └────────────────────────▲─────────────────────────┘  │                                                                 │  │   $ tether click @e14                            │  │
-│                           │ Chrome Debugger & Tabs     │                                                                 │  │   $ tether review send                           │  │
+│                           │ Chrome Debugger & Tabs     │                                                                 │  │   $ tether fill @e2 "alice"                      │  │
 │  ┌────────────────────────┴─────────────────────────┐  │                                                                 │  └──────────────────────────┬───────────────────────┘  │
 │  │   Tether Extension (Manifest V3)                 │  │                                                                 │                             │                          │
 │  │   • Dedicated popup menu with recent hosts       │  │                                                                 │                             │                          │
@@ -51,14 +78,14 @@ When developers run coding agents on remote Linux servers or cloud VMs, browser 
 └────────────────────────────────────────────────────────┘                                                                 └────────────────────────────────────────────────────────┘
 ```
 
-1. **Client Execution**: Google Chrome runs on your laptop. Passwords, session cookies, Touch ID, and 1Password autofill execute locally.
-2. **Reverse SSH Tunnel**: An SSH tunnel (`-R 9333:localhost:9333`) forwards commands from the remote coding agent to your workstation. No open firewall ports required.
-3. **Command-Over-Wire**: The remote agent sends ~200-byte JSON requests (`browser.open`, `browser.snapshot`, `browser.click`).
-4. **Structured Results**: The client returns compact ~20KB accessibility snapshots with `@eN` references. Zero video streaming bandwidth, 0ms input lag.
+1. **Client execution**: Google Chrome runs on your workstation. Passwords, session cookies, Touch ID, and 1Password autofill execute locally.
+2. **Reverse SSH tunnel**: An SSH tunnel (`-R 9333:localhost:9333`) forwards commands from the remote coding agent to your workstation. No open firewall ports required.
+3. **Commands over wire**: The remote agent sends 200-byte JSON requests (`browser.open`, `browser.snapshot`, `browser.click`).
+4. **Structured results**: The client returns compact 20 KB accessibility trees with `@eN` references. No video bandwidth consumed; zero input lag.
 
 ---
 
-## 3. Quick Start
+## 5. Quick Start
 
 ### Step 1: Install `tether` on your Mac / PC
 
@@ -80,7 +107,7 @@ In your terminal:
 ```bash
 tether connect user@remote-server
 ```
-*(Or click the **Tether extension icon** in your Chrome toolbar, enter `user@host`, and click **Connect** directly from the browser!)*
+Alternatively, click the **Tether extension icon** in your Chrome toolbar, enter `user@host`, and click **Connect**.
 
 ### Step 4: Run Automation on your Remote Server
 
@@ -106,19 +133,19 @@ tether screenshot output.png
 
 ---
 
-## 4. Multi-Tab Management & Tab Groups
+## 6. Multi-Tab Management and Tab Groups
 
-Tether organizes all automated tabs inside a dedicated blue **Tether** tab group in your browser:
+Tether organizes automated tabs in a blue **Tether** tab group in your browser:
 
 * **Live Tab Discovery**: `tether tabs` queries the browser in real time to show all open tabs, titles, URLs, and active target:
   ```text
   Open Tabs (2):
    * [1] "Application Dashboard"
          URL: https://app.example.com/dashboard
-         ID:  430852225
+         ID:  101
      [2] "Overview Dashboard"
          URL: https://app.example.com/overview
-         ID:  430852222
+         ID:  102
   ```
 * **Switch Active Tab**:
   ```bash
@@ -133,55 +160,33 @@ Tether organizes all automated tabs inside a dedicated blue **Tether** tab group
 
 ---
 
-## 5. In-Page Developer Review Inspector
+## 7. Developer Visual Feedback
 
-Tether includes an in-page element inspection overlay that generates structured, Orca-grade Markdown design feedback reports for AI coding agents:
-
-```bash
-tether review start    # Arm inspection overlay on the page
-tether review list     # List pinned notes and comments
-tether review send     # Export full Markdown report with computed styles and HTML
-tether review clear    # Clear annotations
-```
-
-### Report Output Structure
-
-When notes are pinned and exported, Tether produces an actionable report with component metadata, bounding boxes, and computed CSS:
-
-```markdown
-## Design Feedback: Application Dashboard
-
-**URL:** https://app.example.com/dashboard
-**Viewport:** 2602x1258
-
-### 1. a - "Products"
-**Intent:** design_fix
-**Selector:** `li.hs-menu > a`
-**Location:** `header > div.hdrBtm > div.page-center > div.hdrMenu > ul > li > a`
-**Bounds:** viewport x=120, y=40, 90x24
-**Classes:** `nav-link`
-**Text:** "Products"
-**Nearby text:**
-- "Effectron Corp"
-- "Overview dashboard"
-**Computed styles:**
-- display: inline-flex
-- width: 90px
-- height: 24px
-- color: rgb(33, 57, 76)
-- fontFamily: Inter, sans-serif
-- fontSize: 14px
-- fontWeight: 500
-**HTML:**
-```html
-<a class="nav-link" href="/products">Products</a>
-```
-**Feedback:** Align baseline with search input on desktop
-```
+To capture visual feedback on a page, click **Inspect & Pin Notes** in the Tether popup. Pin notes on elements, then click **Copy to Clipboard** to paste structured component context into your agent prompt.
 
 ---
 
-## 6. Architecture & Security Invariants
+## 8. Interoperability with `agent-browser`
+
+`tether` and `agent-browser` complement each other:
+
+* **Use `tether`** for everyday browser automation, interactive workflows, and sites requiring Passkeys, 2FA, or Touch ID in your personal Chrome browser.
+* **Use `agent-browser`** when your workflow requires specialized tools not in Tether, such as automated accessibility audits (`agent-browser a11y`), network request mocking (`agent-browser network`), or React Suspense profiling (`agent-browser react`).
+
+### Network Latency Comparison (50ms SSH / 100ms RTT)
+
+| Protocol | Action Execution | Round-Trips over SSH | Wire Latency |
+|---|---|:---:|:---:|
+| **Raw CDP (`agent-browser`)** | Remote agent issues 5 sequential CDP calls across the tunnel:<br>1. `DOM.resolveNode`<br>2. `DOM.getBoxModel`<br>3. `Input.dispatchMouseEvent` (move)<br>4. `Input.dispatchMouseEvent` (down)<br>5. `Input.dispatchMouseEvent` (up) | **5 RTTs** | **~500 ms** |
+| **Tether RPC (`tether`)** | Remote agent sends **one** JSON request:<br>`{"method":"browser.click","params":{"ref":"@e1"}}`<br>All coordinate resolution and mouse events execute **locally on your client loopback at 0ms**. | **1 RTT** | **~100 ms** |
+
+### Connecting Both
+
+Forward Chrome's CDP port alongside Tether (`ssh -R 9333:localhost:9333 -R 9222:localhost:9222 user@server`) to run `agent-browser --cdp 9222` directly against Chrome whenever specialized devtools are needed.
+
+---
+
+## 9. Architecture and Security Invariants
 
 1. **Single TCP Port Owner**: `tether daemon` is the exclusive owner of TCP port `127.0.0.1:9333`.
 2. **Private Unix Domain Socket**: `tether native-host` communicates over a user-scoped Unix socket (`/tmp/tether-<uid>/bridge.sock`, mode `0700` directory, `0600` socket) with stale-probe unlinking.
@@ -190,7 +195,7 @@ When notes are pinned and exported, Tether produces an actionable report with co
 
 ---
 
-## 7. Package Layout
+## 10. Package Layout
 
 ```text
 tether-browser/

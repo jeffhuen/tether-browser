@@ -1145,6 +1145,9 @@ func (d *CDPDriver) Screenshot(ctx context.Context, params protocol.ScreenshotPa
 	if params.Quality > 0 && format == "jpeg" {
 		call["quality"] = params.Quality
 	}
+	if params.FullPage {
+		call["captureBeyondViewport"] = true
+	}
 
 	resp, err := client.Call(ctx, "Page.captureScreenshot", call)
 	if err != nil {

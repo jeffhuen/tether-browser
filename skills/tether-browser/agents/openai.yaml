@@ -1,0 +1,7 @@
+interface:
+  display_name: "Tether Browser"
+  short_description: "Remote-to-local browser automation bridge for AI coding agents across Herdr, tmux, and SSH."
+  default_prompt: "Use $tether-browser to automate browser tasks, inspect pages via accessibility snapshots (@eN refs), and manage tabs in the Tether group."
+
+policy:
+  allow_implicit_invocation: true

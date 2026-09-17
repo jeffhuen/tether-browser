@@ -349,8 +349,11 @@ async function handleSnapshot(params = {}) {
       "menuitem", "tab", "searchbox", "switch"
     ].includes(role);
 
+    if (params.interactiveOnly && !isInteractive) continue;
+    if (params.compact && !name && !value && !isInteractive) continue;
+
     let ref = "";
-    if (isInteractive || name) {
+    if (params.interactiveOnly ? isInteractive : (isInteractive || name)) {
       ref = `@e${refCounter++}`;
       refMap.set(ref, {
         backendDOMNodeId: node.backendDOMNodeId,
@@ -367,7 +370,6 @@ async function handleSnapshot(params = {}) {
       disabled: node.disabled?.value || false,
     });
   }
-
   elementRefsByTab.set(tabId, refMap);
 
   return {
@@ -403,40 +405,69 @@ async function resolveRefCoordinates(tabId, ref) {
   const y = (content[1] + content[3] + content[5] + content[7]) / 4;
   return { x: Math.round(x), y: Math.round(y) };
 }
+async function resolveSelectorCoordinates(tabId, sel) {
+  await ensureDomain(tabId, "DOM");
+  const doc = await cdp(tabId, "DOM.getDocument");
+  const result = await cdp(tabId, "DOM.querySelector", {
+    nodeId: doc.root.nodeId,
+    selector: sel,
+  });
+  if (!result || !result.nodeId) {
+    throw new Error(`Element with selector "${sel}" not found`);
+  }
+  const boxModel = await cdp(tabId, "DOM.getBoxModel", {
+    nodeId: result.nodeId,
+  });
+  const content = boxModel.model?.content;
+  if (!content || content.length < 8) {
+    throw new Error(`Element "${sel}" has no visible bounding box`);
+  }
+  const x = (content[0] + content[2] + content[4] + content[6]) / 4;
+  const y = (content[1] + content[3] + content[5] + content[7]) / 4;
+  return { x: Math.round(x), y: Math.round(y) };
+}
 
-async function handleClick(params = {}) {
+async function resolveCoordinates(tabId, sel) {
+  if (!sel || typeof sel !== "string") return null;
+  if (sel.startsWith("@")) {
+    return await resolveRefCoordinates(tabId, sel);
+  }
+  return await resolveSelectorCoordinates(tabId, sel);
+}
+
+async function handleClick(params = {}, clickCount = 1) {
   const tabId = resolveTargetTabId(params);
   if (!tabId) throw new Error("No active tab in Tether group");
 
   let x = params.x;
   let y = params.y;
   const sel = params.selector || params.ref;
-  if (sel && typeof sel === "string" && sel.startsWith("@")) {
-    const coords = await resolveRefCoordinates(tabId, sel);
-    x = coords.x;
-    y = coords.y;
+  if (sel && typeof sel === "string") {
+    const coords = await resolveCoordinates(tabId, sel);
+    if (coords) {
+      x = coords.x;
+      y = coords.y;
+    }
   }
 
   if (typeof x !== "number" || typeof y !== "number") {
-    throw new Error(`Click requires either a valid @ref or (x, y) coordinates; received: ${sel || "none"}`);
+    throw new Error(`Click requires either a valid @ref, selector, or (x, y) coordinates; received: ${sel || "none"}`);
   }
 
   await ensureDomain(tabId, "Input");
 
-  // Move mouse
   await cdp(tabId, "Input.dispatchMouseEvent", {
     type: "mouseMoved",
     x,
     y,
   });
 
-  // Mouse down & up
   await cdp(tabId, "Input.dispatchMouseEvent", {
     type: "mousePressed",
     x,
     y,
     button: "left",
-    clickCount: 1,
+    clickCount,
   });
 
   await cdp(tabId, "Input.dispatchMouseEvent", {
@@ -444,10 +475,14 @@ async function handleClick(params = {}) {
     x,
     y,
     button: "left",
-    clickCount: 1,
+    clickCount,
   });
 
   return { tabId, clicked: { x, y } };
+}
+
+async function handleDblClick(params = {}) {
+  return await handleClick(params, 2);
 }
 
 async function handleFill(params = {}) {
@@ -455,24 +490,175 @@ async function handleFill(params = {}) {
   if (!tabId) throw new Error("No active tab in Tether group");
 
   const sel = params.selector || params.ref;
-  if (sel && typeof sel === "string" && sel.startsWith("@")) {
+  if (sel && typeof sel === "string") {
     await handleClick({ targetId: tabId, selector: sel });
   }
   await ensureDomain(tabId, "Input");
 
-  // Select all and clear
   await cdp(tabId, "Input.dispatchKeyEvent", {
     type: "rawKeyDown",
     commands: ["selectAll", "delete"],
   });
 
-  // Insert text
   if (params.text) {
     await cdp(tabId, "Input.insertText", { text: params.text });
   }
 
   return { tabId, filled: params.text };
 }
+
+async function handleType(params = {}) {
+  const tabId = resolveTargetTabId(params);
+  if (!tabId) throw new Error("No active tab in Tether group");
+
+  const sel = params.selector || params.ref;
+  if (sel && typeof sel === "string") {
+    await handleClick({ targetId: tabId, selector: sel });
+  }
+  await ensureDomain(tabId, "Input");
+
+  if (params.text) {
+    await cdp(tabId, "Input.insertText", { text: params.text });
+  }
+
+  return { tabId, typed: params.text };
+}
+
+async function handleHover(params = {}) {
+  const tabId = resolveTargetTabId(params);
+  if (!tabId) throw new Error("No active tab in Tether group");
+
+  let x = params.x;
+  let y = params.y;
+  const sel = params.selector || params.ref;
+  if (sel && typeof sel === "string") {
+    const coords = await resolveCoordinates(tabId, sel);
+    if (coords) {
+      x = coords.x;
+      y = coords.y;
+    }
+  }
+
+  if (typeof x !== "number" || typeof y !== "number") {
+    throw new Error(`Hover requires either a valid @ref, selector, or (x, y) coordinates; received: ${sel || "none"}`);
+  }
+
+  await ensureDomain(tabId, "Input");
+  await cdp(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x,
+    y,
+  });
+
+  return { tabId, hovered: { x, y } };
+}
+
+async function handleFocus(params = {}) {
+  const tabId = resolveTargetTabId(params);
+  if (!tabId) throw new Error("No active tab in Tether group");
+
+  const sel = params.selector || params.ref;
+  if (!sel) throw new Error("Focus requires a valid @ref or selector");
+
+  await handleClick({ targetId: tabId, selector: sel });
+  return { tabId, focused: sel };
+}
+
+async function handlePress(params = {}) {
+  const tabId = resolveTargetTabId(params);
+  if (!tabId) throw new Error("No active tab in Tether group");
+  if (!params.key) throw new Error("Press requires a key");
+
+  await ensureDomain(tabId, "Input");
+
+  const keyMap = {
+    Enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" },
+    Tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
+    Escape: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
+    Backspace: { key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
+    ArrowDown: { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 },
+    ArrowUp: { key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 },
+    ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", windowsVirtualKeyCode: 37 },
+    ArrowRight: { key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 },
+    PageDown: { key: "PageDown", code: "PageDown", windowsVirtualKeyCode: 34 },
+    PageUp: { key: "PageUp", code: "PageUp", windowsVirtualKeyCode: 33 },
+  };
+
+  const keyDef = keyMap[params.key] || {
+    key: params.key,
+    code: params.key,
+    windowsVirtualKeyCode: params.key.charCodeAt(0) || 0,
+  };
+
+  await cdp(tabId, "Input.dispatchKeyEvent", {
+    type: "rawKeyDown",
+    key: keyDef.key,
+    code: keyDef.code,
+    windowsVirtualKeyCode: keyDef.windowsVirtualKeyCode,
+    text: keyDef.text,
+    unmodifiedText: keyDef.text,
+  });
+
+  await cdp(tabId, "Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: keyDef.key,
+    code: keyDef.code,
+    windowsVirtualKeyCode: keyDef.windowsVirtualKeyCode,
+  });
+
+  return { tabId, pressed: params.key };
+}
+
+async function handleWait(params = {}) {
+  const tabId = resolveTargetTabId(params);
+  if (!tabId) throw new Error("No active tab in Tether group");
+
+  if (params.durationMs && params.durationMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, params.durationMs));
+    return { tabId, waitedMs: params.durationMs };
+  }
+
+  if (params.selector) {
+    const timeoutMs = params.timeoutMs || 30000;
+    const start = Date.now();
+    await ensureDomain(tabId, "DOM");
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const doc = await cdp(tabId, "DOM.getDocument");
+        const res = await cdp(tabId, "DOM.querySelector", {
+          nodeId: doc.root.nodeId,
+          selector: params.selector,
+        });
+        if (res && res.nodeId && res.nodeId > 0) {
+          return { tabId, matched: params.selector, elapsedMs: Date.now() - start };
+        }
+      } catch (err) {
+        // continue polling
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    throw new Error(`Timeout waiting for selector "${params.selector}" after ${timeoutMs}ms`);
+  }
+
+  return { tabId, waited: true };
+}
+
+async function handleClose(params = {}) {
+  if (params.all) {
+    const tabs = await getLiveTabs();
+    for (const t of tabs) {
+      try {
+        await chrome.tabs.remove(t.id);
+      } catch (err) {}
+    }
+    return { closedAll: true, count: tabs.length };
+  }
+  const tabId = resolveTargetTabId(params);
+  if (!tabId) throw new Error("No active tab in Tether group");
+  await chrome.tabs.remove(tabId);
+  return { tabId, closed: true };
+}
+
 
 async function handleEval(params = {}) {
   const tabId = resolveTargetTabId(params);
@@ -500,11 +686,16 @@ async function handleScreenshot(params = {}) {
 
   await ensureDomain(tabId, "Page");
   const format = params.format || "png";
-  const res = await cdp(tabId, "Page.captureScreenshot", {
+  const cdpParams = {
     format,
-    quality: params.quality || 80,
-  });
-
+  };
+  if (format === "jpeg" && params.quality) {
+    cdpParams.quality = params.quality;
+  }
+  if (params.fullPage) {
+    cdpParams.captureBeyondViewport = true;
+  }
+  const res = await cdp(tabId, "Page.captureScreenshot", cdpParams);
   return {
     targetId: String(tabId),
     tabId,
@@ -658,8 +849,29 @@ async function handleNativeMessage(msg) {
       case "browser.click":
         result = await handleClick(params);
         break;
+      case "browser.dblclick":
+        result = await handleDblClick(params);
+        break;
       case "browser.fill":
         result = await handleFill(params);
+        break;
+      case "browser.type":
+        result = await handleType(params);
+        break;
+      case "browser.press":
+        result = await handlePress(params);
+        break;
+      case "browser.hover":
+        result = await handleHover(params);
+        break;
+      case "browser.focus":
+        result = await handleFocus(params);
+        break;
+      case "browser.wait":
+        result = await handleWait(params);
+        break;
+      case "browser.close":
+        result = await handleClose(params);
         break;
       case "browser.eval":
         result = await handleEval(params);
