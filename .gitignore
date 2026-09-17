@@ -1,10 +1,26 @@
 
-# Beads / Dolt files (added by bd init)
+# Beads / Dolt databases and runtimes (metadata.json, config.yaml remain tracked)
 .dolt/
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 .beads-credential-key
+.beads/dolt/
+.beads/embeddeddolt/
 .beads/proxieddb/
+.beads/backup/
+.beads/export-state/
+.beads/dolt-pprof/
+.beads/*.lock
+.beads/.*.lock
 .beads.*
+.beads/*.sock*
+.beads/last-touched
+.beads/last_pull
+.beads/.local_version
+.beads/redirect
+.beads/ephemeral.*
 
 # Binaries
 bin/
