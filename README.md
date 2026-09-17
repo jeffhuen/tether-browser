@@ -1,186 +1,209 @@
 # tether-browser
 
-High-performance, low-latency remote browser automation for AI coding agents across Herdr, tmux, and SSH sessions.
+Remote-to-local browser bridge for AI coding agents across Herdr, tmux, and SSH sessions.
 
-No pixel streaming. No VNC. No Electron.
+No pixel streaming. No VNC. No cloud browser subscription.
 
 ---
 
 ## 1. The Core Problem
 
-When developers run coding agents on remote Linux servers or cloud virtual machines, browser automation faces three critical failures:
+When developers run coding agents on remote Linux servers or cloud VMs, browser automation breaks down:
 
-* **Commercial web services require human authentication**: Services like AWS, Cloudflare, Shopify, and internal portals mandate two-factor authentication, TOTP codes, and Passkeys.
-* **Server-side pixel streaming fails over remote networks**: Tools like `terminal-browser`, VNC, and Sixel stream raw or compressed graphical frames over SSH. At 1080p resolution, raw graphical data produces up to 250 MB per second. Video streaming introduces 150 to 300 milliseconds of latency and locks the view into a low-resolution canvas.
-* **Headless cloud servers lack authentication hardware**: A remote Linux box in a data center cannot access your laptop Touch ID sensor, Windows Hello camera, 1Password autofill, or Bluetooth proximity for phone passkeys.
-
----
-
-## 2. The Discovery: How Orca Solved It
-
-Inspection of Orca's open-source runtime (`stablyai/orca` in `/opt/orca/1.4.201/squashfs-root/resources/app.asar`) revealed why Orca's remote browser feels native:
-
-**The browser does not run on the remote server. The browser runs locally on the developer workstation.**
-
-In Orca's architecture:
-1. **Client Placement**: Browser tabs run on the local client machine (`kind: 'client'`).
-2. **Local Hardware Acceleration**: The browser instance runs locally on the user laptop. It uses the local GPU at native 60Hz or 120Hz display refresh rates.
-3. **Local Credential Storage**: Passwords, cookies, Touch ID authenticators, and password manager extensions execute locally in the client session.
-4. **Command-Only Network Traffic**: The remote Linux server sends lightweight JSON commands (`browser.snapshot`, `browser.click`, `browser.eval`) over a network connection.
-5. **Bandwidth Efficiency**: Instead of streaming video frames, only 200 bytes of command JSON and 20 KB of accessibility snapshots cross the wire. Local pointer movement has zero network lag.
+* **Commercial web services mandate human 2FA**: Portals like AWS, Google, Shopify, and enterprise SaaS require two-factor authentication, TOTP codes, and Passkeys.
+* **Server-side pixel streaming fails over remote networks**: Tools like VNC and Sixel stream raw or compressed graphical frames over SSH. At 1080p, raw frames produce up to 250 MB/s, saturating network bandwidth and introducing 150–300ms of input latency.
+* **Headless cloud servers lack authentication hardware**: A remote Linux box in a cloud data center cannot access your laptop's Touch ID sensor, Windows Hello camera, 1Password autofill, or Bluetooth proximity for phone passkeys.
 
 ---
 
-## 3. Product Strategy: Modular V1 with Optional V2 Extension
+## 2. The Solution: Remote-to-Local Bridge
 
-To avoid installation friction and eliminate store dependencies, `tether-browser` follows a two-phase architecture:
+`tether-browser` moves browser execution to the developer's local machine where authenticators and sessions already live:
 
 ```text
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    V1 CORE ARCHITECTURE (ZERO EXTENSION)                    │
-│ • Single standalone 12 MB Go binary (tether)                                │
-│ • Connects directly to Chrome via CDP (Managed profile or Chrome 144+)      │
-│ • Zero Chrome Web Store dependency, zero developer mode warnings           │
-│ • Injects review overlay into isolated execution world (worldName)          │
-│ • Full local GPU acceleration, password managers, and biometrics           │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                    V2 COMPANION EXTENSION (OPTIONAL ENHANCEMENT)            │
-│ • Pluggable via the daemon's BrowserDriver interface                        │
-│ • Auto-detected when installed; requires zero daemon reconfiguration        │
-│ • Delivers measurable, substantial value:                                   │
-│   1. Native Chrome Side Panel: Dedicated review notes tray and live log     │
-│   2. Navigation Immunity: Review notes survive page crashes and reloads     │
-│   3. Per-Tab Security Scoping: Agent sees only explicitly attached tabs    │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐           SSH Reverse Tunnel (-R 9333:localhost:9333)           ┌────────────────────────────────────────────────────────┐
+│                      LOCAL MAC / PC                    │ ◄─────────────────────────────────────────────────────────────► │                     REMOTE SERVER                      │
+│                                                        │                                                                 │                    (Linux / Cloud)                     │
+│  ┌──────────────────────────────────────────────────┐  │   Control Channel: 127.0.0.1:9333                               │                                                        │
+│  │   Active Chrome / Brave / Edge Window            │  │   App Tunnel: Origin-Preserving Proxy                           │  ┌──────────────────────────────────────────────────┐  │
+│  │   • Native 120Hz Retina rendering                │  │                                                                 │  │   AI Coding Agent (Claude, Codex, OMP, Herdr)     │  │
+│  │   • Touch ID, Passkeys, 1Password autofill       │  │                                                                 │  │                                                  │  │
+│  │   • Dedicated "Tether" Tab Group                 │  │                                                                 │  │   $ tether tabs                                  │  │
+│  │   • In-Page Review Inspector & Pins              │  │                                                                 │  │   $ tether snapshot -i                           │  │
+│  └────────────────────────▲─────────────────────────┘  │                                                                 │  │   $ tether click @e14                            │  │
+│                           │ Chrome Debugger & Tabs     │                                                                 │  │   $ tether review send                           │  │
+│  ┌────────────────────────┴─────────────────────────┐  │                                                                 │  └──────────────────────────┬───────────────────────┘  │
+│  │   Tether Extension (Manifest V3)                 │  │                                                                 │                             │                          │
+│  │   • Dedicated popup menu with recent hosts       │  │                                                                 │                             │                          │
+│  │   • chrome.tabGroups, chrome.debugger            │  │                                                                 │                             │                          │
+│  └────────────────────────▲─────────────────────────┘  │                                                                 │                             │                          │
+│                           │ Native Messaging (stdio)   │                                                                 │                             │                          │
+│  ┌────────────────────────┴─────────────────────────┐  │                                                                 │                             │                          │
+│  │   tether native-host                             │  │                                                                 │                             │                          │
+│  │   • Unix domain socket: bridge.sock              │  │        JSON Commands (~200 bytes)                               │                             │                          │
+│  └────────────────────────▲─────────────────────────┘  │ ◄───────────────────────────────────────────────────────────────┤  ┌──────────────────────────▼───────────────────────┐  │
+│                           │ Unix Socket IPC            │                                                                 │  │   tether CLI                                     │  │
+│  ┌────────────────────────┴─────────────────────────┐  │                                                                 │  │   • agent-browser syntax                         │  │
+│  │   tether daemon                                  │  │ ├───────────────────────────────────────────────────────────────►  │   • Multi-tab routing (--tab <id>)              │  │
+│  │   • Sole owner of TCP port 9333                  │  │        DOM Accessibility Snapshots & Review Reports             │  │   • Background session broker                    │  │
+│  │   • Mode A forward proxy                         │  │                                                                 │  └──────────────────────────────────────────────────┘  │
+│  └──────────────────────────────────────────────────┘  │                                                                 │                                                        │
+└────────────────────────────────────────────────────────┘                                                                 └────────────────────────────────────────────────────────┘
+```
+
+1. **Client Execution**: Google Chrome runs on your laptop. Passwords, session cookies, Touch ID, and 1Password autofill execute locally.
+2. **Reverse SSH Tunnel**: An SSH tunnel (`-R 9333:localhost:9333`) forwards commands from the remote coding agent to your workstation. No open firewall ports required.
+3. **Command-Over-Wire**: The remote agent sends ~200-byte JSON requests (`browser.open`, `browser.snapshot`, `browser.click`).
+4. **Structured Results**: The client returns compact ~20KB accessibility snapshots with `@eN` references. Zero video streaming bandwidth, 0ms input lag.
+
+---
+
+## 3. Quick Start
+
+### Step 1: Install `tether` on your Mac / PC
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jeffhuen/tether-browser/main/install.sh | bash
+tether extension install
+```
+
+### Step 2: Load the Extension in Chrome
+
+1. Open `chrome://extensions` in Chrome, Brave, or Edge.
+2. Toggle **Developer mode** on (top-right corner).
+3. Click **Load unpacked** (top-left) and select the `packages/extension` folder from your cloned repository.
+4. The extension loads with deterministic ID `kaloekddddlgghmifoaapnhekggjcggn`.
+
+### Step 3: Connect to your Remote Server
+
+In your terminal:
+```bash
+tether connect user@remote-server
+```
+*(Or click the **Tether extension icon** in your Chrome toolbar, enter `user@host`, and click **Connect** directly from the browser!)*
+
+### Step 4: Run Automation on your Remote Server
+
+```bash
+# Navigate to a URL (creates and manages tabs inside a blue "Tether" group)
+tether open https://example.com
+
+# List all open browser tabs
+tether tabs
+
+# Inspect page accessibility tree with @e1, @e2 element references
+tether snapshot -i
+
+# Click an element by reference or coordinates
+tether click @e1
+
+# Fill form fields
+tether fill @e2 "user@example.com"
+
+# Take high-resolution desktop screenshot
+tether screenshot output.png
 ```
 
 ---
 
-## 4. The `tether-browser` Architecture
+## 4. Multi-Tab Management & Tab Groups
 
-```text
-┌────────────────────────────────────────┐         Tailscale or SSH Forward Channels    ┌────────────────────────────────────────┐
-│               LOCAL CLIENT             │ ◄──────────────────────────────────────────► │             REMOTE SERVER              │
-│            (macOS or Windows)          │                                              │            (Linux or Cloud)            │
-│                                        │   Control Channel: 127.0.0.1:9333            │                                        │
-│  ┌──────────────────────────────────┐  │   App Tunnel: CONNECT & ReverseProxy         │  ┌──────────────────────────────────┐  │
-│  │    Local Chrome Window           │  │                                              │  │       Herdr or Tmux Session      │  │
-│  │   • Full Retina and 4K display   │  │                                              │  │                                  │  │
-│  │   • 120Hz native rendering       │  │                                              │  │  $ tether snapshot -i            │  │
-│  │   • Touch ID, 1Password, Passkeys│  │                                              │  │  $ tether click @e14             │  │
-│  │   • Tether Review visual badges  │  │                                              │  │  $ tether review send            │  │
-│  └──────────────────▲───────────────┘  │                                              │  └──────────────────┬───────────────┘  │
-│                     │                  │                                              │                     │                  │
-│  ┌──────────────────┴───────────────┐  │        JSON Commands (200 bytes)             │                     │                  │
-│  │          tether daemon           │ ◄───────────────────────────────────────────────┤  ┌──────────────────▼───────────────┐  │
-│  │   • Lightweight Go binary        │                                                 │  │            tether CLI            │  │
-│  │   • Modular BrowserDriver        │ ├───────────────────────────────────────────────►  │   • agent-browser syntax         │  │
-│  │   • Forward proxy + CONNECT      │  │        DOM Snapshots and Review Markdown     │  │   • Persistent session broker    │  │
-│  └──────────────────────────────────┘  │                                              │  └──────────────────────────────────┘  │
-└────────────────────────────────────────┘                                              └────────────────────────────────────────┘
+Tether organizes all automated tabs inside a dedicated blue **Tether** tab group in your browser:
+
+* **Live Tab Discovery**: `tether tabs` queries the browser in real time to show all open tabs, titles, URLs, and active target:
+  ```text
+  Open Tabs (2):
+   * [1] "Application Dashboard"
+         URL: https://app.example.com/dashboard
+         ID:  430852225
+     [2] "Overview Dashboard"
+         URL: https://app.example.com/overview
+         ID:  430852222
+  ```
+* **Switch Active Tab**:
+  ```bash
+  tether switch <tabId>
+  ```
+* **Direct Tab Targeting**: Run any command against a specific tab without changing active view:
+  ```bash
+  tether snapshot --tab <tabId> -i
+  tether click --tab <tabId> @e3
+  tether eval --tab <tabId> "document.title"
+  ```
+
+---
+
+## 5. In-Page Developer Review Inspector
+
+Tether includes an in-page element inspection overlay that generates structured, Orca-grade Markdown design feedback reports for AI coding agents:
+
+```bash
+tether review start    # Arm inspection overlay on the page
+tether review list     # List pinned notes and comments
+tether review send     # Export full Markdown report with computed styles and HTML
+tether review clear    # Clear annotations
+```
+
+### Report Output Structure
+
+When notes are pinned and exported, Tether produces an actionable report with component metadata, bounding boxes, and computed CSS:
+
+```markdown
+## Design Feedback: Application Dashboard
+
+**URL:** https://app.example.com/dashboard
+**Viewport:** 2602x1258
+
+### 1. a - "Products"
+**Intent:** design_fix
+**Selector:** `li.hs-menu > a`
+**Location:** `header > div.hdrBtm > div.page-center > div.hdrMenu > ul > li > a`
+**Bounds:** viewport x=120, y=40, 90x24
+**Classes:** `nav-link`
+**Text:** "Products"
+**Nearby text:**
+- "Effectron Corp"
+- "Overview dashboard"
+**Computed styles:**
+- display: inline-flex
+- width: 90px
+- height: 24px
+- color: rgb(33, 57, 76)
+- fontFamily: Inter, sans-serif
+- fontSize: 14px
+- fontWeight: 500
+**HTML:**
+```html
+<a class="nav-link" href="/products">Products</a>
+```
+**Feedback:** Align baseline with search input on desktop
 ```
 
 ---
 
-## 5. Modular Client Driver Architecture
+## 6. Architecture & Security Invariants
 
-`packages/client` defines a modular `BrowserDriver` interface. The daemon uses direct CDP by default. It switches to the extension driver automatically if the companion extension connects:
-
-```go
-type BrowserDriver interface {
-    OpenTab(ctx context.Context, url string) (TargetID, error)
-    CloseTab(ctx context.Context, target TargetID) error
-    Snapshot(ctx context.Context, target TargetID, interactiveOnly bool) (*SnapshotResult, error)
-    Click(ctx context.Context, target TargetID, selector string) error
-    Fill(ctx context.Context, target TargetID, selector, text string) error
-    Eval(ctx context.Context, target TargetID, script string) (any, error)
-    StartReview(ctx context.Context, target TargetID) error
-    GetReviewNotes(ctx context.Context, target TargetID) (*ReviewPayload, error)
-}
-```
-
-* **`CDPDriver` (V1 Implementation)**: Connects to Chrome over raw WebSocket CDP on port 9222 or `--remote-debugging-pipe`.
-* **`ExtensionDriver` (V2 Implementation)**: Communicates with the optional companion extension over Chrome Native Messaging (`com.tether.browser`).
+1. **Single TCP Port Owner**: `tether daemon` is the exclusive owner of TCP port `127.0.0.1:9333`.
+2. **Private Unix Domain Socket**: `tether native-host` communicates over a user-scoped Unix socket (`/tmp/tether-<uid>/bridge.sock`, mode `0700` directory, `0600` socket) with stale-probe unlinking.
+3. **No Unrequested Browser Spawning**: If the Chrome extension is connected, Tether operates through official extension APIs (`chrome.debugger`, `chrome.tabGroups`). Subprocess Chrome is reserved strictly as an offline fallback.
+4. **Focus Emulation**: The extension calls `Emulation.setFocusEmulationEnabled({ enabled: true })`, ensuring synthesized clicks and keyboard inputs are processed by Chromium even on background or unselected tabs.
 
 ---
 
-## 6. Application Routing: Mode A Origin-Preserving Proxy
-
-Chromium features documented, cross-platform proxy bypass syntax that allows subtracting loopback from default bypass rules: `--proxy-bypass-list="<-loopback>"`.
-
-### How Mode A Works
-1. **Managed Chrome Launch**:
-   Chrome launches with `--proxy-server="http://127.0.0.1:<daemon-port>"` and `--proxy-bypass-list="<-loopback>"`.
-2. **Proxy Request Dispatching**:
-   * **Plain HTTP (`GET http://localhost:3000/`)**: The daemon handles the request via Go's streaming reverse proxy, forwarding it over Tailscale or SSH to the remote dev server.
-   * **WebSockets & HTTPS (`CONNECT localhost:3000`)**: Chromium tunnels all WebSockets through proxies using `HTTP CONNECT`. The daemon intercepts the `CONNECT` request, dials the remote dev server socket, and splices the bidirectional TCP stream (`io.Copy`).
-   * **External Traffic**: External HTTPS sites tunnel through CONNECT to the real internet with zero TLS tampering.
-3. **Guarantees**:
-   * The browser URL remains `http://localhost:3000`.
-   * Google OAuth, Passkeys, WebAuthn, cookies, and backend redirects work identically to local development.
-   * Local port 3000 on the developer's Mac is never touched.
-
----
-
-## 7. Multi-Framework Tether Review Architecture
-
-Web applications use many technologies beyond React. Tether Review works reliably on Elixir Phoenix LiveView, Astro, Svelte, SolidJS, Vue, Nuxt, Django, Rails, and plain HTML.
-
-Tether Review uses a two-tier inspection model:
-
-### Tier 1: Universal DOM Baseline (Works on Every Website)
-Every browser page produces this data regardless of backend language or JavaScript framework:
-* **Element Semantics**: ARIA role (`button`, `dialog`, `navigation`) and accessible name.
-* **Structural Breadcrumbs**: Unique CSS selector (e.g. `form#payment button.btn-primary`) and full DOM path.
-* **Visual Properties**: Viewport bounding box and 16 computed CSS styles (display, padding, margin, colors, typography).
-* **Surrounding Context**: Nearby text content, sibling elements, and cleaned outer HTML snippets.
-* **Code Search Value**: Even without framework metadata, an AI coding agent uses the selector, classes, and text to locate the exact template file in any codebase using grep.
-
-### Tier 2: Progressive Framework Sniffing
-When specific frameworks run, Tether Review enriches the baseline with framework-specific clues:
-* **Elixir Phoenix & LiveView**: Sniffs `phx-click`, `phx-change`, `phx-view`, and `phx-component`.
-* **Astro**: Sniffs `<astro-island component-url="..." component-export="...">`.
-* **Svelte & SvelteKit**: Sniffs `__svelte_meta` in development builds for source filenames and line numbers.
-* **Vue & Nuxt**: Inspects `el.__vueParentComponent.type.__name`.
-* **HTMX**: Sniffs `hx-get`, `hx-post`, `hx-target`, and `hx-swap`.
-* **React**: Uses `react-grab/primitives` for component hierarchy and `fiber._debugSource` or `_debugStack`.
-
----
-
-## 8. Package Plan
+## 7. Package Layout
 
 ```text
 tether-browser/
-├── README.md                 # Architectural specification and usage
-├── KICKOFF_BRIEF.md          # Architectural decisions and mission brief
+├── cmd/
+│   └── tether/               # Main CLI entrypoint (connect, daemon, extension, native-host)
 ├── packages/
-│   ├── protocol/             # Go types, JSON-RPC, zstd framing, diffing, and review schemas
-│   ├── client/               # Go desktop daemon (CDP bridge, proxy, embedded review scripts)
-│   ├── cli/                  # Go remote CLI (agent-browser compatible, persistent broker)
-│   └── extension/            # Optional Manifest V3 companion extension (Side Panel, tab scoping)
-└── scripts/
+│   ├── protocol/             # JSON-RPC schemas, action types, review report formatting
+│   ├── client/               # Native host bridge, extension driver, CDP driver, proxy
+│   ├── cli/                  # Remote agent CLI, terminal formatting, broker client
+│   └── extension/            # Manifest V3 extension (popup UI, tab groups, review overlay)
+└── install.sh                # Universal one-line installer
 ```
 
 ---
 
-## 9. Command Reference
-
-### Browser Automation
-```bash
-tether open https://example.com
-tether snapshot -i
-tether click @e2
-tether fill @e3 "admin@example.com"
-tether press Enter
-tether eval "document.title"
-tether screenshot output.png
-tether close
-```
-
-### Tether Review
-```bash
-tether review start           # Activate element inspection overlay in local Chrome
-tether review list            # List active pinned elements and review notes
-tether review clear           # Remove all pins and reset review state
-tether review send            # Generate structured markdown report for the agent
-```
+*Tether Browser | Remote-to-local browser bridge for AI agents*
