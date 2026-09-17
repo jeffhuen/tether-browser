@@ -47,5 +47,6 @@ We do not sell, rent, trade, or share any user data with third parties under any
 
 ## 5. Contact and Inquiries
 
-If you have questions about this Privacy Policy or Tether Browser Bridge, open an issue on our public GitHub repository:
-[https://github.com/jeffhuen/tether-browser/issues](https://github.com/jeffhuen/tether-browser/issues)
+If you have questions about this Privacy Policy or Tether Browser Bridge, contact us via:
+* **Email**: `32542276+jeffhuen@users.noreply.github.com`
+* **GitHub Issues**: [https://github.com/jeffhuen/tether-browser/issues](https://github.com/jeffhuen/tether-browser/issues)
