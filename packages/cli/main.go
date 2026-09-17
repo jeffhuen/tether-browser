@@ -12,7 +12,7 @@ import (
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
-const usageText = `tether v0.1.26 - remote browser automation for AI coding agents
+const usageText = `tether v0.1.27 - remote browser automation for AI coding agents
 Usage: tether <command> [args] [options]
 Commands:
   open <url>                 Navigate to URL
