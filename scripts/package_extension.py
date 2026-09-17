@@ -20,7 +20,16 @@ with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as zf:
                 continue
             file_path = Path(root) / file
             arcname = file_path.relative_to(EXT_DIR)
-            zf.write(file_path, arcname)
-            print(f"  + {arcname}")
+            if file == "manifest.json":
+                import json
+                with open(file_path, "r", encoding="utf-8") as f:
+                    manifest_data = json.load(f)
+                manifest_data.pop("key", None)
+                cleaned_manifest = json.dumps(manifest_data, indent=2).encode("utf-8")
+                zf.writestr(str(arcname), cleaned_manifest)
+                print(f"  + {arcname} (stripped 'key' for Chrome Web Store compliance)")
+            else:
+                zf.write(file_path, arcname)
+                print(f"  + {arcname}")
 
 print(f"\n✓ Created Chrome Web Store bundle: {ZIP_PATH} ({ZIP_PATH.stat().st_size} bytes)")

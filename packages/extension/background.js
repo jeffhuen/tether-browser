@@ -17,6 +17,7 @@ const attachedTabs = new Map();
 const attachingTabs = new Map();
 
 // Node reference registry for compact @e1, @e2 element references: tabId -> Map<ref, nodeInfo>
+const elementRefsByTab = new Map();
 let activeNotesCache = [];
 let isDaemonConnected = false;
 const pendingNative = new Map();
