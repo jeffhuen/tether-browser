@@ -30,9 +30,16 @@ tether connect user@remote-server
 ```
 Alternatively, click the **Tether extension icon** in your Chrome toolbar, enter `user@host`, and click **Connect**.
 
-### Step 4: Run Automation on your Remote Server
+### Step 4: Install `tether` on your Remote Server
 
-Run commands from your remote SSH session, Herdr pane, or tmux terminal:
+In your remote terminal (SSH session, Herdr pane, or cloud container):
+```bash
+curl -fsSL https://raw.githubusercontent.com/jeffhuen/tether-browser/main/install.sh | bash
+```
+
+### Step 5: Run Automation from your Remote Server
+
+Run commands from your remote terminal:
 ```bash
 # Open a URL in the Tether tab group
 tether open https://example.com
