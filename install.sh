@@ -153,6 +153,12 @@ if [ -x "$DEST_BIN" ]; then
     "$DEST_BIN" extension install >/dev/null 2>&1 || true
 fi
 
+# Auto-register Herdr terminal plugin if Herdr is present
+if command -v herdr >/dev/null 2>&1; then
+    if ! herdr plugin list 2>/dev/null | grep -q "jeffhuen.tether-browser"; then
+        herdr plugin install "$REPO" --yes >/dev/null 2>&1 || true
+    fi
+fi
 echo ""
 echo -e "${GREEN}${BOLD}✓ tether-browser v${VERSION} installed successfully!${RESET}"
 echo "  Binary: ${DEST_BIN}"
