@@ -63,7 +63,6 @@ function connectNativeHost() {
     nativePort.onMessage.addListener(handleNativeMessage);
     nativePort.onDisconnect.addListener(handleNativeDisconnect);
     startHeartbeat();
-    ensureTabGroup(true);
     console.log("[Tether] Connected to native messaging host:", NATIVE_HOST_NAME);
   } catch (err) {
     console.warn("[Tether] Failed to connect to native messaging host:", err.message);
@@ -259,7 +258,7 @@ function resolveTargetTabId(params = {}) {
 }
 async function getLiveTabs() {
   if (tabGroupId === null) {
-    await ensureTabGroup(true);
+    await ensureTabGroup(false);
   }
   if (tabGroupId !== null) {
     try {
