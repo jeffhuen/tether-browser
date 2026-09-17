@@ -48,8 +48,8 @@ Continue toward the approved outcome with a smaller correct implementation, remo
 
 ## 6. Track Durably Without Creating Another Delivery Loop
 
-For actionable task tracking, read `docs/agent-workflows/beads.md`. Start with `bd ready`, claim with `scripts/bd-claim <id>`, and close with `bd close <id>`. Pure repository-instruction or local maintenance edits remain exempt. `delivery.md` owns closeout timing and worktree cleanup.
+Follow `.beads/PRIME.md` for durable tracking and `docs/agent-workflows/beads.md` for local constraints. Use native `bd update <id> --claim` only with claim authority. Keep execution todos in the harness. Pure repository-instruction or local maintenance edits remain exempt from Beads. The coordinator owns governing-bead updates and verified closure; helpers report. Worktree cleanup is a separate authorized operation.
 
 ## 7. Load Detailed Procedures Only When Selected
 
-Read [Delivery and Worktree Lifecycle](delivery.md) when planning isolated or parallel work, integrating, handing off, or parking a slice. It owns the native Git worktree lifecycle at `/home/jeffhuen/herdr/workspaces/tether-browser/` and the independent review isolation protocol. Follow `skill://herdr-workflow` for cross-repository Herdr and OMP coordination.
+Read [Delivery](delivery.md) for repository integration and review gates when planning isolated or parallel work, integrating, handing off, or parking a slice. Follow `skill://herdr-workflow` for worktree operations, independent review mechanics, and native Herdr and OMP coordination.

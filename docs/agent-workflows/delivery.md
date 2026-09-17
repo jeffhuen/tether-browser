@@ -9,58 +9,23 @@ Read this document when planning isolated or parallel work, integrating, handing
 - Keep tests, implementation, repairs, documentation, and review on one branch, worktree, and PR.
 - Finish all applicable acceptance criteria, review, and documentation before integration.
 
-## 2. Sequential Branch Lifecycle
+## 2. Integration and resource ownership
 
-1. Inspect `git worktree list`. Fetch `origin/main`. To create an isolated slice, run:
-   ```bash
-   git worktree add /home/jeffhuen/herdr/workspaces/tether-browser/<slice-id> -b <branch-name> origin/main
-   ```
-   Herdr (`herdr worktree create`) and OMP wrappers are also accepted. Never branch from another feature branch. Never create worktrees inside the repository tree. Put the stable task or Bead ID in the branch name. For read-only work, create no worktree.
-2. Keep all owned fixes on that branch. Before integration, refresh against current `origin/main`. Inspect the complete candidate diff against scope and acceptance. Rerun only checks affected by new changes or evidence gaps.
-3. Under existing Git authority, stage specific files, inspect staged status, and ensure no intended new file was omitted. Keep commits atomic.
-4. Merge the PR. Fetch and prove `git merge-base --is-ancestor <slice-tip> origin/main`. An open PR, commit, push, or successful check does not prove integration.
-5. Fast-forward the clean primary checkout on `main` with `git pull --ff-only origin main`. If the primary checkout has commits ahead, is on another branch, or has dirty files, leave it untouched and report the pending update.
-6. After verified integration, remove the owned merged worktree. In Herdr, run:
-   ```bash
-   herdr worktree remove --workspace <workspace-id>
-   ```
-   In a bare shell, run:
-   ```bash
-   git worktree remove /home/jeffhuen/herdr/workspaces/tether-browser/<slice-id>
-   git worktree prune
-   ```
-   Delete the merged local branch and the merged remote branch. Never run `omp worktree clear --all` in this repository because it forces removal of live checkouts across workspaces. Inspect `git worktree list` at cleanup. Only then start the next sequential slice from fresh `origin/main`.
+Follow `skill://herdr-workflow` for worktree creation, resume, parking, removal, and independent review mechanics. Use only owned or explicitly authorized resources. Review and cleanup do not grant Git authority.
 
-Use native Git, Herdr, and OMP commands. Never switch the primary checkout. Never reset the primary checkout. Never hide dirty state in another worktree. Never force cleanup of unproven resources. Never delete another writer's work. To park unfinished work, push its branch. Record the branch on the owning Bead. Then remove the worktree.
+- Start new isolated slices from verified `origin/main`, never another feature branch. Use a stable slice or Bead ID in the branch name. Read-only work needs no worktree.
+- Keep repairs on the same branch and PR. Refresh against current `origin/main` before integration and rerun only checks affected by changes or evidence gaps.
+- Stage only intended files under existing Git authority, including intended new files. Keep commits atomic.
+- After a PR merge, fetch and prove `git merge-base --is-ancestor <slice-tip> origin/main`. A commit, push, passing check, or worker report does not prove integration.
+- Fast-forward the primary checkout only when it is clean and on `main`. If it is dirty, on another branch, or ahead, leave it untouched and report the pending update. Never switch or reset the primary checkout.
+- Before authorized cleanup, verify integration and account for helpers, descendants, processes, and needed files. Park unfinished work only with a preserved branch and checkpoint. Without savepoint authority, leave the checkout intact.
 
-## 3. Independent Review Protocol
+## 3. Independent review
 
-For changes requiring independent review:
+Use the risk criteria in [execution policy](execution-policy.md). Reviewers remain read-only and executable verification stays with the coordinator. Do not review inside the live candidate checkout: use a complete candidate diff or an authorized isolated review checkout. Include intended uncommitted and new files in the review target.
 
-1. **Isolation over snapshot**: From the candidate checkout root, record HEAD, the stash ref, the reflog count, and the worktree status. Then create an ephemeral detached review worktree:
-   ```bash
-   HEAD=$(git rev-parse HEAD); REFN=$(git reflog HEAD | wc -l)
-   STASH=$(git rev-parse --verify -q refs/stash || echo none)
-   git status --porcelain -uall > "/tmp/candidate-$HEAD.status"
-   RT=$(mktemp -d)
-   git worktree add --detach "$RT" "$HEAD"
-   ```
-   If untracked candidate files exist, run the copy from the repository root. Copy them into `$RT`:
-   ```bash
-   git ls-files --others --exclude-standard -z | tar --null -T - -cf - | tar -C "$RT" -xf -
-   ```
-2. **Review execution**: Direct the reviewer to inspect `$RT`. As an alternative for small diffs, pass the candidate diff `git diff origin/main...HEAD` directly. Reviewers work strictly read-only. Reviews in `$RT` evaluate static code and diffs. Executable verification remains with the coordinator. Do not review inside the live candidate checkout.
-3. **Receipt and verification**: From the candidate checkout root, verify the candidate checkout before you acknowledge the report:
-   ```bash
-   [ "$(git rev-parse HEAD)" = "$HEAD" ] \
-     && git status --porcelain -uall | diff -q "/tmp/candidate-$HEAD.status" - >/dev/null \
-     && [ "$(git rev-parse --verify -q refs/stash || echo none)" = "$STASH" ] \
-     && [ "$(git reflog HEAD | wc -l)" = "$REFN" ] \
-     && echo REVIEW_TARGET_INTACT || echo REVIEW_INVALID_INVESTIGATE
-   git worktree remove --force "$RT"
-   git worktree prune
-   ```
-4. **Taxonomy and approval**: Reports classify findings as `REVIEW_PASS` or `CHANGES_REQUIRED`. Each finding carries `BLOCKING`, `FOLLOW_UP`, or `NOTE`. The coordinator validates the findings. Approval requires `REVIEW_PASS` and an intact target. Never approve with an unresolved validated blocker. Record accepted follow-ups as Beads. A completed diagnosis is not `REVIEW_PASS`.
+Follow `skill://herdr-workflow` for target capture, reviewer instructions, report taxonomy, and safe cleanup. Approval requires `REVIEW_PASS`, an intact reviewed target, and no unresolved validated blocker. The coordinator validates findings and records accepted follow-ups in Beads.
+
 
 ## 4. Parallel Slice Execution Protocol
 

@@ -4,15 +4,12 @@ This repository owns `tether-browser`, a high-performance remote browser automat
 
 ## Execution Surface and Tool Compass
 
-Follow `skill://herdr-workflow` for cross-repository worktree lifecycle, terminal coordination, and agent execution.
+Follow `skill://herdr-workflow` for worktree lifecycle, terminal ownership, and native agent coordination. Manage only resources you own or have explicit authority to control.
 
-When `${HERDR_ENV:-0}` equals `1`, you run inside a Herdr pane. Use the `herdr` CLI (`skill://herdr`) for layout, worktrees, and interactive supervision:
+Worktrees, when needed, belong under `/home/jeffhuen/herdr/workspaces/tether-browser/<slice-name>`. Choose isolation separately from Beads tracking and delegation.
 
-- **Worktree root**: Store worktrees at `/home/jeffhuen/herdr/workspaces/tether-browser/<slice-name>`.
-- **Worktree lifecycle**: Herdr owns creation and teardown. To create a worktree, run `herdr worktree create`. To remove a worktree, run `herdr worktree remove --workspace <ID>`. Outside Herdr, use native `git worktree add` and `git worktree remove`.
-- **Interactive panes and supervision**: Herdr owns panes, tabs, splits, and observable agent runs. Use `herdr pane split` to arrange panes. Use `herdr agent start`, `herdr agent prompt`, and `herdr agent wait` to run and observe workers.
-- **In-turn tools and subagents**: OMP owns the cognitive tool loop. Use OMP for file tools (`read`, `edit`, `write`), in-kernel execution (`eval`), turn-scoped headless subagents (`task`), and background services (`hub start`, `hub ps`, `hub logs`).
-- **Delivery and review**: `docs/agent-workflows/delivery.md` owns the branch lifecycle, parallel manifests, and independent review. Read [Agent Execution Policy](docs/agent-workflows/execution-policy.md) before you run project commands or change files.
+Read [Agent execution policy](docs/agent-workflows/execution-policy.md) before project commands or edits. [Delivery](docs/agent-workflows/delivery.md) records repository-specific integration and review gates. [Beads](docs/agent-workflows/beads.md) records local tracking and synchronization constraints.
+
 - **Architecture and Roadmap**: Read [README.md](README.md) before implementing components.
 
 ## Codebase Discovery
@@ -49,3 +46,9 @@ Use direct text search for string literals, configuration values, scripts, and d
 1. **Deterministic Core**: Keep business logic pure. Isolate side effects at the call boundary.
 2. **Surgical & Debloat**: Touch only files required for the task. Keep diffs minimal.
 3. **No Dead Scaffolding**: Never create speculative abstractions or unused helpers.
+
+<!-- BEGIN PI-BEADS-COMPANION -->
+## Beads companion
+
+Use native harness plans, todos, memory, and subagents for execution. Beads holds durable outcomes, acceptance criteria, high-level plans, and recovery checkpoints, not every execution step. Small bounded work needs no new bead unless project rules require one. Choose worktrees separately for writer or branch isolation. Read the project workflow with `bd prime`. One coordinator owns bead updates and closure unless ownership transfers explicitly. For assigned bead-scoped work, verify acceptance, record final evidence, and close the bead within your authority before reporting it complete. Completed todos alone do not prove acceptance. Helpers report back; lifecycle events do not close issues. Keep official Herdr integrations separate.
+<!-- END PI-BEADS-COMPANION -->
