@@ -761,9 +761,17 @@ async function handleTabSwitch(params = {}) {
 async function handleReviewStart(params = {}) {
   const tabId = resolveTargetTabId(params);
   if (!tabId) throw new Error("No active tab in Tether group");
+
+  if (tabGroupId !== null) {
+    try {
+      await chrome.tabs.group({ tabIds: [tabId], groupId: tabGroupId });
+      tabGroupTabs.add(tabId);
+      activeTabId = tabId;
+    } catch {}
+  }
+
   await ensureDomain(tabId, "Runtime");
   await ensureDomain(tabId, "Page");
-
   const url = chrome.runtime.getURL("review/overlay.js");
   const resp = await fetch(url);
   const code = await resp.text();
@@ -920,11 +928,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             connectNativeHost();
           }
           const tabList = await handleTabList();
+          let targetTabId = msg.currentTabId || activeTabId;
+          if (!targetTabId && tabList.tabs && tabList.tabs.length > 0) {
+            targetTabId = parseInt(tabList.tabs[0].id, 10);
+          }
+
+          let notes = [];
+          if (targetTabId) {
+            try {
+              const res = await handleReviewList({ tabId: targetTabId });
+              notes = res.notes || [];
+            } catch (err) {
+              notes = activeNotesCache || [];
+            }
+          }
+
           sendResponse({
             connected: nativePort !== null && isDaemonConnected,
-            activeTabId,
+            activeTabId: targetTabId || activeTabId,
             tabs: tabList.tabs,
-            notes: activeNotesCache || [],
+            notes,
           });
           break;
         }
@@ -953,17 +976,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case "popup_start_review": {
-          await handleReviewStart({ tabId: activeTabId });
+          const targetTabId = msg.tabId || activeTabId;
+          if (targetTabId) {
+            await handleReviewStart({ tabId: targetTabId });
+          }
           sendResponse({ ok: true });
           break;
         }
         case "popup_clear_notes": {
-          await handleReviewClear({ tabId: activeTabId });
+          const targetTabId = msg.tabId || activeTabId;
+          if (targetTabId) {
+            await handleReviewClear({ tabId: targetTabId });
+          }
           sendResponse({ ok: true });
           break;
         }
         case "popup_capture_screenshot": {
-          const res = await handleScreenshot({ tabId: activeTabId });
+          const targetTabId = msg.tabId || activeTabId;
+          const res = await handleScreenshot({ tabId: targetTabId });
           sendResponse(res);
           break;
         }

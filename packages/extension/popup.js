@@ -86,9 +86,20 @@ document.addEventListener("DOMContentLoaded", () => {
   // 1. Load Status & Initial Data
   async function refresh() {
     try {
-      const status = await sendMessage({ type: "popup_get_status" });
+      let currentTabId = null;
+      let currentTab = null;
+      try {
+        const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (active) {
+          currentTab = active;
+          currentTabId = active.id;
+        }
+      } catch {}
+
+      const status = await sendMessage({ type: "popup_get_status", currentTabId });
       const tabs = status.tabs || [];
-      const activeTab = tabs.find((t) => t.id === status.activeTabId || t.active);
+      const activeTab = tabs.find((t) => t.id === String(status.activeTabId) || t.active) ||
+                        (currentTab ? { id: String(currentTab.id), title: currentTab.title, url: currentTab.url } : null);
       updateStatusUI(status);
       updateTabsUI(tabs, status.activeTabId);
       updateNotesUI(status.notes || [], activeTab);
@@ -285,7 +296,12 @@ document.addEventListener("DOMContentLoaded", () => {
   btnInspect.addEventListener("click", async () => {
     btnInspect.disabled = true;
     try {
-      await sendMessage({ type: "popup_start_review" });
+      let currentTabId = null;
+      try {
+        const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (active) currentTabId = active.id;
+      } catch {}
+      await sendMessage({ type: "popup_start_review", tabId: currentTabId });
       // Close popup so user can click elements immediately
       window.close();
     } catch (err) {
@@ -298,7 +314,12 @@ document.addEventListener("DOMContentLoaded", () => {
   btnScreenshot.addEventListener("click", async () => {
     btnScreenshot.disabled = true;
     try {
-      const res = await sendMessage({ type: "popup_capture_screenshot" });
+      let currentTabId = null;
+      try {
+        const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (active) currentTabId = active.id;
+      } catch {}
+      const res = await sendMessage({ type: "popup_capture_screenshot", tabId: currentTabId });
       if (res && res.data) {
         // Download screenshot
         const a = document.createElement("a");
@@ -331,7 +352,12 @@ document.addEventListener("DOMContentLoaded", () => {
   // 5. Action: Clear Notes
   btnClearNotes.addEventListener("click", async () => {
     if (confirm("Clear all review notes on this page?")) {
-      await sendMessage({ type: "popup_clear_notes" });
+      let currentTabId = null;
+      try {
+        const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (active) currentTabId = active.id;
+      } catch {}
+      await sendMessage({ type: "popup_clear_notes", tabId: currentTabId });
       currentNotes = [];
       updateNotesUI([]);
       refresh();
