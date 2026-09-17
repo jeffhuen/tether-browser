@@ -525,18 +525,15 @@ body {
 .credits-footer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding-top: 7px;
+  justify-content: center;
+  gap: 6px;
+  padding-top: 8px;
   border-top: 1px solid var(--border-subtle);
   font-size: 11px;
   color: var(--text-muted);
   user-select: none;
-}
-
-.credits-left {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .credits-brand {
@@ -546,18 +543,11 @@ body {
 
 .credits-sep {
   color: #334155;
-  font-size: 8px;
+  font-size: 9px;
 }
 
 .credits-note {
   color: var(--text-muted);
-}
-
-.credits-tag {
-  font-family: ui-monospace, monospace;
-  font-size: 10.5px;
-  color: var(--text-muted);
-  letter-spacing: 0.02em;
 }
 
 /* Update Toast */
