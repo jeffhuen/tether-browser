@@ -14,8 +14,11 @@ const (
 	NativeHostName = "com.tether_browser.host"
 
 	// ExtensionID is the deterministic 32-character Chrome extension ID computed
-	// from the fixed RSA public key in packages/extension/manifest.json.
+	// from the fixed RSA public key in packages/extension/manifest.json for local unpacked development.
 	ExtensionID = "kaloekddddlgghmifoaapnhekggjcggn"
+
+	// WebStoreExtensionID is the official Chrome Web Store extension ID assigned by Google.
+	WebStoreExtensionID = "ddfmonciifjlnpdjbijgeachabjebbfh"
 )
 
 // NativeHostManifest represents the Chrome Native Messaging Host manifest schema.
@@ -81,6 +84,7 @@ func InstallNativeHostManifest(executablePath string) ([]string, error) {
 		Type:        "stdio",
 		AllowedOrigins: []string{
 			fmt.Sprintf("chrome-extension://%s/", ExtensionID),
+			fmt.Sprintf("chrome-extension://%s/", WebStoreExtensionID),
 		},
 	}
 
