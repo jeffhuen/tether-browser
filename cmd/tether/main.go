@@ -317,7 +317,7 @@ func runSSHBackground(targetHost string) error {
 
 	q := cli.ShellQuote(token)
 	remoteCmd := fmt.Sprintf("mkdir -p ~/.cache/tether && chmod 700 ~/.cache/tether && printf %%s %s > ~/.cache/tether/auth && chmod 600 ~/.cache/tether/auth", q)
-	syncCmd := exec.Command("ssh", targetHost, remoteCmd)
+	syncCmd := exec.Command("ssh", "--", targetHost, remoteCmd)
 	if out, err := syncCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("sync auth token: %s (%w)", strings.TrimSpace(string(out)), err)
 	}
@@ -328,6 +328,7 @@ func runSSHBackground(targetHost string) error {
 		"-f", "-N",
 		"-o", "ExitOnForwardFailure=yes",
 		"-R", "9333:localhost:9333",
+		"--",
 		targetHost,
 	}
 
@@ -350,8 +351,11 @@ func runConnect(args []string) int {
 		return 0
 	}
 	targetHost := args[0]
+	if strings.HasPrefix(targetHost, "-") {
+		fmt.Fprintf(os.Stderr, "Error: invalid target host %q\n", targetHost)
+		return 1
+	}
 	sshExtraArgs := args[1:]
-
 	// Automatically ensure native messaging host is registered
 	_, _ = client.InstallNativeHostManifest("")
 

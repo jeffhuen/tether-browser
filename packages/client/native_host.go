@@ -33,6 +33,9 @@ func GetBridgeSocketPath() string {
 		}
 		return `\\.\pipe\tether-bridge-` + user
 	}
+	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
+		return filepath.Join(xdg, "tether", "bridge.sock")
+	}
 	uid := os.Getuid()
 	dir := filepath.Join(os.TempDir(), fmt.Sprintf("tether-%d", uid))
 	return filepath.Join(dir, "bridge.sock")
@@ -44,6 +47,12 @@ func EnsureBridgeSocketDir(socketPath string) error {
 		return nil
 	}
 	dir := filepath.Dir(socketPath)
+	if fi, err := os.Lstat(dir); err == nil {
+		// Prevent symlink following or redirection attacks
+		if fi.Mode()&os.ModeSymlink != 0 {
+			_ = os.Remove(dir)
+		}
+	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
