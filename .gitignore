@@ -1,10 +1,8 @@
 
 # Beads / Dolt databases and runtimes (metadata.json, config.yaml remain tracked)
 .dolt/
-*.db
-*.db-wal
-*.db-shm
-*.db-journal
+*.db*
+*.gate.lock*
 .beads-credential-key
 .beads/dolt/
 .beads/embeddeddolt/
