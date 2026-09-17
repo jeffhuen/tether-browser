@@ -1,5 +1,5 @@
 // Tether Browser Bridge - Manifest V3 Background Service Worker
-// Provides high-performance, zero-latency browser automation via chrome.debugger
+// Provides remote-to-local browser automation via chrome.debugger
 // and native tab groups inside the developer's active Chromium browser.
 
 const NATIVE_HOST_NAME = "com.tether_browser.host";
