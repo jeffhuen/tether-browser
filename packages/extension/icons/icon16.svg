@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <defs>
+    <linearGradient id="t16Grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00F5FF" />
+      <stop offset="100%" stop-color="#8B5CF6" />
+    </linearGradient>
+  </defs>
+  <!-- Background Squircle -->
+  <rect x="0.5" y="0.5" width="15" height="15" rx="3.5" fill="#0B0F19" stroke="#38BDF8" stroke-width="0.8" stroke-opacity="0.5" />
+  
+  <!-- Bold High-Contrast Tether "T" Bridge -->
+  <!-- Crossbar -->
+  <path d="M 2.5 5.5 L 13.5 5.5" stroke="url(#t16Grad)" stroke-width="2.2" stroke-linecap="round" />
+  <!-- Stem and Loop -->
+  <path d="M 8 5.5 L 8 11.5 C 8 12.8, 10 13.2, 11 12 C 11.8 11, 10.5 9.5, 9 9.5" fill="none" stroke="url(#t16Grad)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+  
+  <!-- Left Terminal Dot -->
+  <circle cx="3" cy="5.5" r="1.2" fill="#FFFFFF" />
+  <!-- Right Terminal Dot -->
+  <circle cx="13" cy="5.5" r="1.2" fill="#FFFFFF" />
+</svg>

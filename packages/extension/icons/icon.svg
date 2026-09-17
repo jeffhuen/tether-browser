@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F172A" />
+      <stop offset="50%" stop-color="#0A0E1A" />
+      <stop offset="100%" stop-color="#030712" />
+    </linearGradient>
+
+    <!-- Border Glow -->
+    <linearGradient id="borderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.6" />
+      <stop offset="50%" stop-color="#3B82F6" stop-opacity="0.2" />
+      <stop offset="100%" stop-color="#818CF8" stop-opacity="0.4" />
+    </linearGradient>
+
+    <!-- Core Tether Gradient -->
+    <linearGradient id="tetherBeam" x1="0%" y1="20%" x2="100%" y2="80%">
+      <stop offset="0%" stop-color="#00F5FF" />
+      <stop offset="45%" stop-color="#3B82F6" />
+      <stop offset="100%" stop-color="#8B5CF6" />
+    </linearGradient>
+
+    <!-- Node Glow Gradients -->
+    <radialGradient id="nodeCyan" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="30%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#0284C7" />
+    </radialGradient>
+
+    <radialGradient id="nodeIndigo" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="30%" stop-color="#A78BFA" />
+      <stop offset="100%" stop-color="#6366F1" />
+    </radialGradient>
+
+    <!-- Ambient Glow Filter -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="12" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+
+    <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="28" result="blur" />
+      <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.5 0" />
+      <feMerge>
+        <feMergeNode />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Squircle Base -->
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bgGrad)" stroke="url(#borderGrad)" stroke-width="4" />
+
+  <!-- Subtle Browser Tab Bar Cue (Glassmorphic) -->
+  <path d="M 64 120 C 64 88, 88 64, 120 64 L 392 64 C 424 64, 448 88, 448 120 L 448 132 C 448 132, 448 132, 448 132 L 64 132 Z" fill="#1E293B" fill-opacity="0.35" />
+  <line x1="64" y1="132" x2="448" y2="132" stroke="#38BDF8" stroke-opacity="0.2" stroke-width="2" />
+  <circle cx="104" cy="98" r="7" fill="#EF4444" fill-opacity="0.75" />
+  <circle cx="130" cy="98" r="7" fill="#F59E0B" fill-opacity="0.75" />
+  <circle cx="156" cy="98" r="7" fill="#10B981" fill-opacity="0.75" />
+
+  <!-- Ambient Light Spotlight behind Glyph -->
+  <circle cx="256" cy="270" r="130" fill="#2563EB" fill-opacity="0.16" filter="blur(40px)" />
+  <circle cx="256" cy="270" r="70" fill="#00F5FF" fill-opacity="0.12" filter="blur(24px)" />
+
+  <!-- The Tether Glyph: Stylized Connected Bridge / "T" -->
+  <!-- Back Under-Glow for Beam -->
+  <g filter="url(#softGlow)">
+    <!-- Horizontal Crossbar Cable -->
+    <path d="M 128 200 C 180 184, 332 184, 384 200" fill="none" stroke="#00F5FF" stroke-width="32" stroke-linecap="round" opacity="0.4" />
+    <!-- Vertical Conduit Cable -->
+    <path d="M 256 192 L 256 384 C 256 414, 276 432, 304 432" fill="none" stroke="#3B82F6" stroke-width="32" stroke-linecap="round" opacity="0.4" />
+  </g>
+
+  <!-- Crisp Foreground Tether Beam -->
+  <g filter="url(#glow)">
+    <!-- Horizontal Arch (The Bridge Crossbar) -->
+    <path d="M 128 200 C 180 182, 332 182, 384 200" fill="none" stroke="url(#tetherBeam)" stroke-width="24" stroke-linecap="round" />
+
+    <!-- Vertical Stem descending and curving into local loop -->
+    <path d="M 256 190 L 256 384 C 256 412, 280 430, 308 430 C 336 430, 356 408, 356 380 C 356 348, 328 328, 296 328 L 216 328" fill="none" stroke="url(#tetherBeam)" stroke-width="24" stroke-linecap="round" />
+  </g>
+
+  <!-- Connection Nodes / Terminals -->
+  <!-- Left Node: Remote Client -->
+  <g filter="url(#glow)">
+    <circle cx="128" cy="200" r="28" fill="#0F172A" stroke="#00F5FF" stroke-width="6" />
+    <circle cx="128" cy="200" r="14" fill="url(#nodeCyan)" />
+  </g>
+
+  <!-- Right Node: Local Workstation Portal -->
+  <g filter="url(#glow)">
+    <circle cx="384" cy="200" r="28" fill="#0F172A" stroke="#818CF8" stroke-width="6" />
+    <circle cx="384" cy="200" r="14" fill="url(#nodeIndigo)" />
+  </g>
+
+  <!-- Inner Loop Data Packet Pulse -->
+  <circle cx="216" cy="328" r="9" fill="#00F5FF" filter="url(#glow)" />
+  <circle cx="216" cy="328" r="4" fill="#FFFFFF" />
+
+  <!-- Data Flow Energy Particles along Crossbar -->
+  <circle cx="210" cy="190" r="5" fill="#FFFFFF" opacity="0.9" />
+  <circle cx="302" cy="190" r="5" fill="#FFFFFF" opacity="0.9" />
+</svg>
