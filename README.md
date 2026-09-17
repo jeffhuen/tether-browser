@@ -4,6 +4,10 @@ Remote-to-local browser bridge for AI coding agents across Herdr, tmux, and SSH 
 
 No pixel streaming. No VNC. No cloud browser subscription.
 
+<p align="center">
+  <img src="docs/assets/tether-in-action.png" alt="Tether Browser Bridge in Action" width="100%" />
+</p>
+
 ---
 
 ## 1. Quick Start
@@ -168,6 +172,9 @@ Tether organizes automated tabs in a blue **Tether** tab group in your browser:
 
 To capture visual feedback on a page, click **Inspect & Pin Notes** in the Tether popup. Pin notes on elements, then click **Copy to Clipboard** to paste structured component context into your agent prompt.
 
+<p align="center">
+  <img src="docs/assets/tether-popup.png" alt="Tether Extension Review Notes Popup" width="380" />
+</p>
 ---
 
 ## 8. Interoperability with `agent-browser`
