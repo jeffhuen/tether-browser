@@ -12,8 +12,8 @@ No pixel streaming. No VNC. No cloud browser subscription.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jeffhuen/tether-browser/main/install.sh | bash
-tether extension install
 ```
+The installer automatically registers the Native Messaging Host for Chrome, Brave, and Edge.
 
 ### Step 2: Load the Extension in Chrome
 

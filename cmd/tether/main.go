@@ -51,6 +51,9 @@ func enrollRoutes(proxy *client.Proxy, enrollStr string) {
 }
 
 func runDaemon(args []string) int {
+	// Automatically ensure native messaging host is registered
+	_, _ = client.InstallNativeHostManifest("")
+
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	port := fs.Int("port", 9333, "Daemon RPC listen port (default 9333)")
 	proxyPort := fs.Int("proxy-port", 0, "Forward proxy port (0 for ephemeral)")
@@ -346,9 +349,11 @@ func runConnect(args []string) int {
 		fmt.Println("  tether connect user@my-server.com")
 		return 0
 	}
-
 	targetHost := args[0]
 	sshExtraArgs := args[1:]
+
+	// Automatically ensure native messaging host is registered
+	_, _ = client.InstallNativeHostManifest("")
 
 	token, err := cli.EnsureDaemonToken()
 	if err != nil {

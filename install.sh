@@ -148,6 +148,10 @@ if [ "$INSTALL_DIR" = "${HOME}/.local/bin" ]; then
             ;;
     esac
 fi
+# Auto-register native messaging host if Chrome, Brave, or Edge is present
+if [ -x "$DEST_BIN" ]; then
+    "$DEST_BIN" extension install >/dev/null 2>&1 || true
+fi
 
 echo ""
 echo -e "${GREEN}${BOLD}✓ tether-browser v${VERSION} installed successfully!${RESET}"
@@ -158,4 +162,4 @@ echo "Quick start:"
 echo "  1. On your Mac:    tether connect user@server"
 echo "  2. On your server: tether open https://example.com"
 echo "                     tether snapshot -i"
-echo "                     tether review start"
+echo "                     tether click @e1"
