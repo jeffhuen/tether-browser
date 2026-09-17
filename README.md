@@ -6,45 +6,51 @@ No pixel streaming. No VNC. No cloud browser subscription.
 
 ---
 
-## 1. Workflow Context: Who Needs This (and Who Doesn't)
+## 1. Quick Start
 
-* **Local development**: If your coding agent runs directly on your workstation with a desktop screen, you do not need Tether. Use local browser automation or open Chrome directly.
-* **Remote development**: If your coding agent runs on a remote Linux server (AWS, Hetzner, dev containers, Herdr, or tmux over SSH), browser automation breaks down:
-  * **Headless servers lack authenticators**: A remote data center server cannot access your Touch ID sensor, Windows Hello camera, 1Password vault, or phone Passkeys.
-  * **Web services require human verification**: Portals like AWS console, Google Cloud, Shopify, and enterprise SaaS enforce two-factor authentication, TOTP codes, and Passkeys.
+### Step 1: Install `tether` on your workstation (Mac or PC)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jeffhuen/tether-browser/main/install.sh | bash
+tether extension install
+```
+
+### Step 2: Load the Extension in Chrome
+
+1. Open `chrome://extensions` in Chrome, Brave, or Edge.
+2. Toggle **Developer mode** on in the top-right corner.
+3. Click **Load unpacked** and select the `packages/extension` folder from your repository clone.
+4. The extension loads with deterministic ID `kaloekddddlgghmifoaapnhekggjcggn`.
+
+### Step 3: Connect to your Remote Server
+
+Run in your local terminal:
+```bash
+tether connect user@remote-server
+```
+Alternatively, click the **Tether extension icon** in your Chrome toolbar, enter `user@host`, and click **Connect**.
+
+### Step 4: Run Automation on your Remote Server
+
+Run commands from your remote SSH session, Herdr pane, or tmux terminal:
+```bash
+# Open a URL in the Tether tab group
+tether open https://example.com
+
+# Inspect the interactive elements with @e1, @e2 references
+tether snapshot -i
+
+# Click elements and fill form fields
+tether fill @e1 "user@example.com" && tether click @e2
+
+# Capture a full-resolution Retina screenshot
+tether screenshot output.png
+```
+
 ---
 
-## 2. The Limits of Streaming Graphics and Pixel Data
+## 2. How It Works: Remote-to-Local Bridge
 
-Streaming graphical display frames and raw pixel data over remote networks introduces fundamental physical limits. Over remote Wi-Fi, mobile cellular connections (4G or 5G), or tethered hotspots, pixel-streaming approaches struggle with three constraints:
-
-* **Bandwidth consumption**: Streaming 1080p graphical frames at 30 to 60 frames per second requires 10 to 30 Mbps. On metered cellular connections, video streaming exhausts data allowances in minutes.
-* **Input latency**: Transmitting visual frames across the network adds 150 to 300 milliseconds of round-trip delay. Typing, clicking, and waiting for visual confirmation feel sluggish.
-* **Compression artifacts**: Network packet loss and bitrate throttling degrade image sharpness, making small fonts and form inputs difficult to read.
-
-### The Command-Over-Wire Alternative
-
-Tether does not stream pixels or video frames. It sends lightweight ~200-byte JSON commands (`click`, `fill`, `open`) and returns structured ~20 KB accessibility trees:
-
-| Metric | Remote Pixel Streaming (VNC, Video, Sixel) | Tether Browser Bridge |
-|---|---|---|
-| **Bandwidth** | 10 to 30 Mbps continuous video | ~200 bytes per command (~0 MB/s) |
-| **Input Lag** | 150 to 300 ms video round-trip delay | 0 ms (renders on your local GPU at 120Hz) |
-| **Cellular Hotspot Support** | No (drains data caps, stutters on packet loss) | Yes (minimal packet size, immune to jitter) |
-| **Authentication** | Fails (remote server has no biometric hardware) | Native (uses your laptop Touch ID and 1Password) |
-| **Server RAM Usage** | 500 MB to 2 GB per browser instance | 0 MB (browser runs on your laptop) |
----
-
-## 3. Primary Use Cases
-
-* **Cloud devboxes and remote agents**: Equip headless agents on AWS, Hetzner, GCP, or dev containers with full browser automation without configuring X11, VNC, or cloud browser subscriptions.
-* **Cellular and travel workflows**: Run browser automation over high-latency cellular connections, train Wi-Fi, or mobile hotspots without video bandwidth degradation.
-* **Protected enterprise portals**: Let coding agents test and interact with portals behind corporate SSO, Passkeys, YubiKeys, and hardware two-factor authentication.
-* **UI and layout verification**: Let remote agents capture full-resolution Retina screenshots and test web forms in your real browser without modifying personal tabs.
-
----
-
-## 4. The Solution: Remote-to-Local Bridge
 `tether-browser` moves browser execution to the developer local machine where authenticators and sessions already live:
 
 ```text
@@ -85,54 +91,45 @@ Tether does not stream pixels or video frames. It sends lightweight ~200-byte JS
 
 ---
 
-## 5. Quick Start
+## 3. Workflow Context: Who Needs This (and Who Doesn't)
 
-### Step 1: Install `tether` on your Mac / PC
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/jeffhuen/tether-browser/main/install.sh | bash
-tether extension install
-```
-
-### Step 2: Load the Extension in Chrome
-
-1. Open `chrome://extensions` in Chrome, Brave, or Edge.
-2. Toggle **Developer mode** on (top-right corner).
-3. Click **Load unpacked** (top-left) and select the `packages/extension` folder from your cloned repository.
-4. The extension loads with deterministic ID `kaloekddddlgghmifoaapnhekggjcggn`.
-
-### Step 3: Connect to your Remote Server
-
-In your terminal:
-```bash
-tether connect user@remote-server
-```
-Alternatively, click the **Tether extension icon** in your Chrome toolbar, enter `user@host`, and click **Connect**.
-
-### Step 4: Run Automation on your Remote Server
-
-```bash
-# Navigate to a URL (creates and manages tabs inside a blue "Tether" group)
-tether open https://example.com
-
-# List all open browser tabs
-tether tabs
-
-# Inspect page accessibility tree with @e1, @e2 element references
-tether snapshot -i
-
-# Click an element by reference or coordinates
-tether click @e1
-
-# Fill form fields
-tether fill @e2 "user@example.com"
-
-# Take high-resolution desktop screenshot
-tether screenshot output.png
-```
+* **Local development**: If your coding agent runs directly on your workstation with a desktop screen, you do not need Tether. Use local browser automation or open Chrome directly.
+* **Remote development**: If your coding agent runs on a remote Linux server (AWS, Hetzner, dev containers, Herdr, or tmux over SSH), browser automation breaks down:
+  * **Headless servers lack authenticators**: A remote data center server cannot access your Touch ID sensor, Windows Hello camera, 1Password vault, or phone Passkeys.
+  * **Web services require human verification**: Portals like AWS console, Google Cloud, Shopify, and enterprise SaaS enforce two-factor authentication, TOTP codes, and Passkeys.
 
 ---
 
+## 4. The Limits of Streaming Graphics and Pixel Data
+
+Streaming graphical display frames and raw pixel data over remote networks introduces fundamental physical limits. Over remote Wi-Fi, mobile cellular connections (4G or 5G), or tethered hotspots, pixel-streaming approaches struggle with three constraints:
+
+* **Bandwidth consumption**: Streaming 1080p graphical frames at 30 to 60 frames per second requires 10 to 30 Mbps. On metered cellular connections, video streaming exhausts data allowances in minutes.
+* **Input latency**: Transmitting visual frames across the network adds 150 to 300 milliseconds of round-trip delay. Typing, clicking, and waiting for visual confirmation feel sluggish.
+* **Compression artifacts**: Network packet loss and bitrate throttling degrade image sharpness, making small fonts and form inputs difficult to read.
+
+### The Command-Over-Wire Alternative
+
+Tether does not stream pixels or video frames. It sends lightweight ~200-byte JSON commands (`click`, `fill`, `open`) and returns structured ~20 KB accessibility trees:
+
+| Metric | Remote Pixel Streaming (VNC, Video, Sixel) | Tether Browser Bridge |
+|---|---|---|
+| **Bandwidth** | 10 to 30 Mbps continuous video | ~200 bytes per command (~0 MB/s) |
+| **Input Lag** | 150 to 300 ms video round-trip delay | 0 ms (renders on your local GPU at 120Hz) |
+| **Cellular Hotspot Support** | No (drains data caps, stutters on packet loss) | Yes (minimal packet size, immune to jitter) |
+| **Authentication** | Fails (remote server has no biometric hardware) | Native (uses your laptop Touch ID and 1Password) |
+| **Server RAM Usage** | 500 MB to 2 GB per browser instance | 0 MB (browser runs on your laptop) |
+
+---
+
+## 5. Primary Use Cases
+
+* **Cloud devboxes and remote agents**: Equip headless agents on AWS, Hetzner, GCP, or dev containers with full browser automation without configuring X11, VNC, or cloud browser subscriptions.
+* **Cellular and travel workflows**: Run browser automation over high-latency cellular connections, train Wi-Fi, or mobile hotspots without video bandwidth degradation.
+* **Protected enterprise portals**: Let coding agents test and interact with portals behind corporate SSO, Passkeys, YubiKeys, and hardware two-factor authentication.
+* **UI and layout verification**: Let remote agents capture full-resolution Retina screenshots and test web forms in your real browser without modifying personal tabs.
+
+---
 ## 6. Multi-Tab Management and Tab Groups
 
 Tether organizes automated tabs in a blue **Tether** tab group in your browser:
