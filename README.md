@@ -10,7 +10,23 @@ No pixel streaming. No VNC. No cloud browser subscription.
 
 ---
 
-## 1. Quick Start
+## 1. Why This Exists
+
+Your coding agent runs on a remote Linux server. The browser it needs runs on your workstation.
+
+A remote server cannot reach your Touch ID sensor, your password manager, or your phone passkey. Most sites an agent must drive require one of them to log in. Streaming the remote screen back to you costs 10 to 30 Mbps and adds 150 to 300 ms of delay.
+
+Tether leaves Chrome on your workstation. Only commands and text cross the network. The agent runs `tether click @e2` on the server. Your local Chrome performs the click. You stay logged in, and every page renders on your own GPU.
+
+The return path carries more than a result code. `tether snapshot -i` returns the page as text: every interactive element with its ARIA role, its accessible name, and an `@eN` reference to act on.
+
+You can also point at what you see. Run `tether review start`, click any element in your own browser, and write a note. `tether review send` returns the CSS selector, the DOM path, the computed styles, the nearby text, and the framework source location, such as `components/Button.tsx:42:15`. The agent reads the screen you are reading, then edits the file that drew it. A source location is not guaranteed: the payload reports its provenance as `exact`, `inferred`, or `unavailable`, and Svelte supplies one only in development builds. Tether redacts password fields and values that look like tokens before anything leaves the page.
+
+You do not need Tether if your agent runs on the same machine as your browser. Use local browser automation instead.
+
+---
+
+## 2. Quick Start
 
 ### Step 1: Install `tether` on your workstation (Mac or PC)
 
@@ -18,6 +34,8 @@ No pixel streaming. No VNC. No cloud browser subscription.
 curl -fsSL https://raw.githubusercontent.com/jeffhuen/tether-browser/main/install.sh | bash
 ```
 The installer automatically registers the Native Messaging Host for Chrome, Brave, and Edge.
+
+Read the script before you run it. To inspect it first, run `curl -fsSL https://raw.githubusercontent.com/jeffhuen/tether-browser/main/install.sh -o install.sh`, read `install.sh`, then run `bash install.sh`.
 
 ### Step 2: Load the Extension in Chrome
 
@@ -41,6 +59,8 @@ In your remote terminal (SSH session, Herdr pane, or cloud container):
 curl -fsSL https://raw.githubusercontent.com/jeffhuen/tether-browser/main/install.sh | bash
 ```
 
+The same advice applies here. Download and read `install.sh` before you run it.
+
 ### Step 5: Run Automation from your Remote Server
 
 Run commands from your remote terminal:
@@ -60,7 +80,7 @@ tether screenshot output.png
 
 ---
 
-## 2. How It Works: Remote-to-Local Bridge
+## 3. How It Works: Remote-to-Local Bridge
 
 `tether-browser` moves browser execution to the developer local machine where authenticators and sessions already live:
 
@@ -102,22 +122,9 @@ tether screenshot output.png
 
 ---
 
-## 3. Workflow Context: Who Needs This (and Who Doesn't)
-
-* **Local development**: If your coding agent runs directly on your workstation with a desktop screen, you do not need Tether. Use local browser automation or open Chrome directly.
-* **Remote development**: If your coding agent runs on a remote Linux server (AWS, Hetzner, dev containers, Herdr, or tmux over SSH), browser automation breaks down:
-  * **Headless servers lack authenticators**: A remote data center server cannot access your Touch ID sensor, Windows Hello camera, 1Password vault, or phone Passkeys.
-  * **Web services require human verification**: Portals like AWS console, Google Cloud, Shopify, and enterprise SaaS enforce two-factor authentication, TOTP codes, and Passkeys.
-
----
-
 ## 4. The Limits of Streaming Graphics and Pixel Data
 
-Streaming graphical display frames and raw pixel data over remote networks introduces fundamental physical limits. Over remote Wi-Fi, mobile cellular connections (4G or 5G), or tethered hotspots, pixel-streaming approaches struggle with three constraints:
-
-* **Bandwidth consumption**: Streaming 1080p graphical frames at 30 to 60 frames per second requires 10 to 30 Mbps. On metered cellular connections, video streaming exhausts data allowances in minutes.
-* **Input latency**: Transmitting visual frames across the network adds 150 to 300 milliseconds of round-trip delay. Typing, clicking, and waiting for visual confirmation feel sluggish.
-* **Compression artifacts**: Network packet loss and bitrate throttling degrade image sharpness, making small fonts and form inputs difficult to read.
+Pixel streaming fails on a remote link for three reasons. It consumes 10 to 30 Mbps. It adds 150 to 300 ms of round-trip delay. Packet loss and bitrate limits blur small fonts and form fields.
 
 ### The Command-Over-Wire Alternative
 

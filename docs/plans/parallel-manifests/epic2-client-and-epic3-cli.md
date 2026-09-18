@@ -13,7 +13,7 @@
 ### Writer 1: Epic 2 (Client Daemon & Forward Proxy)
 - **Bead**: `tb-0nh`
 - **Branch**: `tb-0nh-client`
-- **Worktree Path**: `/home/jeffhuen/herdr/workspaces/tether-browser/tb-0nh-client`
+- **Worktree Path**: `$HOME/herdr/workspaces/tether-browser/tb-0nh-client`
 - **Owned Files**:
   - `packages/client/**`
 - **Forbidden Files (Read-Only)**:
@@ -33,7 +33,7 @@
 ### Writer 2: Epic 3 (Remote Server CLI & Session Broker)
 - **Bead**: `tb-p0e`
 - **Branch**: `tb-p0e-cli`
-- **Worktree Path**: `/home/jeffhuen/herdr/workspaces/tether-browser/tb-p0e-cli`
+- **Worktree Path**: `$HOME/herdr/workspaces/tether-browser/tb-p0e-cli`
 - **Owned Files**:
   - `packages/cli/**`
 - **Forbidden Files (Read-Only)**:

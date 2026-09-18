@@ -6,7 +6,7 @@ This repository owns `tether-browser`, a high-performance remote browser automat
 
 Follow `skill://herdr-workflow` for worktree lifecycle, terminal ownership, and native agent coordination. Manage only resources you own or have explicit authority to control.
 
-Worktrees, when needed, belong under `/home/jeffhuen/herdr/workspaces/tether-browser/<slice-name>`. Choose isolation separately from Beads tracking and delegation.
+Worktrees, when needed, belong under `$HOME/herdr/workspaces/tether-browser/<slice-name>`. Choose isolation separately from Beads tracking and delegation.
 
 Read [Agent execution policy](docs/agent-workflows/execution-policy.md) before project commands or edits. [Delivery](docs/agent-workflows/delivery.md) records repository-specific integration and review gates. [Beads](docs/agent-workflows/beads.md) records local tracking and synchronization constraints.
 

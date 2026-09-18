@@ -24,3 +24,4 @@
 bin/
 *.test
 dist/
+.beads/interactions.jsonl
