@@ -1,0 +1,26 @@
+# tether-browser - remote-to-local browser automation for herdr sessions.
+#
+# The daemon runs on the developer workstation; this plugin exposes the remote
+# `tether` CLI to herdr so a ctrl+click on any terminal URL opens it in the
+# local Chrome the agent already drives, instead of a browser on the server.
+
+id = "tether-browser"
+name = "tether-browser"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Open links and drive local Chrome from a remote session via tether."
+platforms = ["linux", "macos"]
+
+# Ctrl+click a URL in any pane -> open it in the tether-controlled Chrome tab
+# group. `tether` must be on PATH in the pane's environment.
+[[actions]]
+id = "open-url"
+title = "Tether: open link in local Chrome"
+contexts = ["workspace", "tab", "pane"]
+command = ["bash", "-c", 'exec tether open "$HERDR_PLUGIN_CLICKED_URL"']
+
+[[link_handlers]]
+id = "http-url"
+title = "Open in tether"
+pattern = "^https?://"
+action = "open-url"
