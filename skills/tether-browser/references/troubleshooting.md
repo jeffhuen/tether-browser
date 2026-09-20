@@ -19,7 +19,7 @@ tether status
 Expected output when fully connected:
 ```text
 Daemon Status: connected
-Version: 0.1.29
+Version: 0.1.31
 Mode: extension
 Targets: 3
 Active Target: 103
