@@ -1422,6 +1422,7 @@
         }
         this.editingNote = null;
         this.closeModal();
+        this.onNoteSaved?.();
         return;
       }
       if (!this.pendingPayload || !this.selectedEl) return;
@@ -1448,6 +1449,7 @@
       this.updateDockCount();
       this.renderSummary();
       this.closeModal();
+      this.onNoteSaved?.();
     }
 
     createBadge(note) {

@@ -141,7 +141,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 </svg>
               </button>
             </div>
-            <div class="shot-meta">${escapeHTML(shot.dimensions || "")} · ${escapeHTML(shot.url ? new URL(shot.url).pathname : "")}</div>
+            <div class="shot-meta">${escapeHTML(shot.dimensions || "")} · ${escapeHTML(URL.parse(shot.url)?.pathname || shot.url || "")}</div>
             <div class="shot-path-chip" title="${escapeHTML(remotePath)}">${escapeHTML(remotePath)}</div>
           </div>
         </div>
@@ -675,7 +675,8 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Initial load + live 2-second status & tab poll while popup is open
-  loadScreenshots();
+  selectTab(location.hash === "#shots" ? tabBtnShots : tabBtnNotes);
+  if (panelShots.hidden) loadScreenshots();
   refresh();
   const pollInterval = setInterval(refresh, 2000);
   window.addEventListener("unload", () => clearInterval(pollInterval));

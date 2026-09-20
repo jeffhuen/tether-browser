@@ -34,7 +34,7 @@ function cdp(method, params = {}) {
     const timer = setTimeout(() => {
       pending.delete(id);
       reject(new Error(`Timed out: ${method}`));
-    }, 10000);
+    }, 35000);
     pending.set(id, { resolve, reject, timer });
     socket.send(JSON.stringify({ id, method, params }));
   });
@@ -212,7 +212,7 @@ try {
       if (result.error) throw new Error(result.error);
     };
     window.captureCheckLatest = async (previous) => {
-      for (let i = 0; i < 150; i++) {
+      for (let i = 0; i < 1500; i++) {
         const shots = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots;
         if (shots[0]?.filename !== previous) return shots[0];
         await new Promise((resolve) => setTimeout(resolve, 20));
@@ -302,6 +302,107 @@ try {
   assert.equal(cancelled.beforeClick, 0, "Selecting a crop must not click the underlying page");
   assert.equal(cancelled.afterClick, 1, "Cancellation must restore page interaction");
   console.log("PASS: CSS-resolution viewport/full-page PNGs at 1x/1.25x/2x display density; reverse drag on a scrolled page; replacement, keyboard resize, Escape, and no click-through.");
+  await evaluate(async () => {
+    chrome.runtime.sendMessage = window.popupCheckSend;
+    const pause = () => new Promise((resolve) => setTimeout(resolve, 30));
+    const popup = () => chrome.extension.getViews({ type: "popup" })[0];
+    const waitPopup = async (panel, text = "") => {
+      for (let i = 0; i < 200; i++) {
+        const view = popup();
+        const content = view?.document.querySelector(`#panel-${panel}`);
+        if (content && !content.hidden && content.textContent.includes(text)) return view;
+        await pause();
+      }
+      throw new Error(`Native popup did not return to ${panel}: ${text}; ${JSON.stringify({
+        popup: popup()?.location.href,
+        content: popup()?.document.querySelector(`#panel-${panel}`)?.textContent,
+        focused: (await chrome.windows.get(window.captureCheckTab.windowId)).focused,
+        notes: await window.captureCheckCommand("Runtime.evaluate", { expression: "window.__tetherReview.getNotes().map(n => n.comment)", returnByValue: true }),
+      })}`);
+    };
+    const waitClosed = async () => {
+      for (let i = 0; i < 100 && popup(); i++) await pause();
+      if (popup()) throw new Error("Starting a capture did not close the native popup");
+    };
+    const clickTarget = async () => {
+      await window.captureCheckCommand("Input.dispatchMouseEvent", { type: "mousePressed", x: 100, y: 75, button: "left", buttons: 1, clickCount: 1 });
+      await window.captureCheckCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x: 100, y: 75, button: "left", buttons: 0, clickCount: 1 });
+    };
+    const editor = async (expression) => {
+      const result = await window.captureCheckCommand("Runtime.evaluate", { expression });
+      if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
+    };
+    popup()?.close();
+    await waitClosed();
+    await editor(`
+      const target = document.createElement('button');
+      target.style.cssText = 'position:fixed;left:50px;top:50px;width:180px;height:60px';
+      target.textContent = 'Review target';
+      document.body.append(target);
+    `);
+    await chrome.windows.update(window.captureCheckTab.windowId, { focused: true });
+    await chrome.action.openPopup({ windowId: window.captureCheckTab.windowId });
+    let view = await waitPopup("shots");
+    view.document.querySelector("#tab-btn-notes").click();
+    view.document.querySelector("#btn-inspect").click();
+    await waitClosed();
+    await clickTarget();
+    await editor(`
+      if (!window.__tetherReview.modal.isConnected || !window.__tetherReview.modal.getBoundingClientRect().height) throw new Error('Note editor is not visible');
+      window.__tetherReview.modal.querySelector('#card-comment').value = 'Automatic popup return';
+      window.__tetherReview.modal.querySelector('#card-save').click();
+    `);
+    view = await waitPopup("notes", "Automatic popup return");
+    view.document.querySelector("#btn-inspect").click();
+    await waitClosed();
+    await clickTarget();
+    await editor("window.__tetherReview.modal.querySelector('#card-cancel').click()");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (popup()) throw new Error("Cancelling a note reopened the popup");
+
+    await editor(`
+      window.__tetherReview.markerElements.values().next().value.element.click();
+      window.__tetherReview.modal.querySelector('#card-comment').value = 'Updated popup note';
+      window.__tetherReview.modal.querySelector('#card-save').click();
+    `);
+    view = await waitPopup("notes", "Updated popup note");
+    if (view.document.querySelectorAll(".note-item").length !== 1) throw new Error("Editing a note created a duplicate");
+    view.document.querySelector("#tab-btn-shots").click();
+    view.document.querySelector("#btn-capture-area").click();
+    await waitClosed();
+    await window.captureCheckCommand("Input.dispatchKeyEvent", { type: "keyDown", key: "ArrowRight" });
+    await window.captureCheckCommand("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter" });
+    view = await waitPopup("shots", "450×300 px");
+    view.document.querySelector("#btn-capture-area").click();
+    await waitClosed();
+    await window.captureCheckCommand("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (popup()) throw new Error("Cancelling a crop reopened the popup");
+
+    const otherTab = await chrome.tabs.create({ url: "about:blank", active: true });
+    try {
+      await editor(`
+        window.__tetherReview.markerElements.values().next().value.element.click();
+        window.__tetherReview.modal.querySelector('#card-save').click();
+      `);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      if (popup() || !(await chrome.tabs.get(otherTab.id)).active) throw new Error("Saving a background-tab note stole focus");
+    } finally {
+      await chrome.tabs.remove(otherTab.id);
+    }
+    const otherWindow = await chrome.windows.create({ url: "about:blank", focused: true });
+    try {
+      await editor(`
+        window.__tetherReview.markerElements.values().next().value.element.click();
+        window.__tetherReview.modal.querySelector('#card-save').click();
+      `);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      if (popup() || (await chrome.windows.getLastFocused()).id !== otherWindow.id) throw new Error("Saving a background-window note stole focus");
+    } finally {
+      await chrome.windows.remove(otherWindow.id);
+    }
+  });
+  console.log("PASS: native popup returns to Review Notes after saving/editing and Screenshots after cropping; cancellations and background saves do not reopen it.");
   console.log(`PASS: 320px/384px, empty/populated tabs, overflow, keyboard, preview, feedback persistence. Captures: ${captures}`);
 } finally {
   if (saved) await evaluate(async (saved) => {

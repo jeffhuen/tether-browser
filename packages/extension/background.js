@@ -4,6 +4,7 @@
 
 const NATIVE_HOST_NAME = "com.tether_browser.host";
 const CDP_TIMEOUT_MS = 25000;
+const REVIEW_SAVED_BINDING = "__tetherReviewSaved";
 
 let nativePort = null;
 let reconnectTimer = null;
@@ -246,6 +247,27 @@ function cdp(tabId, method, params = {}) {
 chrome.debugger.onDetach.addListener((source) => {
   attachedTabs.delete(source.tabId);
   elementRefsByTab.delete(source.tabId);
+});
+
+async function reopenPopup(tabId, panel) {
+  try {
+    await chrome.action.setPopup({ tabId, popup: `popup.html#${panel}` });
+    const tab = await chrome.tabs.get(tabId);
+    const window = await chrome.windows.getLastFocused();
+    // A completed capture must not interrupt another tab or window.
+    if (tab.active && window.focused && window.id === tab.windowId) {
+      await chrome.action.openPopup({ windowId: tab.windowId });
+    }
+  } catch (err) {
+    console.warn("[Tether] Could not reopen popup:", err.message);
+  }
+}
+
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  if (method === "Runtime.bindingCalled" && params.name === REVIEW_SAVED_BINDING
+      && params.payload === "saved" && source.tabId !== undefined) {
+    reopenPopup(source.tabId, "notes");
+  }
 });
 
 function resolveTargetTabId(params = {}) {
@@ -796,8 +818,14 @@ async function handleReviewStart(params = {}) {
     expression: code,
   });
 
+  if (params.returnToPopup) {
+    await cdp(tabId, "Runtime.addBinding", { name: REVIEW_SAVED_BINDING });
+  }
   await cdp(tabId, "Runtime.evaluate", {
-    expression: "window.__tetherReview ? window.__tetherReview.start() : false",
+    expression: `if (window.__tetherReview) {
+      window.__tetherReview.onNoteSaved = ${params.returnToPopup ? `() => window.${REVIEW_SAVED_BINDING}("saved")` : "null"};
+      window.__tetherReview.start();
+    }`,
   });
 
   return { ok: true, active: true };
@@ -994,7 +1022,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "popup_start_review": {
           const targetTabId = msg.tabId || activeTabId;
           if (targetTabId) {
-            await handleReviewStart({ tabId: targetTabId });
+            await handleReviewStart({ tabId: targetTabId, returnToPopup: true });
           }
           sendResponse({ ok: true });
           break;
@@ -1063,6 +1091,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
           (async () => {
             let failure = "";
+            let saved = false;
             try {
               for (let i = 0; i < 150; i++) {
                 await new Promise((r) => setTimeout(r, 200));
@@ -1107,15 +1136,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                   createdAt: new Date().toISOString(),
                 };
                 await chrome.storage.local.set({ tether_screenshots: [newEntry, ...existing] });
+                saved = true;
                 break;
               }
             } catch (err) {
               failure = "Area capture failed: " + err.message;
               console.error("[Tether]", failure);
             } finally {
-              await cdp(targetTabId, "Runtime.evaluate", {
-                expression: `if (window.__tetherReview?.cropRequestId === ${JSON.stringify(requestId)}) window.__tetherReview.finishCrop?.(${JSON.stringify(failure)})`,
-              }).catch(() => {});
+              const finished = await cdp(targetTabId, "Runtime.evaluate", {
+                expression: `window.__tetherReview?.cropRequestId === ${JSON.stringify(requestId)} && (window.__tetherReview.finishCrop?.(${JSON.stringify(failure)}), true)`,
+                returnByValue: true,
+              }).catch(() => null);
+              if (saved && finished?.result?.value) await reopenPopup(targetTabId, "shots");
             }
           })();
 

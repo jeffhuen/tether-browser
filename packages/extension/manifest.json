@@ -1,5 +1,6 @@
 {
   "manifest_version": 3,
+  "minimum_chrome_version": "127",
   "name": "Tether Browser Bridge",
   "version": "0.1.31",
   "description": "Remote-to-local browser bridge for AI agents with native tab groups",
