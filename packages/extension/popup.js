@@ -1,7 +1,7 @@
 // Tether Browser Bridge - Popup UI Controller
 // Provides a clean, FireShot-style developer panel directly inside Chrome.
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
   const statusBadge = document.getElementById("status-badge");
   const statusText = document.getElementById("status-text");
   const btnInspect = document.getElementById("btn-inspect");
@@ -136,8 +136,9 @@ document.addEventListener("DOMContentLoaded", () => {
             <div class="shot-header">
               <span class="shot-title">${escapeHTML(shot.label || shot.title || "Screenshot")}</span>
               <button type="button" class="btn-del-shot" aria-label="Delete screenshot" title="Delete screenshot">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                  <path d="m6 6 12 12M6 18 18 6"/>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                 </svg>
               </button>
             </div>
@@ -186,7 +187,13 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   const workspaceTabs = [tabBtnNotes, tabBtnShots];
+  let selectedTab = null;
   function selectTab(tab) {
+    if (selectedTab !== tab) {
+      selectedTab = tab;
+      chrome.storage.local.set({ tether_popup_tab: tab === tabBtnShots ? "shots" : "notes" })
+        .catch((err) => console.warn("[Tether] Could not save popup tab:", err.message));
+    }
     workspaceTabs.forEach((button) => {
       const selected = button === tab;
       button.classList.toggle("active", selected);
@@ -675,7 +682,12 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Initial load + live 2-second status & tab poll while popup is open
-  selectTab(location.hash === "#shots" ? tabBtnShots : tabBtnNotes);
+  const savedTab = await chrome.storage.local.get("tether_popup_tab").catch(() => ({}));
+  // Do not override a selection made while the saved preference was loading.
+  if (!selectedTab) {
+    selectedTab = savedTab.tether_popup_tab === "shots" ? tabBtnShots : tabBtnNotes;
+    selectTab(selectedTab);
+  }
   if (panelShots.hidden) loadScreenshots();
   refresh();
   const pollInterval = setInterval(refresh, 2000);

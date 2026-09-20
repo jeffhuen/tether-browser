@@ -181,6 +181,8 @@ To capture visual feedback on a page, click **Inspect & Pin Notes** in the Tethe
 
 Use **Review Notes** and **Screenshots** to switch tools. When either tab has keyboard focus, use the arrow keys to switch tabs. Click a screenshot thumbnail to open its preview, and press **Escape** to close it.
 
+The popup remembers your last **Review Notes** or **Screenshots** selection, including after restarting Chrome.
+
 Choose **Crop Area**, then drag a rectangle on the page. Release to capture, or press **Escape** to cancel. For keyboard selection, use arrow keys to move, **Shift + arrow keys** to resize, and **Enter** to capture. **Viewport** captures the visible page. **Full Page** captures the entire document, including horizontal overflow.
 
 After saving a note or an area capture, the popup reopens on **Review Notes** or **Screenshots**, respectively. Cancelling leaves it closed. If you switch tabs or windows before the save finishes, Tether does not take focus. The extension requires Chrome 127 or later.

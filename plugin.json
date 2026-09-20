@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "tether-browser",
-  "version": "0.1.31",
+  "version": "0.1.32",
   "description": "Remote-to-local browser automation bridge for AI coding agents across Herdr, tmux, and SSH. Controls Google Chrome on the developer's laptop with native 2FA/Passkeys, tab groups, accessibility snapshots, and visual review notes.",
   "author": {
     "name": "Jeff Huen",

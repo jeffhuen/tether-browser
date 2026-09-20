@@ -21,7 +21,7 @@ import (
 	"github.com/jeffhuen/tether-browser/packages/client"
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
-const helpText = `tether v0.1.31 - remote-to-local browser bridge for AI agents
+const helpText = `tether v0.1.32 - remote-to-local browser bridge for AI agents
 Usage:
   tether connect <host>        Link local Chrome to a remote server via SSH in one command
   tether extension install     Register native messaging host for Chrome, Brave, and Edge

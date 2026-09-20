@@ -73,7 +73,7 @@ async function checkLayout() {
 let saved;
 try {
   saved = await evaluate(async () => {
-    const saved = await chrome.storage.local.get(["recent_hosts", "tether_screenshots"]);
+    const saved = await chrome.storage.local.get(["recent_hosts", "tether_screenshots", "tether_popup_tab"]);
     window.popupCheckSend = chrome.runtime.sendMessage.bind(chrome.runtime);
     chrome.runtime.sendMessage = (message, callback) => message.type === "popup_get_status"
       ? callback(window.popupCheckStatus)
@@ -353,6 +353,15 @@ try {
       window.__tetherReview.modal.querySelector('#card-save').click();
     `);
     view = await waitPopup("notes", "Automatic popup return");
+    for (const panel of ["shots", "notes"]) {
+      const shotsTab = view.document.querySelector("#tab-btn-shots");
+      if (panel === "shots") shotsTab.click();
+      else shotsTab.dispatchEvent(new view.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+      view.close();
+      await waitClosed();
+      await chrome.action.openPopup({ windowId: window.captureCheckTab.windowId });
+      view = await waitPopup(panel, panel === "notes" ? "Automatic popup return" : "Area Crop");
+    }
     view.document.querySelector("#btn-inspect").click();
     await waitClosed();
     await clickTarget();
@@ -402,7 +411,7 @@ try {
       await chrome.windows.remove(otherWindow.id);
     }
   });
-  console.log("PASS: native popup returns to Review Notes after saving/editing and Screenshots after cropping; cancellations and background saves do not reopen it.");
+  console.log("PASS: native popup remembers mouse/keyboard tab selection across openings; saves return to the correct panel; cancellations and background saves preserve focus.");
   console.log(`PASS: 320px/384px, empty/populated tabs, overflow, keyboard, preview, feedback persistence. Captures: ${captures}`);
 } finally {
   if (saved) await evaluate(async (saved) => {
@@ -411,7 +420,7 @@ try {
     chrome.runtime.sendMessage = window.popupCheckSend;
     delete window.popupCheckSend;
     delete window.popupCheckStatus;
-    await chrome.storage.local.remove(["recent_hosts", "tether_screenshots"]);
+    await chrome.storage.local.remove(["recent_hosts", "tether_screenshots", "tether_popup_tab"]);
     await chrome.storage.local.set(saved);
   }, saved);
   socket.close();

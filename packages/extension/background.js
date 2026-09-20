@@ -251,11 +251,11 @@ chrome.debugger.onDetach.addListener((source) => {
 
 async function reopenPopup(tabId, panel) {
   try {
-    await chrome.action.setPopup({ tabId, popup: `popup.html#${panel}` });
     const tab = await chrome.tabs.get(tabId);
     const window = await chrome.windows.getLastFocused();
     // A completed capture must not interrupt another tab or window.
     if (tab.active && window.focused && window.id === tab.windowId) {
+      await chrome.storage.local.set({ tether_popup_tab: panel });
       await chrome.action.openPopup({ windowId: tab.windowId });
     }
   } catch (err) {
