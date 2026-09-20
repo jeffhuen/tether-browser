@@ -64,58 +64,152 @@
       </div>
     </section>
 
-    <!-- Quick Actions (FireShot Style) -->
-    <section class="section">
-      <div class="action-grid">
-        <button id="btn-inspect" class="action-card action-primary" title="Click to inspect elements and pin review feedback on the page">
-          <svg class="action-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <circle cx="12" cy="12" r="3"/>
-            <line x1="12" y1="2" x2="12" y2="6"/>
-            <line x1="12" y1="18" x2="12" y2="22"/>
-            <line x1="2" y1="12" x2="6" y2="12"/>
-            <line x1="18" y1="12" x2="22" y2="12"/>
-          </svg>
-          <div class="action-label">Inspect & Pin Notes</div>
-          <div class="action-desc">Click elements to add review notes</div>
-        </button>
+    <!-- Workspace Tabs: Notes vs Screenshots -->
+    <nav class="main-tabs">
+      <button id="tab-btn-notes" class="main-tab active" type="button">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+        </svg>
+        <span>Review Notes</span>
+        <span id="notes-badge" class="tab-badge-count">0</span>
+      </button>
 
-        <button id="btn-screenshot" class="action-card" title="Capture full desktop resolution screenshot">
-          <svg class="action-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-            <circle cx="12" cy="13" r="4"/>
-          </svg>
-          <div class="action-label">Take Screenshot</div>
-          <div class="action-desc">Save high-res PNG to disk</div>
-        </button>
-      </div>
-    </section>
+      <button id="tab-btn-shots" class="main-tab" type="button">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+          <circle cx="12" cy="13" r="4"/>
+        </svg>
+        <span>Screenshots</span>
+        <span id="shots-badge" class="tab-badge-count">0</span>
+      </button>
+    </nav>
 
-    <!-- Review Notes Section -->
-    <section id="review-section" class="section">
-      <div class="section-header">
-        <span class="section-title">Review Notes <span class="scope-sep">|</span> <span class="scope-tab">Current Tab</span> <span id="notes-badge" class="count-chip">0</span></span>
-        <div class="section-actions">
-          <button id="btn-copy-notes" class="btn-pill" title="Copy formatted notes to clipboard">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+    <!-- Panel 1: Review Notes -->
+    <div id="panel-notes" class="tab-panel active">
+      <section class="section">
+        <div class="action-grid" style="grid-template-columns: 1fr;">
+          <button id="btn-inspect" class="action-card action-primary" title="Click to inspect elements and pin review feedback on the page">
+            <svg class="action-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <circle cx="12" cy="12" r="3"/>
+              <line x1="12" y1="2" x2="12" y2="6"/>
+              <line x1="12" y1="18" x2="12" y2="22"/>
+              <line x1="2" y1="12" x2="6" y2="12"/>
+              <line x1="18" y1="12" x2="22" y2="12"/>
             </svg>
-            <span id="copy-text">Copy</span>
-          </button>
-          <button id="btn-clear-notes" class="btn-pill btn-pill-danger" title="Clear notes on active tab">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="3 6 5 6 21 6"/>
-              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-            </svg>
-            <span>Clear</span>
+            <div class="action-label">Inspect & Pin Notes</div>
+            <div class="action-desc">Click elements on page to add review notes</div>
           </button>
         </div>
+      </section>
+
+      <!-- Review Notes Section -->
+      <section id="review-section" class="section">
+        <div class="section-header">
+          <span class="section-title">Pinned Notes <span class="scope-sep">|</span> <span id="active-tab-title" class="scope-tab">Current Tab</span></span>
+          <div class="section-actions">
+            <button id="btn-copy-notes" class="btn-pill" title="Copy formatted notes to clipboard">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              <span id="copy-text">Copy</span>
+            </button>
+            <button id="btn-clear-notes" class="btn-pill btn-pill-danger" title="Clear notes on active tab">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="3 6 5 6 21 6"/>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+              <span>Clear</span>
+            </button>
+          </div>
+        </div>
+        <div id="notes-list" class="notes-container">
+          <div class="empty-state">No pinned notes yet. Click <b>Inspect & Pin Notes</b> to review elements on this page.</div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Panel 2: Screenshots Studio -->
+    <div id="panel-shots" class="tab-panel" style="display:none;">
+      <section class="section">
+        <div class="action-grid" style="grid-template-columns: 1.2fr 1fr 1fr;">
+          <button id="btn-capture-element" class="action-card action-primary" title="Click an element on the page to capture a cropped screenshot">
+            <svg class="action-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"/>
+            </svg>
+            <div class="action-label">Crop Element</div>
+            <div class="action-desc">Click element</div>
+          </button>
+
+          <button id="btn-capture-viewport" class="action-card" title="Capture current visible screen area">
+            <svg class="action-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+              <line x1="8" y1="21" x2="16" y2="21"/>
+              <line x1="12" y1="17" x2="12" y2="21"/>
+            </svg>
+            <div class="action-label">Viewport</div>
+            <div class="action-desc">Visible area</div>
+          </button>
+
+          <button id="btn-capture-full" class="action-card" title="Capture entire scrollable page">
+            <svg class="action-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+            </svg>
+            <div class="action-label">Full Page</div>
+            <div class="action-desc">Scrollable</div>
+          </button>
+        </div>
+      </section>
+
+      <!-- Mirror Destination Notice -->
+      <div id="shots-dest-bar" class="dest-indicator">
+        <span class="dest-dot"></span>
+        <span id="shots-dest-text">Mirroring to Mac and Remote Server (/tmp/tether-screenshots/)</span>
       </div>
-      <div id="notes-list" class="notes-container">
-        <div class="empty-state">No pinned notes yet. Click <b>Inspect & Pin Notes</b> to review elements on this page.</div>
+
+      <!-- Screenshot Feed -->
+      <section class="section">
+        <div class="section-header">
+          <span class="section-title">Captured Screenshots</span>
+          <div class="section-actions">
+            <button id="btn-copy-shots" class="btn-pill" title="Copy markdown report with server paths for your agent">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              <span>Copy for Agent</span>
+            </button>
+            <button id="btn-clear-shots" class="btn-pill btn-pill-danger" title="Delete all screenshots locally and remotely">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="3 6 5 6 21 6"/>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+              <span>Clear All</span>
+            </button>
+          </div>
+        </div>
+        <div id="shots-list" class="shots-container">
+          <div class="empty-state">No screenshots captured yet. Click <b>Crop Element</b> or <b>Viewport</b> above.</div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Lightbox Modal for Full-Size Screenshot Preview -->
+    <div id="shot-lightbox" class="lightbox-modal" style="display:none;">
+      <div class="lightbox-content">
+        <div class="lightbox-header">
+          <span id="lightbox-title">Screenshot Preview</span>
+          <button id="lightbox-close" class="btn-icon">×</button>
+        </div>
+        <div class="lightbox-img-wrapper">
+          <img id="lightbox-img" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E" alt="Preview">
+        </div>
       </div>
-    </section>
+    </div>
 
     <!-- Open Tabs Manager -->
     <section class="section">

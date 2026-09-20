@@ -938,9 +938,92 @@
       this.setArmed(armed);
       this.startTracking();
     }
-
     startPassive() {
       this.start(false);
+    }
+
+    startCropMode() {
+      this.ensureOverlay();
+      if (this.dock) this.dock.style.display = 'none';
+      if (this.summary) this.summary.style.display = 'none';
+
+      let cropBadge = this.shadow ? this.shadow.querySelector('#tether-crop-badge') : null;
+      if (!cropBadge && this.shadow) {
+        cropBadge = document.createElement('div');
+        cropBadge.id = 'tether-crop-badge';
+        cropBadge.style.cssText = 'position:fixed;top:16px;left:50%;transform:translateX(-50%);background:#0f172a;color:#38bdf8;padding:8px 16px;border-radius:999px;font-size:12px;font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,0.6);border:1px solid rgba(56,189,248,0.4);z-index:2147483647;pointer-events:none;display:flex;align-items:center;gap:8px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;';
+        cropBadge.innerHTML = '<span>📸 Click element to crop screenshot</span><span style="color:#94a3b8;font-size:10px;">(Esc to cancel)</span>';
+        this.shadow.appendChild(cropBadge);
+      } else if (cropBadge) {
+        cropBadge.style.display = 'flex';
+      }
+
+      const onCropMove = (e) => {
+        const el = this.leafTargetFromPoint(e.clientX, e.clientY);
+        if (!el || el === this.host || (el.closest && el.closest('#tether-review-root'))) {
+          if (this.reticle) this.reticle.style.display = 'none';
+          return;
+        }
+        const rect = el.getBoundingClientRect();
+        if (this.reticle) {
+          this.reticle.style.display = 'block';
+          this.reticle.style.left = rect.left + 'px';
+          this.reticle.style.top = rect.top + 'px';
+          this.reticle.style.width = rect.width + 'px';
+          this.reticle.style.height = rect.height + 'px';
+          this.reticle.style.borderColor = '#00f5ff';
+          this.reticle.style.boxShadow = '0 0 16px rgba(0, 245, 255, 0.5)';
+        }
+      };
+
+      const cleanup = () => {
+        window.removeEventListener('mousemove', onCropMove, true);
+        window.removeEventListener('click', onCropClick, true);
+        window.removeEventListener('keydown', onCropKey, true);
+        if (this.reticle) this.reticle.style.display = 'none';
+        if (cropBadge) cropBadge.style.display = 'none';
+        if (this.dock) this.dock.style.display = 'flex';
+      };
+
+      const onCropClick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const el = this.leafTargetFromPoint(e.clientX, e.clientY);
+        if (!el || el === this.host || (el.closest && el.closest('#tether-review-root'))) {
+          cleanup();
+          return;
+        }
+        const rect = el.getBoundingClientRect();
+        const scrollX = window.scrollX || window.pageXOffset || 0;
+        const scrollY = window.scrollY || window.pageYOffset || 0;
+        const selector = buildSelector(el) || (el.tagName ? el.tagName.toLowerCase() : 'element');
+        const detail = {
+          rect: {
+            x: rect.left + scrollX,
+            y: rect.top + scrollY,
+            width: rect.width,
+            height: rect.height,
+          },
+          selector,
+          tagName: el.tagName ? el.tagName.toLowerCase() : 'element',
+          title: document.title,
+          url: window.location.href,
+        };
+        cleanup();
+        try {
+          window.sessionStorage.setItem('tether_last_crop', JSON.stringify(detail));
+        } catch {}
+      };
+
+      const onCropKey = (e) => {
+        if (e.key === 'Escape') {
+          cleanup();
+        }
+      };
+
+      window.addEventListener('mousemove', onCropMove, true);
+      window.addEventListener('click', onCropClick, true);
+      window.addEventListener('keydown', onCropKey, true);
     }
 
     toggleSummary() {

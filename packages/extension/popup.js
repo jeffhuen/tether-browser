@@ -5,9 +5,23 @@ document.addEventListener("DOMContentLoaded", () => {
   const statusBadge = document.getElementById("status-badge");
   const statusText = document.getElementById("status-text");
   const btnInspect = document.getElementById("btn-inspect");
-  const btnScreenshot = document.getElementById("btn-screenshot");
   const btnCopyNotes = document.getElementById("btn-copy-notes");
   const btnClearNotes = document.getElementById("btn-clear-notes");
+  const tabBtnNotes = document.getElementById("tab-btn-notes");
+  const tabBtnShots = document.getElementById("tab-btn-shots");
+  const panelNotes = document.getElementById("panel-notes");
+  const panelShots = document.getElementById("panel-shots");
+  const btnCaptureElement = document.getElementById("btn-capture-element");
+  const btnCaptureViewport = document.getElementById("btn-capture-viewport");
+  const btnCaptureFull = document.getElementById("btn-capture-full");
+  const btnCopyShots = document.getElementById("btn-copy-shots");
+  const btnClearShots = document.getElementById("btn-clear-shots");
+  const shotsList = document.getElementById("shots-list");
+  const shotsBadge = document.getElementById("shots-badge");
+  const lightboxModal = document.getElementById("shot-lightbox");
+  const lightboxClose = document.getElementById("lightbox-close");
+  const lightboxImg = document.getElementById("lightbox-img");
+  const lightboxTitle = document.getElementById("lightbox-title");
   const btnRefreshTabs = document.getElementById("btn-refresh-tabs");
   const notesCount = document.getElementById("notes-count");
   const notesList = document.getElementById("notes-list");
@@ -82,7 +96,102 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   let currentNotes = [];
+  let currentShots = [];
 
+  async function loadScreenshots() {
+    try {
+      const data = await chrome.storage.local.get(["tether_screenshots"]);
+      currentShots = data.tether_screenshots || [];
+      updateShotsUI(currentShots);
+    } catch {}
+  }
+
+  async function saveScreenshots(shots) {
+    currentShots = shots;
+    await chrome.storage.local.set({ tether_screenshots: shots });
+    updateShotsUI(currentShots);
+  }
+
+  function updateShotsUI(shots) {
+    if (shotsBadge) shotsBadge.textContent = shots.length;
+    if (!shotsList) return;
+    if (!shots || shots.length === 0) {
+      shotsList.innerHTML = '<div class="empty-state">No screenshots captured yet. Click <b>Crop Element</b> or <b>Viewport</b> above.</div>';
+      return;
+    }
+    shotsList.innerHTML = "";
+    shots.forEach((shot, idx) => {
+      const card = document.createElement("div");
+      card.className = "shot-card";
+      const remotePath = shot.remotePath || `/tmp/tether-screenshots/${shot.filename}`;
+      card.innerHTML = `
+        <div class="shot-top-row">
+          <div class="shot-thumb-wrapper" title="Click to enlarge">
+            <img class="shot-thumb" src="data:image/png;base64,${shot.data}" alt="Thumb">
+          </div>
+          <div class="shot-details">
+            <div class="shot-header">
+              <span class="shot-title">${escapeHTML(shot.label || shot.title || "Screenshot")}</span>
+              <button type="button" class="btn-del-shot" title="Delete screenshot">×</button>
+            </div>
+            <div class="shot-meta">${escapeHTML(shot.dimensions || "")} · ${escapeHTML(shot.url ? new URL(shot.url).pathname : "")}</div>
+            <div class="shot-path-chip" title="${escapeHTML(remotePath)}">${escapeHTML(remotePath)}</div>
+          </div>
+        </div>
+        <textarea class="shot-comment" placeholder="Add feedback for your agent (e.g. 'Align button baseline')...">${escapeHTML(shot.comment || "")}</textarea>
+      `;
+      const thumb = card.querySelector(".shot-thumb-wrapper");
+      thumb.addEventListener("click", () => {
+        openLightbox(shot.data, shot.label || shot.title || "Screenshot", shot.dimensions);
+      });
+      const delBtn = card.querySelector(".btn-del-shot");
+      delBtn.addEventListener("click", async () => {
+        const updated = currentShots.filter((_, i) => i !== idx);
+        await sendMessage({ type: "popup_delete_screenshot", filename: shot.filename });
+        saveScreenshots(updated);
+      });
+      const textarea = card.querySelector(".shot-comment");
+      textarea.addEventListener("input", () => {
+        shot.comment = textarea.value;
+        chrome.storage.local.set({ tether_screenshots: currentShots });
+      });
+      shotsList.appendChild(card);
+    });
+  }
+
+  function openLightbox(base64Data, title, meta) {
+    if (!lightboxModal || !lightboxImg) return;
+    lightboxImg.src = `data:image/png;base64,${base64Data}`;
+    if (lightboxTitle) lightboxTitle.textContent = `${title} (${meta || ""})`;
+    lightboxModal.style.display = "flex";
+  }
+
+  if (lightboxClose) {
+    lightboxClose.addEventListener("click", () => {
+      if (lightboxModal) lightboxModal.style.display = "none";
+    });
+  }
+  if (lightboxModal) {
+    lightboxModal.addEventListener("click", (e) => {
+      if (e.target === lightboxModal) lightboxModal.style.display = "none";
+    });
+  }
+
+  if (tabBtnNotes && tabBtnShots) {
+    tabBtnNotes.addEventListener("click", () => {
+      tabBtnNotes.classList.add("active");
+      tabBtnShots.classList.remove("active");
+      if (panelNotes) panelNotes.style.display = "flex";
+      if (panelShots) panelShots.style.display = "none";
+    });
+    tabBtnShots.addEventListener("click", () => {
+      tabBtnShots.classList.add("active");
+      tabBtnNotes.classList.remove("active");
+      if (panelShots) panelShots.style.display = "flex";
+      if (panelNotes) panelNotes.style.display = "none";
+      loadScreenshots();
+    });
+  }
   // 1. Load Status & Initial Data
   async function refresh() {
     try {
@@ -103,6 +212,7 @@ document.addEventListener("DOMContentLoaded", () => {
       updateStatusUI(status);
       updateTabsUI(tabs, status.activeTabId);
       updateNotesUI(status.notes || [], activeTab);
+      loadScreenshots();
     } catch (err) {
       console.warn("Failed to load status:", err);
       updateStatusUI({ connected: false });
@@ -311,28 +421,155 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // 3. Action: Take Screenshot
-  btnScreenshot.addEventListener("click", async () => {
-    btnScreenshot.disabled = true;
-    try {
-      let currentTabId = null;
+  if (btnCaptureViewport) {
+    btnCaptureViewport.addEventListener("click", async () => {
+      btnCaptureViewport.disabled = true;
+      showToast("Capturing viewport...", 2000);
       try {
-        const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (active) currentTabId = active.id;
-      } catch {}
-      const res = await sendMessage({ type: "popup_capture_screenshot", tabId: currentTabId });
-      if (res && res.data) {
-        // Download screenshot
-        const a = document.createElement("a");
-        a.href = "data:image/png;base64," + res.data;
-        a.download = `tether-screenshot-${Date.now()}.png`;
-        a.click();
+        let currentTabId = null;
+        let tabInfo = null;
+        try {
+          const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (active) {
+            currentTabId = active.id;
+            tabInfo = active;
+          }
+        } catch {}
+        const res = await sendMessage({
+          type: "popup_capture_screenshot",
+          tabId: currentTabId,
+        });
+        if (res && res.data) {
+          const newShot = {
+            id: `shot-${Date.now()}`,
+            filename: res.filename,
+            data: res.data,
+            label: "Viewport",
+            title: tabInfo?.title || "Page Viewport",
+            url: tabInfo?.url || "",
+            dimensions: `${window.innerWidth}×${window.innerHeight}`,
+            remotePath: res.saveResult?.remotePath || `/tmp/tether-screenshots/${res.filename}`,
+            localPath: res.saveResult?.localPath || "",
+            mirrored: res.saveResult?.mirrored || false,
+            comment: "",
+            createdAt: new Date().toISOString(),
+          };
+          const updated = [newShot, ...currentShots];
+          await saveScreenshots(updated);
+          showToast("✓ Viewport screenshot captured!", 2000);
+        }
+      } catch (err) {
+        showToast("Capture failed: " + err.message, 3000);
+      } finally {
+        btnCaptureViewport.disabled = false;
       }
-    } catch (err) {
-      alert("Screenshot failed: " + err.message);
-    } finally {
-      btnScreenshot.disabled = false;
-    }
-  });
+    });
+  }
+
+  if (btnCaptureFull) {
+    btnCaptureFull.addEventListener("click", async () => {
+      btnCaptureFull.disabled = true;
+      showToast("Capturing full page...", 3000);
+      try {
+        let currentTabId = null;
+        let tabInfo = null;
+        try {
+          const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (active) {
+            currentTabId = active.id;
+            tabInfo = active;
+          }
+        } catch {}
+        const res = await sendMessage({
+          type: "popup_capture_screenshot",
+          tabId: currentTabId,
+          fullPage: true,
+        });
+        if (res && res.data) {
+          const newShot = {
+            id: `shot-${Date.now()}`,
+            filename: res.filename,
+            data: res.data,
+            label: "Full Page",
+            title: tabInfo?.title || "Full Page",
+            url: tabInfo?.url || "",
+            dimensions: "Full Page",
+            remotePath: res.saveResult?.remotePath || `/tmp/tether-screenshots/${res.filename}`,
+            localPath: res.saveResult?.localPath || "",
+            mirrored: res.saveResult?.mirrored || false,
+            comment: "",
+            createdAt: new Date().toISOString(),
+          };
+          const updated = [newShot, ...currentShots];
+          await saveScreenshots(updated);
+          showToast("✓ Full-page screenshot captured!", 2000);
+        }
+      } catch (err) {
+        showToast("Full capture failed: " + err.message, 3000);
+      } finally {
+        btnCaptureFull.disabled = false;
+      }
+    });
+  }
+
+  if (btnCaptureElement) {
+    btnCaptureElement.addEventListener("click", async () => {
+      btnCaptureElement.disabled = true;
+      try {
+        let currentTabId = null;
+        try {
+          const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (active) currentTabId = active.id;
+        } catch {}
+        await sendMessage({ type: "popup_start_crop", tabId: currentTabId });
+        window.close();
+      } catch (err) {
+        showToast("Failed to start element crop: " + err.message, 3000);
+        btnCaptureElement.disabled = false;
+      }
+    });
+  }
+
+  function formatScreenshotsReport(shots) {
+    if (!shots || shots.length === 0) return "";
+    const count = shots.length;
+    const lines = [
+      `## Visual Review: ${count} Screenshot${count === 1 ? "" : "s"} Captured`,
+      "",
+    ];
+    shots.forEach((s, idx) => {
+      lines.push(`### ${idx + 1}. ${s.label || s.title || "Screenshot"}`);
+      lines.push(`- **Server Path:** \`${s.remotePath || `/tmp/tether-screenshots/${s.filename}`}\``);
+      if (s.url) lines.push(`- **URL:** ${s.url}`);
+      if (s.dimensions) lines.push(`- **Dimensions:** ${s.dimensions}`);
+      if (s.comment) lines.push(`- **Feedback:** ${s.comment}`);
+      lines.push("");
+    });
+    return lines.join("\n");
+  }
+
+  if (btnCopyShots) {
+    btnCopyShots.addEventListener("click", () => {
+      if (!currentShots || currentShots.length === 0) {
+        alert("No screenshots to copy. Capture a screenshot first.");
+        return;
+      }
+      const md = formatScreenshotsReport(currentShots);
+      navigator.clipboard.writeText(md).then(() => {
+        showToast("✓ Copied screenshots report for agent!", 2000);
+      });
+    });
+  }
+
+  if (btnClearShots) {
+    btnClearShots.addEventListener("click", async () => {
+      if (confirm("Delete all screenshots both locally on your Mac and remotely on the server?")) {
+        await sendMessage({ type: "popup_clear_screenshots" });
+        await saveScreenshots([]);
+        showToast("✓ Cleared all screenshots", 2000);
+      }
+    });
+  }
 
   // 4. Action: Copy Notes for AI Agent
   btnCopyNotes.addEventListener("click", () => {

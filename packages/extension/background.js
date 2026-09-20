@@ -993,7 +993,145 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         case "popup_capture_screenshot": {
           const targetTabId = msg.tabId || activeTabId;
-          const res = await handleScreenshot({ tabId: targetTabId });
+          const res = await handleScreenshot({
+            tabId: targetTabId,
+            clip: msg.clip,
+            fullPage: Boolean(msg.fullPage),
+            format: msg.format || "png",
+          });
+          const filename = `tether-shot-${Date.now()}.png`;
+          let saveResult = null;
+          if (nativePort && res && res.data) {
+            try {
+              saveResult = await nativeRequest({
+                type: "system_save_screenshot",
+                filename,
+                base64: res.data,
+              });
+            } catch (err) {
+              console.warn("[Tether] Native save failed:", err.message);
+            }
+          }
+          sendResponse({
+            ok: true,
+            filename,
+            data: res.data,
+            saveResult,
+          });
+          break;
+        }
+        case "popup_start_crop": {
+          const targetTabId = msg.tabId || activeTabId;
+          if (!targetTabId) {
+            sendResponse({ error: "No active tab" });
+            break;
+          }
+          await ensureDomain(targetTabId, "Runtime");
+          await ensureDomain(targetTabId, "Page");
+
+          const url = chrome.runtime.getURL("review/overlay.js");
+          const resp = await fetch(url);
+          const code = await resp.text();
+          await cdp(targetTabId, "Runtime.evaluate", { expression: code });
+
+          await cdp(targetTabId, "Runtime.evaluate", {
+            expression: "window.__tetherReview ? window.__tetherReview.startCropMode() : false",
+          });
+
+          (async () => {
+            for (let i = 0; i < 150; i++) {
+              await new Promise((r) => setTimeout(r, 200));
+              try {
+                const check = await cdp(targetTabId, "Runtime.evaluate", {
+                  expression: "sessionStorage.getItem('tether_last_crop')",
+                  returnByValue: true,
+                });
+                const raw = check.result?.value;
+                if (raw) {
+                  await cdp(targetTabId, "Runtime.evaluate", {
+                    expression: "sessionStorage.removeItem('tether_last_crop')",
+                  });
+                  const cropData = JSON.parse(raw);
+                  if (cropData && cropData.rect) {
+                    const rect = cropData.rect;
+                    const shotRes = await cdp(targetTabId, "Page.captureScreenshot", {
+                      format: "png",
+                      clip: {
+                        x: Math.max(0, Math.round(rect.x)),
+                        y: Math.max(0, Math.round(rect.y)),
+                        width: Math.max(1, Math.round(rect.width)),
+                        height: Math.max(1, Math.round(rect.height)),
+                        scale: 1,
+                      },
+                      captureBeyondViewport: true,
+                    });
+
+                    if (shotRes && shotRes.data) {
+                      const filename = `tether-shot-${Date.now()}.png`;
+                      let saveResult = null;
+                      if (nativePort) {
+                        try {
+                          saveResult = await nativeRequest({
+                            type: "system_save_screenshot",
+                            filename,
+                            base64: shotRes.data,
+                          });
+                        } catch {}
+                      }
+
+                      const storageData = await chrome.storage.local.get(["tether_screenshots"]);
+                      const existing = storageData.tether_screenshots || [];
+                      const newEntry = {
+                        id: `shot-${Date.now()}`,
+                        filename,
+                        data: shotRes.data,
+                        label: cropData.selector || cropData.tagName || "Element",
+                        title: cropData.title || "Element Crop",
+                        url: cropData.url || "",
+                        dimensions: `${Math.round(rect.width)}×${Math.round(rect.height)} px`,
+                        remotePath: saveResult?.remotePath || `/tmp/tether-screenshots/${filename}`,
+                        localPath: saveResult?.localPath || "",
+                        mirrored: saveResult?.mirrored || false,
+                        comment: "",
+                        createdAt: new Date().toISOString(),
+                      };
+                      await chrome.storage.local.set({
+                        tether_screenshots: [newEntry, ...existing],
+                      });
+                    }
+                  }
+                  break;
+                }
+              } catch (err) {
+                break;
+              }
+            }
+          })();
+
+          sendResponse({ ok: true });
+          break;
+        }
+        case "popup_clear_screenshots": {
+          let res = { ok: true };
+          if (nativePort) {
+            try {
+              res = await nativeRequest({ type: "system_clear_screenshots" });
+            } catch (err) {
+              res = { error: err.message };
+            }
+          }
+          sendResponse(res);
+          break;
+        }
+        case "popup_delete_screenshot": {
+          let res = { ok: true };
+          if (nativePort && msg.filename) {
+            try {
+              res = await nativeRequest({ type: "system_delete_screenshot", filename: msg.filename });
+            } catch (err) {
+              res = { error: err.message };
+            }
+          }
           sendResponse(res);
           break;
         }
