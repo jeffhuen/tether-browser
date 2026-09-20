@@ -177,7 +177,9 @@ Tether organizes automated tabs in a blue **Tether** tab group in your browser:
 
 ## 7. Developer Visual Feedback
 
-To capture visual feedback on a page, click **Inspect & Pin Notes** in the Tether popup. Pin notes on elements, then click **Copy to Clipboard** to paste structured component context into your agent prompt.
+To capture visual feedback on a page, click **Inspect & Pin Notes** in the Tether popup. Pin notes on elements, then click **Copy** to paste structured component context into your agent prompt.
+
+Use **Review Notes** and **Screenshots** to switch tools. When either tab has keyboard focus, use the arrow keys to switch tabs. Click a screenshot thumbnail to open its preview, and press **Escape** to close it.
 
 <p align="center">
   <img src="docs/assets/tether-popup.png" alt="Tether Extension Review Notes Popup" width="380" />

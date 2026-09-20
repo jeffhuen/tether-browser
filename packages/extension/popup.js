@@ -84,6 +84,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!toast) {
       toast = document.createElement("div");
       toast.id = "update-toast";
+      toast.setAttribute("role", "status");
       toast.className = "update-toast";
       document.body.appendChild(toast);
     }
@@ -114,6 +115,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function updateShotsUI(shots) {
     if (shotsBadge) shotsBadge.textContent = shots.length;
+    btnCopyShots.disabled = shots.length === 0;
+    btnClearShots.disabled = shots.length === 0;
     if (!shotsList) return;
     if (!shots || shots.length === 0) {
       shotsList.innerHTML = '<div class="empty-state">No screenshots captured yet. Click <b>Crop Element</b> or <b>Viewport</b> above.</div>';
@@ -126,19 +129,23 @@ document.addEventListener("DOMContentLoaded", () => {
       const remotePath = shot.remotePath || `/tmp/tether-screenshots/${shot.filename}`;
       card.innerHTML = `
         <div class="shot-top-row">
-          <div class="shot-thumb-wrapper" title="Click to enlarge">
-            <img class="shot-thumb" src="data:image/png;base64,${shot.data}" alt="Thumb">
-          </div>
+          <button type="button" class="shot-thumb-wrapper" aria-label="Enlarge screenshot" title="Click to enlarge">
+            <img class="shot-thumb" src="data:image/png;base64,${shot.data}" alt="${escapeHTML(shot.label || shot.title || "Screenshot")}">
+          </button>
           <div class="shot-details">
             <div class="shot-header">
               <span class="shot-title">${escapeHTML(shot.label || shot.title || "Screenshot")}</span>
-              <button type="button" class="btn-del-shot" title="Delete screenshot">×</button>
+              <button type="button" class="btn-del-shot" aria-label="Delete screenshot" title="Delete screenshot">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="m6 6 12 12M6 18 18 6"/>
+                </svg>
+              </button>
             </div>
             <div class="shot-meta">${escapeHTML(shot.dimensions || "")} · ${escapeHTML(shot.url ? new URL(shot.url).pathname : "")}</div>
             <div class="shot-path-chip" title="${escapeHTML(remotePath)}">${escapeHTML(remotePath)}</div>
           </div>
         </div>
-        <textarea class="shot-comment" placeholder="Add feedback for your agent (e.g. 'Align button baseline')...">${escapeHTML(shot.comment || "")}</textarea>
+        <textarea class="shot-comment" aria-label="Screenshot feedback" placeholder="Add feedback for your agent..." rows="2">${escapeHTML(shot.comment || "")}</textarea>
       `;
       const thumb = card.querySelector(".shot-thumb-wrapper");
       thumb.addEventListener("click", () => {
@@ -162,36 +169,47 @@ document.addEventListener("DOMContentLoaded", () => {
   function openLightbox(base64Data, title, meta) {
     if (!lightboxModal || !lightboxImg) return;
     lightboxImg.src = `data:image/png;base64,${base64Data}`;
-    if (lightboxTitle) lightboxTitle.textContent = `${title} (${meta || ""})`;
-    lightboxModal.style.display = "flex";
+    lightboxImg.alt = title;
+    if (lightboxTitle) lightboxTitle.textContent = meta ? `${title} (${meta})` : title;
+    lightboxModal.showModal();
   }
 
   if (lightboxClose) {
     lightboxClose.addEventListener("click", () => {
-      if (lightboxModal) lightboxModal.style.display = "none";
+      lightboxModal.close();
     });
   }
   if (lightboxModal) {
     lightboxModal.addEventListener("click", (e) => {
-      if (e.target === lightboxModal) lightboxModal.style.display = "none";
+      if (e.target === lightboxModal) lightboxModal.close();
     });
   }
 
-  if (tabBtnNotes && tabBtnShots) {
-    tabBtnNotes.addEventListener("click", () => {
-      tabBtnNotes.classList.add("active");
-      tabBtnShots.classList.remove("active");
-      if (panelNotes) panelNotes.style.display = "flex";
-      if (panelShots) panelShots.style.display = "none";
+  const workspaceTabs = [tabBtnNotes, tabBtnShots];
+  function selectTab(tab) {
+    workspaceTabs.forEach((button) => {
+      const selected = button === tab;
+      button.classList.toggle("active", selected);
+      button.setAttribute("aria-selected", String(selected));
+      button.tabIndex = selected ? 0 : -1;
     });
-    tabBtnShots.addEventListener("click", () => {
-      tabBtnShots.classList.add("active");
-      tabBtnNotes.classList.remove("active");
-      if (panelShots) panelShots.style.display = "flex";
-      if (panelNotes) panelNotes.style.display = "none";
-      loadScreenshots();
-    });
+    panelNotes.hidden = tab !== tabBtnNotes;
+    panelShots.hidden = tab !== tabBtnShots;
+    if (tab === tabBtnShots) loadScreenshots();
   }
+  workspaceTabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => selectTab(tab));
+    tab.addEventListener("keydown", (event) => {
+      let next;
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") next = workspaceTabs[1 - index];
+      else if (event.key === "Home") next = tabBtnNotes;
+      else if (event.key === "End") next = tabBtnShots;
+      else return;
+      event.preventDefault();
+      selectTab(next);
+      next.focus();
+    });
+  });
   // 1. Load Status & Initial Data
   async function refresh() {
     try {
@@ -212,7 +230,6 @@ document.addEventListener("DOMContentLoaded", () => {
       updateStatusUI(status);
       updateTabsUI(tabs, status.activeTabId);
       updateNotesUI(status.notes || [], activeTab);
-      loadScreenshots();
     } catch (err) {
       console.warn("Failed to load status:", err);
       updateStatusUI({ connected: false });
@@ -304,6 +321,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (connectSection) {
         const isShown = connectSection.style.display !== "none";
         connectSection.style.display = isShown ? "none" : "block";
+        statusBadge.setAttribute("aria-expanded", String(!isShown));
         if (!isShown) loadRecentHosts();
       }
     });
@@ -332,6 +350,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (btnDisconnect) btnDisconnect.style.display = "none";
       loadRecentHosts();
     }
+    statusBadge.setAttribute("aria-expanded", String(connectSection.style.display !== "none"));
   }
 
   function updateTabsUI(tabs, activeId) {
@@ -343,19 +362,20 @@ document.addEventListener("DOMContentLoaded", () => {
     tabsList.innerHTML = "";
     tabs.forEach((tab) => {
       const isActive = tab.id === activeId || tab.active;
-      const item = document.createElement("div");
+      const item = document.createElement("button");
+      item.type = "button";
       item.className = `tab-item ${isActive ? "active" : ""}`;
       item.title = `${tab.title}\n${tab.url}`;
 
       item.innerHTML = `
-        <div class="tab-info">
-          <div class="tab-title">${escapeHTML(tab.title || "Untitled")}</div>
-          <div class="tab-url">${escapeHTML(tab.url || "")}</div>
-        </div>
-        <div class="tab-badges" style="display:flex;gap:4px;align-items:center;">
-          ${tab.inGroup ? '<span class="tab-badge" style="background:#0284c7;color:#fff;">TETHER</span>' : ''}
+        <span class="tab-info">
+          <span class="tab-title">${escapeHTML(tab.title || "Untitled")}</span>
+          <span class="tab-url">${escapeHTML(tab.url || "")}</span>
+        </span>
+        <span class="tab-badges">
+          ${tab.inGroup ? '<span class="tab-badge">TETHER</span>' : ''}
           ${isActive ? '<span class="tab-badge">ACTIVE</span>' : ''}
-        </div>
+        </span>
       `;
 
       item.addEventListener("click", async () => {
@@ -369,13 +389,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function updateNotesUI(notes, activeTab) {
     currentNotes = notes || [];
+    btnCopyNotes.disabled = currentNotes.length === 0;
+    btnClearNotes.disabled = currentNotes.length === 0;
     const notesBadge = document.getElementById("notes-badge") || document.getElementById("notes-count");
     if (notesBadge) notesBadge.textContent = currentNotes.length;
 
     if (activeTabTitleEl) {
       if (activeTab && activeTab.title) {
         const cleanTitle = activeTab.title.replace(/^\[Tether\]\s*/, "");
-        activeTabTitleEl.textContent = cleanTitle.length > 25 ? cleanTitle.slice(0, 25) + "..." : cleanTitle;
+        activeTabTitleEl.textContent = cleanTitle;
         activeTabTitleEl.title = activeTab.title + "\n" + (activeTab.url || "");
       } else {
         activeTabTitleEl.textContent = "Active Tab";
@@ -580,9 +602,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const md = formatDesignFeedbackReport(currentNotes);
     navigator.clipboard.writeText(md).then(() => {
-      const orig = btnCopyNotes.textContent;
-      btnCopyNotes.textContent = "Copied!";
-      setTimeout(() => { btnCopyNotes.textContent = orig; }, 1500);
+      const copyText = document.getElementById("copy-text");
+      copyText.textContent = "Copied!";
+      setTimeout(() => { copyText.textContent = "Copy"; }, 1500);
     });
   });
 
@@ -655,6 +677,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Initial load + live 2-second status & tab poll while popup is open
+  loadScreenshots();
   refresh();
   const pollInterval = setInterval(refresh, 2000);
   window.addEventListener("unload", () => clearInterval(pollInterval));
