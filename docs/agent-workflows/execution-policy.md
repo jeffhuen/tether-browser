@@ -48,7 +48,7 @@ Continue toward the approved outcome with a smaller correct implementation, remo
 
 ## 6. Track Durably Without Creating Another Delivery Loop
 
-Follow `.beads/PRIME.md` for durable tracking and `docs/agent-workflows/beads.md` for local constraints. Use native `bd update <id> --claim` only with claim authority. Keep execution todos in the harness. Pure repository-instruction or local maintenance edits remain exempt from Beads. The coordinator owns governing-bead updates and verified closure; helpers report. Worktree cleanup is a separate authorized operation.
+Follow `.beads/PRIME.md` for durable tracking and `docs/agent-workflows/beads.md` for local constraints. Use native `bd --sandbox update <id> --claim` only with claim authority. Keep execution todos in the harness. Pure repository-instruction or local maintenance edits remain exempt from Beads. The coordinator owns governing-bead updates and verified closure; helpers report. Worktree cleanup is a separate authorized operation.
 
 ## 7. Load Detailed Procedures Only When Selected
 
