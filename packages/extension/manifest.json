@@ -16,6 +16,7 @@
     "tabs",
     "nativeMessaging",
     "storage",
+    "unlimitedStorage",
     "alarms"
   ],
   "host_permissions": [

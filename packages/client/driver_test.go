@@ -162,6 +162,15 @@ func handleMockCDPConn(conn net.Conn, serverAddr string) {
 							},
 						},
 					}
+				} else if strings.Contains(expr, "devicePixelRatio") {
+					result = map[string]any{
+						"result": map[string]any{
+							"type": "object",
+							"value": map[string]any{
+								"x": 0, "y": 0, "width": 900, "height": 600, "scale": 0.5,
+							},
+						},
+					}
 				} else {
 					result = map[string]any{
 						"result": map[string]any{
@@ -169,6 +178,10 @@ func handleMockCDPConn(conn net.Conn, serverAddr string) {
 							"value": "evaluated-ok",
 						},
 					}
+				}
+			case "Page.getLayoutMetrics":
+				result = map[string]any{
+					"cssVisualViewport": map[string]any{"zoom": 1},
 				}
 			case "Page.captureScreenshot":
 				result = map[string]any{
@@ -282,13 +295,9 @@ func TestCDPDriverFullCycle(t *testing.T) {
 		t.Fatalf("Focus: %v", err)
 	}
 
-	// Screenshot
-	ss, err := driver.Screenshot(ctx, protocol.ScreenshotParams{TargetID: targetID})
-	if err != nil {
-		t.Fatalf("Screenshot: %v", err)
-	}
-	if ss.Base64 != "mock-screenshot-base64" {
-		t.Fatalf("unexpected screenshot data: %s", ss.Base64)
+	// Missing document dimensions must not silently produce a viewport screenshot.
+	if _, err := driver.Screenshot(ctx, protocol.ScreenshotParams{TargetID: targetID, FullPage: true}); err == nil {
+		t.Fatal("full-page capture must fail when the browser does not report document dimensions")
 	}
 
 	// CloseTab

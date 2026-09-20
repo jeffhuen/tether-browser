@@ -1,7 +1,8 @@
 // Run against a disposable Chrome profile with the unpacked extension loaded:
 // node scripts/check_popup.mjs http://127.0.0.1:9349
 // Chrome needs --remote-debugging-port=9349 and --enable-unsafe-extension-debugging.
-// The check uses synthetic connection/notes data, real extension storage and UI.
+// For headless capture, add --disable-gpu --run-all-compositor-stages-before-draw.
+// Uses synthetic notes plus real extension storage, page captures, and pointer input.
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -139,9 +140,173 @@ try {
   await screenshot("preview");
   await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
   assert(await evaluate(() => !document.querySelector("dialog").open && document.activeElement.matches(".shot-thumb-wrapper")), "Escape must dismiss the preview and restore focus");
+  const largeCapture = await evaluate(async () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 2048;
+    canvas.height = 1536;
+    const context = canvas.getContext("2d");
+    const pixels = context.createImageData(canvas.width, canvas.height);
+    let seed = 1;
+    for (let i = 0; i < pixels.data.length; i += 4) {
+      seed ^= seed << 13;
+      seed ^= seed >>> 17;
+      seed ^= seed << 5;
+      pixels.data[i] = seed & 255;
+      pixels.data[i + 1] = (seed >>> 8) & 255;
+      pixels.data[i + 2] = (seed >>> 16) & 255;
+      pixels.data[i + 3] = 255;
+    }
+    context.putImageData(pixels, 0, 0);
+    const data = canvas.toDataURL("image/png").split(",")[1];
+    if (data.length <= chrome.storage.local.QUOTA_BYTES) throw new Error("Fixture must exceed the default local-storage quota");
+    const before = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots;
+    const filename = "popup-quota-check.png";
+    const send = chrome.runtime.sendMessage;
+    chrome.runtime.sendMessage = (message, callback) => {
+      if (message.type === "popup_capture_screenshot") return callback({ data, filename });
+      if (message.type === "popup_delete_screenshot" && message.filename === filename) return callback({ ok: true });
+      return send(message, callback);
+    };
+    const capture = document.querySelector("#btn-capture-viewport");
+    capture.click();
+    while (capture.disabled) await new Promise((resolve) => setTimeout(resolve, 20));
+    const shots = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots;
+    if (shots[0].data !== data || JSON.stringify(shots.slice(1)) !== JSON.stringify(before)) {
+      throw new Error("Large capture failed to persist or discarded previous screenshots");
+    }
+    const thumbnail = document.querySelector(".shot-thumb");
+    await thumbnail.decode();
+    if (thumbnail.naturalWidth !== 2048 || thumbnail.naturalHeight !== 1536) throw new Error("Large capture preview is invalid");
+    const removed = new Promise((resolve) => {
+      const listener = (changes, area) => {
+        if (area !== "local" || !changes.tether_screenshots) return;
+        chrome.storage.onChanged.removeListener(listener);
+        resolve();
+      };
+      chrome.storage.onChanged.addListener(listener);
+    });
+    document.querySelector(".btn-del-shot").click();
+    await removed;
+    const remaining = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots;
+    if (JSON.stringify(remaining) !== JSON.stringify(before)) throw new Error("Deleting the large capture changed other screenshots");
+    chrome.runtime.sendMessage = send;
+    return { storedBytes: data.length, defaultQuotaBytes: chrome.storage.local.QUOTA_BYTES };
+  });
+  console.log(`PASS: large PNG stored and deleted without losing previous screenshots (${largeCapture.storedBytes} bytes; default quota ${largeCapture.defaultQuotaBytes}).`);
+  await evaluate(async () => {
+    const status = await window.popupCheckSend({ type: "popup_get_status" });
+    if (status.connected) throw new Error("Capture checks require a disposable, disconnected profile");
+    window.captureCheckTab = await chrome.tabs.create({ url: "about:blank", active: true });
+    window.captureCheckCommand = (method, params = {}) => chrome.debugger.sendCommand({ tabId: window.captureCheckTab.id }, method, params);
+    const attached = await window.popupCheckSend({ type: "popup_capture_screenshot", tabId: window.captureCheckTab.id });
+    if (attached.error) throw new Error(attached.error);
+    await window.captureCheckCommand("Emulation.setDeviceMetricsOverride", { width: 900, height: 600, deviceScaleFactor: 1, mobile: false });
+    await window.captureCheckCommand("Runtime.evaluate", { expression: `
+      document.title = 'Capture regression fixture';
+      document.body.style.cssText = 'margin:0;width:1200px;height:2400px;background:linear-gradient(to bottom,#dc2626 0 600px,#16a34a 600px 1600px,#2563eb 1600px);background-size:1200px 2400px;background-repeat:no-repeat';
+      window.capturePageClicks = 0;
+      document.addEventListener('click', () => window.capturePageClicks++);
+    ` });
+    window.captureCheckStart = async () => {
+      const result = await window.popupCheckSend({ type: "popup_start_crop", tabId: window.captureCheckTab.id });
+      if (result.error) throw new Error(result.error);
+    };
+    window.captureCheckLatest = async (previous) => {
+      for (let i = 0; i < 150; i++) {
+        const shots = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots;
+        if (shots[0]?.filename !== previous) return shots[0];
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error("Capture did not reach the gallery");
+    };
+    window.captureCheckImage = async (shot) => {
+      const image = new Image();
+      image.src = "data:image/png;base64," + shot.data;
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d");
+      context.drawImage(image, 0, 0);
+      const pixel = (x, y) => [...context.getImageData(x, y, 1, 1).data];
+      return { data: shot.data, width: canvas.width, height: canvas.height, top: pixel(2, 2), bottom: pixel(canvas.width - 30, canvas.height - 30), dimensions: shot.dimensions };
+    };
+  });
+  for (const [scale, zoom] of [[1, 1], [1.25, 1], [2, 1.25], [2, 1]]) {
+    await evaluate(async (scale, zoom) => {
+      await window.captureCheckCommand("Emulation.setDeviceMetricsOverride", { width: 900, height: 600, deviceScaleFactor: scale, mobile: false });
+      await chrome.tabs.setZoom(window.captureCheckTab.id, zoom);
+      await window.captureCheckCommand("Runtime.evaluate", { expression: "scrollTo(0,0); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))", awaitPromise: true });
+    }, scale, zoom);
+    for (const mode of ["viewport", "full"]) {
+      const image = await evaluate(async (mode, scale) => {
+        if (mode === "full" && scale === 2) {
+          await window.captureCheckCommand("Runtime.evaluate", { expression: "scrollTo(100,700); new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))", awaitPromise: true });
+        }
+        const previous = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots[0].filename;
+        document.querySelector(`#btn-capture-${mode}`).click();
+        return window.captureCheckImage(await window.captureCheckLatest(previous));
+      }, mode, scale);
+      await writeFile(join(captures, `${mode}-${scale}x-zoom-${zoom}.png`), Buffer.from(image.data, "base64"));
+      assert.equal(image.width, mode === "full" ? 1200 : 900 / zoom);
+      assert.equal(image.height, mode === "full" ? 2400 : 600 / zoom);
+      assert.deepEqual(image.top, [220, 38, 38, 255]);
+      assert.deepEqual(image.bottom, mode === "full" ? [37, 99, 235, 255] : [220, 38, 38, 255], `${mode} at ${scale}x: ${captures}`);
+      assert.equal(image.dimensions, `${image.width}×${image.height}`, "Gallery dimensions must describe the PNG, not the popup");
+    }
+  }
+  const previousCrop = await evaluate(async () => {
+    await window.captureCheckCommand("Runtime.evaluate", { expression: "scrollTo(100,700)" });
+    const previous = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots[0].filename;
+    await window.captureCheckStart();
+    await window.captureCheckStart(); // Replacing a selection must not let its old poll capture or dismiss the new one.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await window.captureCheckCommand("Input.dispatchMouseEvent", { type: "mousePressed", x: 400, y: 320, button: "left", buttons: 1, clickCount: 1 });
+    await window.captureCheckCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: 100, y: 140, button: "left", buttons: 1 });
+    return previous;
+  });
+  const selection = await evaluate(() => window.captureCheckCommand("Page.captureScreenshot", { format: "png" }));
+  await writeFile(join(captures, "area-selection.png"), Buffer.from(selection.data, "base64"));
+  const cropImage = await evaluate(async (previous) => {
+    await window.captureCheckCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x: 100, y: 140, button: "left", buttons: 0, clickCount: 1 });
+    return window.captureCheckImage(await window.captureCheckLatest(previous));
+  }, previousCrop);
+  assert.equal(cropImage.width, 300, "Reverse drag must capture 300 image pixels for 300 CSS pixels on a retina display");
+  assert.equal(cropImage.height, 180, "Reverse drag must capture 180 image pixels for 180 CSS pixels on a retina display");
+  assert.deepEqual(cropImage.top, [22, 163, 74, 255], "Crop must use scroll offsets and exclude the dimming overlay");
+  assert.deepEqual(cropImage.bottom, [22, 163, 74, 255], "Crop must exclude the selection border and controls");
+  const keyboardImage = await evaluate(async () => {
+    const previous = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots[0].filename;
+    await window.captureCheckStart();
+    await window.captureCheckCommand("Input.dispatchKeyEvent", { type: "keyDown", key: "ArrowRight" });
+    await window.captureCheckCommand("Input.dispatchKeyEvent", { type: "keyDown", key: "ArrowDown", modifiers: 8 });
+    await window.captureCheckCommand("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter" });
+    return window.captureCheckImage(await window.captureCheckLatest(previous));
+  });
+  assert.equal(keyboardImage.width, 450);
+  assert.equal(keyboardImage.height, 310, "Keyboard resize must change the captured rectangle");
+  assert.deepEqual(keyboardImage.top, [22, 163, 74, 255]);
+  const cancelled = await evaluate(async () => {
+    const before = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots;
+    await window.captureCheckStart();
+    await window.captureCheckCommand("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const after = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots;
+    const beforeClick = await window.captureCheckCommand("Runtime.evaluate", { expression: "window.capturePageClicks", returnByValue: true });
+    await window.captureCheckCommand("Input.dispatchMouseEvent", { type: "mousePressed", x: 200, y: 200, button: "left", buttons: 1, clickCount: 1 });
+    await window.captureCheckCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x: 200, y: 200, button: "left", buttons: 0, clickCount: 1 });
+    const afterClick = await window.captureCheckCommand("Runtime.evaluate", { expression: "window.capturePageClicks", returnByValue: true });
+    return { unchanged: JSON.stringify(before) === JSON.stringify(after), beforeClick: beforeClick.result.value, afterClick: afterClick.result.value };
+  });
+  assert(cancelled.unchanged, "Escape must not save a screenshot");
+  assert.equal(cancelled.beforeClick, 0, "Selecting a crop must not click the underlying page");
+  assert.equal(cancelled.afterClick, 1, "Cancellation must restore page interaction");
+  console.log("PASS: CSS-resolution viewport/full-page PNGs at 1x/1.25x/2x display density; reverse drag on a scrolled page; replacement, keyboard resize, Escape, and no click-through.");
   console.log(`PASS: 320px/384px, empty/populated tabs, overflow, keyboard, preview, feedback persistence. Captures: ${captures}`);
 } finally {
   if (saved) await evaluate(async (saved) => {
+    if (window.captureCheckTab) await chrome.tabs.remove(window.captureCheckTab.id);
+    for (const key of ["captureCheckTab", "captureCheckCommand", "captureCheckStart", "captureCheckLatest", "captureCheckImage"]) delete window[key];
     chrome.runtime.sendMessage = window.popupCheckSend;
     delete window.popupCheckSend;
     delete window.popupCheckStatus;

@@ -11,7 +11,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const tabBtnShots = document.getElementById("tab-btn-shots");
   const panelNotes = document.getElementById("panel-notes");
   const panelShots = document.getElementById("panel-shots");
-  const btnCaptureElement = document.getElementById("btn-capture-element");
+  const btnCaptureArea = document.getElementById("btn-capture-area");
   const btnCaptureViewport = document.getElementById("btn-capture-viewport");
   const btnCaptureFull = document.getElementById("btn-capture-full");
   const btnCopyShots = document.getElementById("btn-copy-shots");
@@ -119,7 +119,7 @@ document.addEventListener("DOMContentLoaded", () => {
     btnClearShots.disabled = shots.length === 0;
     if (!shotsList) return;
     if (!shots || shots.length === 0) {
-      shotsList.innerHTML = '<div class="empty-state">No screenshots captured yet. Click <b>Crop Element</b> or <b>Viewport</b> above.</div>';
+      shotsList.innerHTML = '<div class="empty-state">No screenshots captured yet. Click <b>Crop Area</b> or <b>Viewport</b> above.</div>';
       return;
     }
     shotsList.innerHTML = "";
@@ -290,13 +290,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     try {
       await saveRecentHost(host);
-      const res = await sendMessage({ type: "popup_ssh_connect", targetHost: host });
-      if (res && res.error) {
-        showToast("Error: " + res.error, 3000);
-      } else {
-        showToast(`✓ Connected to ${host}!`, 2000);
-        refresh();
-      }
+      await sendMessage({ type: "popup_ssh_connect", targetHost: host });
+      showToast(`✓ Connected to ${host}!`, 2000);
+      refresh();
     } catch (err) {
       showToast("Connect error: " + err.message, 3000);
     } finally {
@@ -469,7 +465,7 @@ document.addEventListener("DOMContentLoaded", () => {
             label: "Viewport",
             title: tabInfo?.title || "Page Viewport",
             url: tabInfo?.url || "",
-            dimensions: `${window.innerWidth}×${window.innerHeight}`,
+            dimensions: res.width && res.height ? `${res.width}×${res.height}` : "Viewport",
             remotePath: res.saveResult?.remotePath || `/tmp/tether-screenshots/${res.filename}`,
             localPath: res.saveResult?.localPath || "",
             mirrored: res.saveResult?.mirrored || false,
@@ -515,7 +511,7 @@ document.addEventListener("DOMContentLoaded", () => {
             label: "Full Page",
             title: tabInfo?.title || "Full Page",
             url: tabInfo?.url || "",
-            dimensions: "Full Page",
+            dimensions: res.width && res.height ? `${res.width}×${res.height}` : "Full Page",
             remotePath: res.saveResult?.remotePath || `/tmp/tether-screenshots/${res.filename}`,
             localPath: res.saveResult?.localPath || "",
             mirrored: res.saveResult?.mirrored || false,
@@ -534,9 +530,9 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  if (btnCaptureElement) {
-    btnCaptureElement.addEventListener("click", async () => {
-      btnCaptureElement.disabled = true;
+  if (btnCaptureArea) {
+    btnCaptureArea.addEventListener("click", async () => {
+      btnCaptureArea.disabled = true;
       try {
         let currentTabId = null;
         try {
@@ -546,8 +542,8 @@ document.addEventListener("DOMContentLoaded", () => {
         await sendMessage({ type: "popup_start_crop", tabId: currentTabId });
         window.close();
       } catch (err) {
-        showToast("Failed to start element crop: " + err.message, 3000);
-        btnCaptureElement.disabled = false;
+        showToast("Failed to start area crop: " + err.message, 3000);
+        btnCaptureArea.disabled = false;
       }
     });
   }
@@ -660,6 +656,8 @@ document.addEventListener("DOMContentLoaded", () => {
       chrome.runtime.sendMessage(msg, (response) => {
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
+        } else if (response?.error) {
+          reject(new Error(response.error));
         } else {
           resolve(response || {});
         }

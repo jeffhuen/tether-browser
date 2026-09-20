@@ -688,18 +688,34 @@ async function handleScreenshot(params = {}) {
   const format = params.format || "png";
   const cdpParams = {
     format,
+    captureBeyondViewport: Boolean(params.fullPage || params.clip),
   };
   if (format === "jpeg" && params.quality) {
     cdpParams.quality = params.quality;
   }
-  if (params.fullPage) {
-    cdpParams.captureBeyondViewport = true;
+  const viewport = await cdp(tabId, "Runtime.evaluate", {
+    expression: "({x:scrollX,y:scrollY,width:innerWidth,height:innerHeight,scale:1/devicePixelRatio})",
+    returnByValue: true,
+  });
+  const scale = viewport.result?.value?.scale;
+  const metrics = await cdp(tabId, "Page.getLayoutMetrics");
+  const zoom = metrics.cssVisualViewport?.zoom;
+  const clip = params.fullPage ? metrics.cssContentSize : (params.clip || viewport.result?.value);
+  const { x, y, width, height } = clip || {};
+  if (![x, y, width, height, scale, zoom].every(Number.isFinite) || width <= 0 || height <= 0 || scale <= 0 || zoom <= 0) {
+    throw new Error("Screenshot area must have finite coordinates and positive dimensions and scale");
   }
+  // CDP clips use device-independent pixels; page coordinates use CSS pixels.
+  // Scale before encoding instead of transferring and resizing a retina image.
+  cdpParams.clip = { x: x * zoom, y: y * zoom, width: width * zoom, height: height * zoom, scale };
   const res = await cdp(tabId, "Page.captureScreenshot", cdpParams);
+  const png = format === "png" ? new DataView(Uint8Array.from(atob(res.data.slice(0, 32)), (c) => c.charCodeAt(0)).buffer) : null;
   return {
     targetId: String(tabId),
     tabId,
     format,
+    width: png?.getUint32(16),
+    height: png?.getUint32(20),
     data: res.data,
     base64: res.data,
   };
@@ -1016,6 +1032,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             ok: true,
             filename,
             data: res.data,
+            width: res.width,
+            height: res.height,
             saveResult,
           });
           break;
@@ -1034,77 +1052,70 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const code = await resp.text();
           await cdp(targetTabId, "Runtime.evaluate", { expression: code });
 
-          await cdp(targetTabId, "Runtime.evaluate", {
-            expression: "window.__tetherReview ? window.__tetherReview.startCropMode() : false",
+          const requestId = crypto.randomUUID();
+          const started = await cdp(targetTabId, "Runtime.evaluate", {
+            expression: `window.__tetherReview.startCropMode(${JSON.stringify(requestId)})`,
+            returnByValue: true,
           });
+          if (started.exceptionDetails || started.result?.value !== true) {
+            throw new Error("Could not start area selection. Reload the page and try again.");
+          }
 
           (async () => {
-            for (let i = 0; i < 150; i++) {
-              await new Promise((r) => setTimeout(r, 200));
-              try {
+            let failure = "";
+            try {
+              for (let i = 0; i < 150; i++) {
+                await new Promise((r) => setTimeout(r, 200));
                 const check = await cdp(targetTabId, "Runtime.evaluate", {
-                  expression: "sessionStorage.getItem('tether_last_crop')",
+                  expression: `window.__tetherReview?.cropRequestId === ${JSON.stringify(requestId)} ? window.__tetherReview.cropResult : {cancelled:true}`,
                   returnByValue: true,
                 });
-                const raw = check.result?.value;
-                if (raw) {
-                  await cdp(targetTabId, "Runtime.evaluate", {
-                    expression: "sessionStorage.removeItem('tether_last_crop')",
-                  });
-                  const cropData = JSON.parse(raw);
-                  if (cropData && cropData.rect) {
-                    const rect = cropData.rect;
-                    const shotRes = await cdp(targetTabId, "Page.captureScreenshot", {
-                      format: "png",
-                      clip: {
-                        x: Math.max(0, Math.round(rect.x)),
-                        y: Math.max(0, Math.round(rect.y)),
-                        width: Math.max(1, Math.round(rect.width)),
-                        height: Math.max(1, Math.round(rect.height)),
-                        scale: 1,
-                      },
-                      captureBeyondViewport: true,
+                if (check.exceptionDetails) throw new Error("Could not read the selected area");
+                const cropData = check.result?.value;
+                if (!cropData) continue;
+                if (cropData.cancelled) break;
+
+                const shotRes = await handleScreenshot({ tabId: targetTabId, clip: cropData.rect });
+                const filename = `tether-shot-${Date.now()}.png`;
+                let saveResult = null;
+                if (nativePort) {
+                  try {
+                    saveResult = await nativeRequest({
+                      type: "system_save_screenshot",
+                      filename,
+                      base64: shotRes.data,
                     });
-
-                    if (shotRes && shotRes.data) {
-                      const filename = `tether-shot-${Date.now()}.png`;
-                      let saveResult = null;
-                      if (nativePort) {
-                        try {
-                          saveResult = await nativeRequest({
-                            type: "system_save_screenshot",
-                            filename,
-                            base64: shotRes.data,
-                          });
-                        } catch {}
-                      }
-
-                      const storageData = await chrome.storage.local.get(["tether_screenshots"]);
-                      const existing = storageData.tether_screenshots || [];
-                      const newEntry = {
-                        id: `shot-${Date.now()}`,
-                        filename,
-                        data: shotRes.data,
-                        label: cropData.selector || cropData.tagName || "Element",
-                        title: cropData.title || "Element Crop",
-                        url: cropData.url || "",
-                        dimensions: `${Math.round(rect.width)}×${Math.round(rect.height)} px`,
-                        remotePath: saveResult?.remotePath || `/tmp/tether-screenshots/${filename}`,
-                        localPath: saveResult?.localPath || "",
-                        mirrored: saveResult?.mirrored || false,
-                        comment: "",
-                        createdAt: new Date().toISOString(),
-                      };
-                      await chrome.storage.local.set({
-                        tether_screenshots: [newEntry, ...existing],
-                      });
-                    }
+                  } catch (err) {
+                    console.warn("[Tether] Native save failed:", err.message);
                   }
-                  break;
                 }
-              } catch (err) {
+
+                const storageData = await chrome.storage.local.get(["tether_screenshots"]);
+                const existing = storageData.tether_screenshots || [];
+                const newEntry = {
+                  id: `shot-${Date.now()}`,
+                  filename,
+                  data: shotRes.data,
+                  label: "Area Crop",
+                  title: cropData.title || "Area Crop",
+                  url: cropData.url || "",
+                  dimensions: `${shotRes.width}×${shotRes.height} px`,
+                  remotePath: saveResult?.remotePath || `/tmp/tether-screenshots/${filename}`,
+                  localPath: saveResult?.localPath || "",
+                  mirrored: saveResult?.mirrored || false,
+                  comment: "",
+                  createdAt: new Date().toISOString(),
+                };
+                await chrome.storage.local.set({ tether_screenshots: [newEntry, ...existing] });
                 break;
               }
+            } catch (err) {
+              failure = "Area capture failed: " + err.message;
+              console.error("[Tether]", failure);
+            } finally {
+              await cdp(targetTabId, "Runtime.evaluate", {
+                expression: `if (window.__tetherReview?.cropRequestId === ${JSON.stringify(requestId)}) window.__tetherReview.finishCrop?.(${JSON.stringify(failure)})`,
+              }).catch(() => {});
             }
           })();
 

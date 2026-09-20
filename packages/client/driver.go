@@ -1127,7 +1127,7 @@ func (d *CDPDriver) Wait(ctx context.Context, params protocol.WaitParams) error 
 	}
 }
 
-// Screenshot captures a viewport or full-page screenshot.
+// Screenshot captures a viewport or full page at one image pixel per CSS pixel.
 func (d *CDPDriver) Screenshot(ctx context.Context, params protocol.ScreenshotParams) (*protocol.ScreenshotResult, error) {
 	client, _, err := d.getTargetClient(params.TargetID)
 	if err != nil {
@@ -1140,14 +1140,61 @@ func (d *CDPDriver) Screenshot(ctx context.Context, params protocol.ScreenshotPa
 	}
 
 	call := map[string]any{
-		"format": format,
+		"format":                format,
+		"captureBeyondViewport": params.FullPage,
 	}
 	if params.Quality > 0 && format == "jpeg" {
 		call["quality"] = params.Quality
 	}
-	if params.FullPage {
-		call["captureBeyondViewport"] = true
+	type screenshotArea struct {
+		X      float64 `json:"x"`
+		Y      float64 `json:"y"`
+		Width  float64 `json:"width"`
+		Height float64 `json:"height"`
+		Scale  float64 `json:"scale"`
 	}
+	raw, err := client.Call(ctx, "Runtime.evaluate", map[string]any{
+		"expression":    "({x:scrollX,y:scrollY,width:innerWidth,height:innerHeight,scale:1/devicePixelRatio})",
+		"returnByValue": true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get screenshot viewport: %w", err)
+	}
+	var viewport struct {
+		Result struct {
+			Value screenshotArea `json:"value"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &viewport); err != nil {
+		return nil, fmt.Errorf("unmarshal screenshot viewport: %w", err)
+	}
+	clip := viewport.Result.Value
+	raw, err = client.Call(ctx, "Page.getLayoutMetrics", nil)
+	if err != nil {
+		return nil, fmt.Errorf("get screenshot dimensions: %w", err)
+	}
+	var metrics struct {
+		Content  screenshotArea `json:"cssContentSize"`
+		Viewport struct {
+			Zoom float64 `json:"zoom"`
+		} `json:"cssVisualViewport"`
+	}
+	if err := json.Unmarshal(raw, &metrics); err != nil {
+		return nil, fmt.Errorf("unmarshal screenshot dimensions: %w", err)
+	}
+	if params.FullPage {
+		metrics.Content.Scale = clip.Scale
+		clip = metrics.Content
+	}
+	if clip.Width <= 0 || clip.Height <= 0 || clip.Scale <= 0 || metrics.Viewport.Zoom <= 0 {
+		return nil, fmt.Errorf("screenshot dimensions and scale must be positive")
+	}
+	// CDP clip coordinates are device-independent pixels, not CSS pixels.
+	clip.X *= metrics.Viewport.Zoom
+	clip.Y *= metrics.Viewport.Zoom
+	clip.Width *= metrics.Viewport.Zoom
+	clip.Height *= metrics.Viewport.Zoom
+	call["clip"] = clip
 
 	resp, err := client.Call(ctx, "Page.captureScreenshot", call)
 	if err != nil {

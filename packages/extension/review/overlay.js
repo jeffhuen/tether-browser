@@ -815,6 +815,14 @@
         .summary-row { padding: 4px 6px; border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .summary-row:hover { background: #1e293b; }
         .summary-empty { opacity: .6; }
+        .crop-overlay { position: fixed; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; overflow: hidden; background: rgba(0,0,0,.45); visibility: visible; pointer-events: auto; cursor: crosshair; touch-action: none; user-select: none; }
+        .crop-overlay::backdrop { background: transparent; }
+        .crop-selection { position: absolute; display: none; box-sizing: border-box; border: 1px solid #38bdf8; box-shadow: 0 0 0 100vmax rgba(0,0,0,.45); pointer-events: none; }
+        .crop-controls { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; max-width: calc(100% - 32px); padding: 12px 16px; border-radius: 8px; background: #0f172a; color: #f8fafc; font: 13px/1.4 -apple-system,BlinkMacSystemFont,sans-serif; cursor: default; }
+        .crop-controls small { display: block; color: #cbd5e1; font-size: 11px; }
+        .crop-controls output { white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .crop-controls button { padding: 6px 12px; border: 1px solid #64748b; border-radius: 6px; background: transparent; color: #f8fafc; font: inherit; cursor: pointer; }
+        .crop-controls button:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
       `;
       shadow.appendChild(style);
 
@@ -942,88 +950,127 @@
       this.start(false);
     }
 
-    startCropMode() {
-      this.ensureOverlay();
-      if (this.dock) this.dock.style.display = 'none';
-      if (this.summary) this.summary.style.display = 'none';
+    startCropMode(requestId) {
+      if (this.cancelCrop) this.cancelCrop();
+      const shadow = this.ensureOverlay();
+      const wasActive = this.active;
+      const wasArmed = this.armed;
+      const visibility = this.host.style.visibility;
+      if (wasActive) this.stop();
+      this.host.style.visibility = 'hidden';
+      this.cropRequestId = requestId;
+      this.cropResult = null;
 
-      let cropBadge = this.shadow ? this.shadow.querySelector('#tether-crop-badge') : null;
-      if (!cropBadge && this.shadow) {
-        cropBadge = document.createElement('div');
-        cropBadge.id = 'tether-crop-badge';
-        cropBadge.style.cssText = 'position:fixed;top:16px;left:50%;transform:translateX(-50%);background:#0f172a;color:#38bdf8;padding:8px 16px;border-radius:999px;font-size:12px;font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,0.6);border:1px solid rgba(56,189,248,0.4);z-index:2147483647;pointer-events:none;display:flex;align-items:center;gap:8px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;';
-        cropBadge.innerHTML = '<span>📸 Click element to crop screenshot</span><span style="color:#94a3b8;font-size:10px;">(Esc to cancel)</span>';
-        this.shadow.appendChild(cropBadge);
-      } else if (cropBadge) {
-        cropBadge.style.display = 'flex';
-      }
+      const crop = document.createElement('dialog');
+      crop.className = 'crop-overlay';
+      crop.setAttribute('aria-label', 'Select screenshot area');
+      crop.setAttribute('aria-describedby', 'crop-help');
+      crop.tabIndex = -1;
+      crop.innerHTML = '<div class="crop-selection"></div><div class="crop-controls"><span id="crop-help">Drag to select an area. Release to capture.<small>Arrows move · Shift + arrows resize · Enter captures · Esc cancels</small></span><output aria-live="polite"></output><button type="button">Cancel</button></div>';
+      shadow.appendChild(crop);
+      const selection = crop.querySelector('.crop-selection');
+      const size = crop.querySelector('output');
+      const events = new AbortController();
+      const options = { signal: events.signal };
+      let pointerId = null;
+      let start = null;
+      let rect = null;
 
-      const onCropMove = (e) => {
-        const el = this.leafTargetFromPoint(e.clientX, e.clientY);
-        if (!el || el === this.host || (el.closest && el.closest('#tether-review-root'))) {
-          if (this.reticle) this.reticle.style.display = 'none';
+      this.finishCrop = (error) => {
+        events.abort();
+        crop.close();
+        crop.remove();
+        this.host.style.visibility = visibility;
+        this.cancelCrop = null;
+        this.finishCrop = null;
+        if (wasActive) this.start(wasArmed);
+        if (error) window.alert(error);
+      };
+      this.cancelCrop = () => {
+        this.cropResult = { cancelled: true };
+        this.finishCrop();
+      };
+      const paint = () => {
+        crop.style.background = 'transparent';
+        Object.assign(selection.style, { display: 'block', left: rect.x + 'px', top: rect.y + 'px', width: rect.width + 'px', height: rect.height + 'px' });
+        size.textContent = rect.width + ' × ' + rect.height;
+      };
+      const point = (event) => ({
+        x: Math.max(0, Math.min(innerWidth, Math.round(event.clientX))),
+        y: Math.max(0, Math.min(innerHeight, Math.round(event.clientY))),
+      });
+      const update = (event) => {
+        const end = point(event);
+        rect = { x: Math.min(start.x, end.x), y: Math.min(start.y, end.y), width: Math.abs(end.x - start.x), height: Math.abs(end.y - start.y) };
+        paint();
+      };
+      const capture = () => {
+        if (!rect || rect.width < 2 || rect.height < 2) return;
+        const result = { rect: { ...rect, x: rect.x + scrollX, y: rect.y + scrollY }, title: sanitizeText(document.title), url: sanitizeURL(location.href) };
+        // Keep the dialog through the release click so it cannot click the page.
+        requestAnimationFrame(() => {
+          if (events.signal.aborted) return;
+          events.abort();
+          crop.close();
+          crop.remove();
+          this.cropResult = result;
+        });
+      };
+
+      crop.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0 || pointerId !== null || event.target.closest('.crop-controls')) return;
+        event.preventDefault();
+        pointerId = event.pointerId;
+        start = point(event);
+        crop.setPointerCapture(pointerId);
+        update(event);
+      }, options);
+      crop.addEventListener('pointermove', (event) => {
+        if (event.pointerId === pointerId) update(event);
+      }, options);
+      crop.addEventListener('pointerup', (event) => {
+        if (event.pointerId !== pointerId) return;
+        event.preventDefault();
+        update(event);
+        pointerId = null;
+        capture();
+      }, options);
+      crop.addEventListener('pointercancel', () => this.cancelCrop(), options);
+      crop.addEventListener('lostpointercapture', () => {
+        if (pointerId !== null) this.cancelCrop();
+      }, options);
+      crop.addEventListener('wheel', (event) => event.preventDefault(), { ...options, passive: false });
+      crop.addEventListener('click', (event) => event.stopPropagation(), options);
+      crop.addEventListener('cancel', (event) => {
+        event.preventDefault();
+        this.cancelCrop();
+      }, options);
+      crop.querySelector('button').addEventListener('click', () => this.cancelCrop(), options);
+      window.addEventListener('resize', () => this.cancelCrop(), options);
+      crop.addEventListener('keydown', (event) => {
+        if (event.target.tagName === 'BUTTON') return;
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          capture();
           return;
         }
-        const rect = el.getBoundingClientRect();
-        if (this.reticle) {
-          this.reticle.style.display = 'block';
-          this.reticle.style.left = rect.left + 'px';
-          this.reticle.style.top = rect.top + 'px';
-          this.reticle.style.width = rect.width + 'px';
-          this.reticle.style.height = rect.height + 'px';
-          this.reticle.style.borderColor = '#00f5ff';
-          this.reticle.style.boxShadow = '0 0 16px rgba(0, 245, 255, 0.5)';
+        const directions = { ArrowLeft: [-10, 0], ArrowRight: [10, 0], ArrowUp: [0, -10], ArrowDown: [0, 10] };
+        const delta = directions[event.key];
+        if (!delta) return;
+        event.preventDefault();
+        rect ||= { x: Math.floor(innerWidth / 4), y: Math.floor(innerHeight / 4), width: Math.floor(innerWidth / 2), height: Math.floor(innerHeight / 2) };
+        if (event.shiftKey) {
+          rect.width = Math.max(2, Math.min(innerWidth - rect.x, rect.width + delta[0]));
+          rect.height = Math.max(2, Math.min(innerHeight - rect.y, rect.height + delta[1]));
+        } else {
+          rect.x = Math.max(0, Math.min(innerWidth - rect.width, rect.x + delta[0]));
+          rect.y = Math.max(0, Math.min(innerHeight - rect.height, rect.y + delta[1]));
         }
-      };
-
-      const cleanup = () => {
-        window.removeEventListener('mousemove', onCropMove, true);
-        window.removeEventListener('click', onCropClick, true);
-        window.removeEventListener('keydown', onCropKey, true);
-        if (this.reticle) this.reticle.style.display = 'none';
-        if (cropBadge) cropBadge.style.display = 'none';
-        if (this.dock) this.dock.style.display = 'flex';
-      };
-
-      const onCropClick = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const el = this.leafTargetFromPoint(e.clientX, e.clientY);
-        if (!el || el === this.host || (el.closest && el.closest('#tether-review-root'))) {
-          cleanup();
-          return;
-        }
-        const rect = el.getBoundingClientRect();
-        const scrollX = window.scrollX || window.pageXOffset || 0;
-        const scrollY = window.scrollY || window.pageYOffset || 0;
-        const selector = buildSelector(el) || (el.tagName ? el.tagName.toLowerCase() : 'element');
-        const detail = {
-          rect: {
-            x: rect.left + scrollX,
-            y: rect.top + scrollY,
-            width: rect.width,
-            height: rect.height,
-          },
-          selector,
-          tagName: el.tagName ? el.tagName.toLowerCase() : 'element',
-          title: document.title,
-          url: window.location.href,
-        };
-        cleanup();
-        try {
-          window.sessionStorage.setItem('tether_last_crop', JSON.stringify(detail));
-        } catch {}
-      };
-
-      const onCropKey = (e) => {
-        if (e.key === 'Escape') {
-          cleanup();
-        }
-      };
-
-      window.addEventListener('mousemove', onCropMove, true);
-      window.addEventListener('click', onCropClick, true);
-      window.addEventListener('keydown', onCropKey, true);
+        paint();
+      }, options);
+      crop.showModal();
+      crop.focus({ preventScroll: true });
+      return true;
     }
 
     toggleSummary() {

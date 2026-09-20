@@ -181,6 +181,14 @@ To capture visual feedback on a page, click **Inspect & Pin Notes** in the Tethe
 
 Use **Review Notes** and **Screenshots** to switch tools. When either tab has keyboard focus, use the arrow keys to switch tabs. Click a screenshot thumbnail to open its preview, and press **Escape** to close it.
 
+Choose **Crop Area**, then drag a rectangle on the page. Release to capture, or press **Escape** to cancel. For keyboard selection, use arrow keys to move, **Shift + arrow keys** to resize, and **Enter** to capture. **Viewport** captures the visible page. **Full Page** captures the entire document, including horizontal overflow.
+
+Screenshots default to lossless PNG at one image pixel per CSS pixel. Retina displays and page zoom do not increase the output density. Chrome scales the capture before encoding it. Tether does not change the page's zoom or layout.
+
+Screenshot previews use Chrome's `unlimitedStorage` permission because the gallery can exceed the [default 10 MB storage quota](https://developer.chrome.com/docs/extensions/reference/api/storage#storage-areas). Reload the unpacked extension after updating its manifest to apply this permission.
+
+After updating the extension, refresh pages that already have a Tether review overlay before using the updated capture controls.
+
 <p align="center">
   <img src="docs/assets/tether-popup.png" alt="Tether Extension Review Notes Popup" width="380" />
 </p>
