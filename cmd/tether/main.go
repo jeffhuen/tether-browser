@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -231,7 +234,55 @@ func runExtension(args []string) int {
 	fmt.Println("Usage: tether extension install")
 	return 0
 }
+func activeHostPath() string {
+	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
+		return filepath.Join(dir, "tether", "active_host")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".config", "tether", "active_host")
+}
 
+func saveActiveHost(host string) {
+	p := activeHostPath()
+	if p == "" {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(p), 0700)
+	_ = os.WriteFile(p, []byte(strings.TrimSpace(host)), 0600)
+}
+
+func getActiveHost() string {
+	p := activeHostPath()
+	if p == "" {
+		return ""
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func clearActiveHost() {
+	p := activeHostPath()
+	if p != "" {
+		_ = os.Remove(p)
+	}
+}
+
+func localScreenshotsDir() string {
+	if dir := os.Getenv("XDG_CACHE_HOME"); dir != "" {
+		return filepath.Join(dir, "tether", "screenshots")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return filepath.Join(os.TempDir(), "tether-screenshots")
+	}
+	return filepath.Join(home, ".cache", "tether", "screenshots")
+}
 func runNativeHost(args []string) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -255,13 +306,80 @@ func runNativeHost(args []string) int {
 			if req.TargetHost == "" {
 				return nil, errors.New("targetHost is required")
 			}
+			saveActiveHost(req.TargetHost)
 			if err := runSSHBackground(req.TargetHost); err != nil {
 				return nil, err
 			}
 			return map[string]any{"ok": true}, nil
 		case "system_ssh_disconnect":
+			clearActiveHost()
 			_ = exec.Command("pkill", "-f", "ssh .* -R 9333:localhost:9333").Run()
 			_ = exec.Command("pkill", "-f", "tether daemon").Run()
+			return map[string]any{"ok": true}, nil
+		case "system_save_screenshot":
+			var req struct {
+				Filename string `json:"filename"`
+				Base64   string `json:"base64"`
+			}
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			if req.Filename == "" {
+				req.Filename = fmt.Sprintf("tether-shot-%d.png", time.Now().Unix())
+			}
+			data, err := base64.StdEncoding.DecodeString(req.Base64)
+			if err != nil {
+				return nil, fmt.Errorf("decode base64: %w", err)
+			}
+			localDir := localScreenshotsDir()
+			_ = os.MkdirAll(localDir, 0755)
+			localPath := filepath.Join(localDir, req.Filename)
+			if err := os.WriteFile(localPath, data, 0644); err != nil {
+				return nil, fmt.Errorf("save local screenshot: %w", err)
+			}
+			remotePath := "/tmp/tether-screenshots/" + req.Filename
+			mirrored := false
+			host := getActiveHost()
+			if host != "" {
+				remoteCmd := fmt.Sprintf("mkdir -p /tmp/tether-screenshots && cat > %s", cli.ShellQuote(remotePath))
+				cmd := exec.Command("ssh", "--", host, remoteCmd)
+				cmd.Stdin = bytes.NewReader(data)
+				if err := cmd.Run(); err == nil {
+					mirrored = true
+				}
+			}
+			return map[string]any{
+				"ok":         true,
+				"filename":   req.Filename,
+				"localPath":  localPath,
+				"remotePath": remotePath,
+				"mirrored":   mirrored,
+				"targetHost": host,
+			}, nil
+		case "system_clear_screenshots":
+			localDir := localScreenshotsDir()
+			_ = os.RemoveAll(localDir)
+			_ = os.MkdirAll(localDir, 0755)
+			host := getActiveHost()
+			if host != "" {
+				_ = exec.Command("ssh", "--", host, "rm -rf /tmp/tether-screenshots && mkdir -p /tmp/tether-screenshots").Run()
+			}
+			return map[string]any{"ok": true}, nil
+		case "system_delete_screenshot":
+			var req struct {
+				Filename string `json:"filename"`
+			}
+			if err := json.Unmarshal(payload, &req); err != nil {
+				return nil, err
+			}
+			if req.Filename != "" {
+				_ = os.Remove(filepath.Join(localScreenshotsDir(), req.Filename))
+				host := getActiveHost()
+				if host != "" {
+					remotePath := "/tmp/tether-screenshots/" + req.Filename
+					_ = exec.Command("ssh", "--", host, fmt.Sprintf("rm -f %s", cli.ShellQuote(remotePath))).Run()
+				}
+			}
 			return map[string]any{"ok": true}, nil
 		}
 		return nil, fmt.Errorf("unknown system message type: %s", msgType)
