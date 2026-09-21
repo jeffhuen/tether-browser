@@ -25,3 +25,8 @@ bin/
 *.test
 dist/
 .beads/interactions.jsonl
+
+# Local research notes & environments
+notes/
+*.local.md
+.env*
