@@ -265,7 +265,7 @@ async function ensureAttached(tabId) {
 async function ensureDomain(tabId, domain) {
   await ensureAttached(tabId);
   const state = attachedTabs.get(tabId);
-  if (!state || state.enabledDomains.has(domain)) return;
+  if (!state || domain === "Input" || state.enabledDomains.has(domain)) return;
   await cdp(tabId, `${domain}.enable`, {});
   state.enabledDomains.add(domain);
 }
