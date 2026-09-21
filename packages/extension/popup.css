@@ -167,7 +167,7 @@ svg {
 }
 
 @media (max-width: 360px) {
-  .version-link {
+  .version-link, .connect-hint {
     display: none;
   }
 }
@@ -196,6 +196,10 @@ svg {
 
 .badge-connected {
   color: #34d399;
+}
+
+.badge-warning {
+  color: var(--danger);
 }
 
 .connect-card {
@@ -278,6 +282,15 @@ svg {
   color: var(--text-primary);
 }
 
+.network-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
 .network-row, .network-actions {
   display: flex;
   align-items: center;
@@ -286,9 +299,29 @@ svg {
 
 .network-row {
   min-height: 28px;
-  gap: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+#network-label {
+  margin-right: auto;
+  font-weight: 600;
+}
+
+.network-readiness, .network-value {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.network-readiness[data-ready="true"] {
   color: var(--text-secondary);
-  font-size: 11px;
+}
+
+.network-value {
+  width: 3ch;
+  text-align: right;
 }
 
 .network-status, .network-help, .connection-error {

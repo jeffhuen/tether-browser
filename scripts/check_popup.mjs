@@ -70,7 +70,7 @@ async function checkLayout() {
     };
   });
   assert.equal(layout.overflow, false, "Popup must not scroll horizontally");
-  assert(layout.headerOneRow, "Connection and routing controls must fit the top bar");
+  assert(layout.headerOneRow, "Connection status must fit beside the brand in the top bar");
   assert(layout.stacked, "Workspace sections must stack vertically");
   assert(layout.buttonsFit, "Buttons must stay within the popup and remain usable");
 }
@@ -146,7 +146,14 @@ try {
     window.popupCheckSend = chrome.runtime.sendMessage.bind(chrome.runtime);
     window.popupCheckNetwork = { enabled: false, state: "off", canEnable: false, ssh: { state: "disconnected" } };
     chrome.runtime.sendMessage = (message, callback) => {
-      if (message.type === "popup_get_status") return callback(window.popupCheckStatus);
+      if (message.type === "popup_get_status") {
+        callback(window.popupCheckStatus);
+        if (window.popupCheckRefreshed) {
+          setTimeout(window.popupCheckRefreshed, 0);
+          delete window.popupCheckRefreshed;
+        }
+        return;
+      }
       if (message.type === "popup_network_status") return callback(window.popupCheckNetwork);
       if (message.type === "popup_network_set") {
         if (window.popupCheckActionError) return callback({ error: window.popupCheckActionError });
@@ -155,22 +162,36 @@ try {
       }
       return window.popupCheckSend(message, callback);
     };
+    window.popupCheckRefresh = () => new Promise((resolve) => {
+      window.popupCheckRefreshed = resolve;
+      document.querySelector("#btn-refresh-tabs").click();
+    });
     return saved;
   });
   await evaluate(async () => {
     window.popupCheckStatus = { connected: true, tabs: [], notes: [] };
-    const refresh = async () => {
-      document.querySelector("#btn-refresh-tabs").click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    };
+    const refresh = window.popupCheckRefresh;
     await refresh();
     const toggle = document.querySelector("#network-toggle");
     if (!toggle.disabled) throw new Error("A browser bridge alone enabled remote browsing");
+    if (document.querySelector("#status-text").textContent !== "Connected" || document.querySelector("#network-ready").textContent !== "Not ready") {
+      throw new Error("The original connection must remain separate from remote readiness");
+    }
     window.popupCheckNetwork.ssh = { state: "connecting", host: "dev-host", sessionId: "fixture" };
     await refresh();
     if (!toggle.disabled) throw new Error("Unverified SSH startup enabled remote browsing");
-    window.popupCheckNetwork = { enabled: false, state: "off", host: "dev-host", canEnable: true, ssh: { state: "connected", host: "dev-host", sessionId: "fixture" } };
+    window.popupCheckStatus.connected = false;
     await refresh();
+    if (document.querySelector("#status-text").textContent !== "Connecting...") throw new Error("Connection progress disappeared");
+    window.popupCheckNetwork = { enabled: false, state: "off", host: "dev-host", canEnable: true, ssh: { state: "connected", host: "dev-host", sessionId: "fixture", proxyPort: 12345 } };
+    await refresh();
+    if (document.querySelector("#status-text").textContent !== "Disconnected" || document.querySelector("#network-ready").textContent !== "Ready") {
+      throw new Error("Remote readiness incorrectly implied that the original connection was up");
+    }
+    window.popupCheckStatus.connected = true;
+    await refresh();
+    document.querySelector("#status-badge").click();
+    if (!toggle.getClientRects().length) throw new Error("Connection settings did not reveal the remote switch");
     toggle.click();
     const enable = document.querySelector("#network-enable");
     if (document.querySelector("#network-confirm").hidden || enable.disabled || document.activeElement !== enable) {
@@ -186,9 +207,15 @@ try {
     enable.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     if (!toggle.checked) throw new Error("Confirmed remote routing was not shown as on");
+    if (document.querySelector("#status-text").textContent !== "Connected Remote") throw new Error("Active remote routing is not visible in the header");
+    document.querySelector("#status-badge").click();
     window.popupCheckNetwork = { ...window.popupCheckNetwork, state: "unavailable", canEnable: false, ssh: { state: "disconnected", error: "Helper unavailable" } };
     await refresh();
     if (!toggle.checked || toggle.disabled) throw new Error("SSH loss must leave the checked OFF control usable");
+    if (document.querySelector("#network-ready").textContent !== "Not ready" || document.querySelector("#network-error").hidden) {
+      throw new Error("A failed remote route was presented as healthy");
+    }
+    document.querySelector("#status-badge").click();
     toggle.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     if (toggle.checked) throw new Error("OFF remained checked after helper loss");
@@ -200,6 +227,33 @@ try {
     await refresh();
     if (!document.querySelector("#network-error").hidden) throw new Error("A recovered status poll left a stale error");
   });
+  for (const width of [384, 320]) {
+    await cdp("Emulation.setDeviceMetricsOverride", { width, height: 600, deviceScaleFactor: 1, mobile: false });
+    for (const state of ["disconnected", "ready", "on", "blocked", "offline", "reconnecting"]) {
+      await evaluate(async (state) => {
+        const enabled = state !== "ready" && state !== "disconnected";
+        const disconnected = state === "disconnected" || state === "offline" || state === "blocked";
+        window.popupCheckStatus = { connected: state === "ready" || state === "on" || state === "blocked", tabs: [], notes: [] };
+        window.popupCheckNetwork = {
+          enabled, state: !enabled ? "off" : state === "on" ? "on" : "unavailable",
+          host: "dev-host", canEnable: state === "ready",
+          ssh: { state: state === "reconnecting" ? "connecting" : disconnected ? "disconnected" : "connected", host: "dev-host", sessionId: "fixture", proxyPort: 12345 },
+        };
+        await window.popupCheckRefresh();
+        if (document.querySelector("#status-badge").getAttribute("aria-expanded") !== "true") document.querySelector("#status-badge").click();
+        const toggle = document.querySelector("#network-toggle");
+        if (state === "disconnected") {
+          if (!toggle.disabled) throw new Error("An unavailable remote route must not be enabled");
+        } else {
+          toggle.focus();
+          if (document.activeElement !== toggle || !toggle.getClientRects().length) throw new Error("Remote control must stay keyboard-accessible in connection settings");
+        }
+      }, state);
+      await checkLayout();
+      await screenshot(`${width}-remote-${state}`);
+    }
+  }
+  await evaluate(() => document.querySelector("#status-badge").click());
   for (const width of [384, 320]) {
     await cdp("Emulation.setDeviceMetricsOverride", { width, height: 600, deviceScaleFactor: 1, mobile: false });
     for (const populated of [false, true]) {
@@ -226,7 +280,7 @@ try {
           recent_hosts: ["reviewer@very-long-remote-development-host.example.test"],
           tether_screenshots: populated ? [{ filename: "popup-layout-check.png", data: canvas.toDataURL("image/png").split(",")[1], label: "A long screenshot title that must not squeeze the delete button", url: "https://example.test/a/long/path", dimensions: "1200 × 800", remotePath: "/tmp/tether-screenshots/a-long-screenshot-filename.png", comment: "Align the action with the form fields." }] : [],
         });
-        document.querySelector("#btn-refresh-tabs").click();
+        await window.popupCheckRefresh();
       }, populated);
       for (const panel of ["notes", "shots"]) {
         await evaluate(async (panel, populated) => {
@@ -547,6 +601,8 @@ try {
     delete window.popupCheckStatus;
     delete window.popupCheckNetwork;
     delete window.popupCheckActionError;
+    delete window.popupCheckRefresh;
+    delete window.popupCheckRefreshed;
     await chrome.storage.local.remove(["recent_hosts", "tether_screenshots", "tether_popup_tab"]);
     await chrome.storage.local.set(saved);
   }, saved);

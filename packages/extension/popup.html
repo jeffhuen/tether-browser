@@ -35,10 +35,6 @@
           <span class="dot"></span>
           <span id="status-text">Disconnected</span>
         </button>
-        <label class="network-row" for="network-toggle" title="Browse through the connected SSH host">
-          <span id="network-label">Remote</span>
-          <input id="network-toggle" class="network-toggle" type="checkbox" role="switch" aria-label="Browse through remote" aria-describedby="network-status network-scope" disabled>
-        </label>
       </div>
     </header>
 
@@ -62,14 +58,29 @@
           </div>
         </form>
         <p id="connection-error" class="connection-error" role="status" hidden></p>
-      <p id="network-status" class="network-status" role="status">Checking SSH connection...</p>
         <div id="recent-hosts-wrapper" class="recent-hosts-wrapper" style="display:none;">
           <span class="recent-label">Recent:</span>
           <div id="recent-hosts-list" class="recent-chips"></div>
         </div>
+        <div class="network-settings">
+          <label class="network-row" for="network-toggle">
+            <span id="network-label">Remote browsing</span>
+            <span id="network-ready" class="network-readiness" role="status">Not ready</span>
+            <span id="network-value" class="network-value" aria-hidden="true">OFF</span>
+            <input id="network-toggle" class="network-toggle" type="checkbox" role="switch" aria-labelledby="network-label" aria-describedby="network-ready network-description network-scope network-status" disabled>
+          </label>
+          <p id="network-description" class="network-help">Browse using this server's network. <code>localhost</code> reaches services on this server.</p>
+          <p id="network-scope" class="network-help">All regular tabs in this profile. Incognito is excluded.</p>
+          <p id="network-status" class="network-status" role="status" hidden></p>
+          <div id="network-confirm" class="section" hidden>
+            <p class="network-help">Route all regular tabs in this Chrome profile through <strong id="network-confirm-host"></strong>, including localhost and destination DNS? Use a host you trust. Localhost cookies and storage are shared between hosts.</p>
+            <div class="network-actions">
+              <button id="network-enable" class="btn-connect" type="button">Enable for this profile</button>
+              <button id="network-cancel" class="btn-pill" type="button">Cancel</button>
+            </div>
+          </div>
       <details class="network-details">
         <summary>Scope &amp; recovery</summary>
-      <p id="network-scope" class="network-help">All regular tabs in this profile, including localhost.</p>
         <p class="network-help">HTTP, HTTPS and WebSockets use SSH. WebRTC and other non-web traffic are not covered: this is not a VPN. Incognito is excluded.</p>
         <p class="network-help">If SSH drops, the switch stays on and new proxied requests fail. Turn it off to restore your previous network settings. Disabling this extension removes that protection.</p>
       <div id="network-reload" class="section" hidden>
@@ -77,17 +88,11 @@
         <button id="network-reload-tabs" class="btn-pill" type="button">Reload Tether tabs</button>
       </div>
       </details>
+        </div>
       </div>
     </section>
 
       <p id="network-error" class="connection-error" role="status" hidden></p>
-      <div id="network-confirm" class="section" hidden>
-        <p class="network-help">Route all regular tabs in this Chrome profile through <strong id="network-confirm-host"></strong>, including localhost and destination DNS? Use a host you trust. Localhost cookies and storage are shared between hosts.</p>
-        <div class="network-actions">
-          <button id="network-enable" class="btn-connect" type="button">Enable for this profile</button>
-          <button id="network-cancel" class="btn-pill" type="button">Cancel</button>
-        </div>
-      </div>
 
     <!-- Workspace Tabs: Notes vs Screenshots -->
     <nav class="main-tabs" role="tablist" aria-label="Review tools">

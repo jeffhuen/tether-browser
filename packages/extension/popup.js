@@ -252,6 +252,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const recentHostsList = document.getElementById("recent-hosts-list");
   const networkToggle = document.getElementById("network-toggle");
   const networkStatusText = document.getElementById("network-status");
+  const networkReadiness = document.getElementById("network-ready");
+  const networkValue = document.getElementById("network-value");
   const networkConfirm = document.getElementById("network-confirm");
   const networkEnable = document.getElementById("network-enable");
   const networkError = document.getElementById("network-error");
@@ -336,10 +338,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     const ssh = network.ssh || {};
     const connecting = ssh.state === "connecting";
     const connected = ssh.state === "connected";
-    statusBadge.className = `badge ${connected || bridgeConnected ? "badge-connected" : "badge-disconnected"}`;
-    statusText.textContent = connecting ? "Connecting..." : connected ? "SSH ready" : bridgeConnected ? "Bridge ready" : "Disconnected";
-    statusBadge.title = connected ? `Connected to ${ssh.host}. Show connection settings.` : "Show connection settings";
-    connectSection.style.display = (connectionPanelOpen ?? !connected) ? "block" : "none";
+    // canEnable and "on" come from the controller's validated SSH/proxy state.
+    const remoteReady = !statusError && (network.canEnable || network.state === "on");
+    const remoteProblem = network.enabled && !remoteReady;
+    const connectionLabel = bridgeConnected ? "Connected" : connecting ? "Connecting" : "Disconnected";
+    statusBadge.className = `badge ${remoteProblem ? "badge-warning" : bridgeConnected ? "badge-connected" : "badge-disconnected"}`;
+    statusText.textContent = `${connectionLabel}${network.enabled ? " Remote" : ""}${connecting && !bridgeConnected ? "..." : ""}`;
+    statusBadge.title = `${connectionLabel}${ssh.host ? ` to ${ssh.host}` : ""}. ${network.enabled ? remoteProblem ? "Remote browsing needs attention. " : "Remote browsing is on. " : ""}Show connection settings.`;
+    connectSection.style.display = (connectionPanelOpen ?? (!bridgeConnected || connecting)) ? "block" : "none";
     statusBadge.setAttribute("aria-expanded", String(connectSection.style.display !== "none"));
     btnDisconnect.style.display = connected || connecting ? "inline-flex" : "none";
     btnDisconnect.setAttribute("aria-label", connecting ? "Cancel SSH connection" : "Disconnect SSH tunnel");
@@ -355,18 +361,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     connectionError.hidden = !ssh.error;
     networkToggle.checked = network.enabled;
     // Turning OFF remains available during reconnection and helper failure.
-    networkToggle.disabled = !network.enabled && (!network.canEnable || networkBusy);
-    networkEnable.disabled = !network.canEnable || networkBusy || confirmedSession !== ssh.sessionId;
+    networkToggle.disabled = !network.enabled && (!remoteReady || networkBusy);
+    networkEnable.disabled = !remoteReady || networkBusy || confirmedSession !== ssh.sessionId;
+    networkReadiness.textContent = remoteReady ? "Ready" : "Not ready";
+    networkReadiness.dataset.ready = String(Boolean(remoteReady));
+    networkValue.textContent = network.enabled ? "ON" : "OFF";
     networkStatusText.dataset.state = network.state;
-    networkStatusText.hidden = !network.enabled && !connecting;
-    document.querySelector(".network-details").hidden = !connected && !network.enabled;
-    networkStatusText.textContent = network.state === "on" ? `On · ${network.host}` :
-      network.state === "unavailable" ? `On · Remote unavailable (${network.host})` :
-      network.state === "conflict" ? "On requested · Remote proxy is not active" :
-      connecting ? `Connecting to ${ssh.host}...` :
-      connected ? `Off · Ready to use ${ssh.host}` : "Off · Connect to an SSH host to enable.";
-    networkToggle.closest("label").title = `${networkStatusText.textContent} All regular tabs in this profile, including localhost.`;
-    networkError.textContent = actionError || statusError || (network.state === "conflict" || (!network.enabled && connected && !network.canEnable) ? network.message : "") || "";
+    networkStatusText.hidden = !connecting;
+    networkStatusText.textContent = connecting ? `Connecting to ${ssh.host}...` : "";
+    networkToggle.closest("label").title = `${remoteReady ? "Ready" : "Not ready"}${ssh.host ? ` · ${ssh.host}` : ""}. All regular tabs in this profile, including localhost.`;
+    networkError.textContent = actionError || statusError ||
+      (network.state === "conflict" || (!network.enabled && connected && !network.canEnable) ? network.message :
+        remoteProblem ? "Remote browsing is still on, but its route is unavailable. New proxied requests are blocked. Reconnect or turn Remote browsing off." : "") || "";
     networkError.hidden = !networkError.textContent;
     if (network.enabled) document.getElementById("network-reload").hidden = false;
   }
