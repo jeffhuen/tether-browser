@@ -115,6 +115,7 @@ svg {
 .header {
   justify-content: space-between;
   flex-wrap: wrap;
+  column-gap: 4px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
 }
@@ -124,8 +125,12 @@ svg {
 }
 
 .header-actions {
-  gap: 4px;
+  gap: 2px;
   margin-left: auto;
+}
+
+.brand {
+  gap: 4px;
 }
 
 .logo {
@@ -159,6 +164,12 @@ svg {
 
 .version-link:hover {
   color: var(--accent);
+}
+
+@media (max-width: 360px) {
+  .version-link {
+    display: none;
+  }
 }
 
 .badge {
@@ -265,6 +276,85 @@ svg {
 .recent-chip:hover {
   background: var(--bg-elevated);
   color: var(--text-primary);
+}
+
+.network-row, .network-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.network-row {
+  min-height: 28px;
+  gap: 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.network-status, .network-help, .connection-error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.network-status {
+  color: var(--text-secondary);
+}
+
+.network-help, .network-details {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.network-details summary {
+  width: fit-content;
+  min-height: 24px;
+  cursor: pointer;
+}
+
+.network-details p + p {
+  margin-top: 6px;
+}
+
+.network-status[data-state="unavailable"], .network-status[data-state="conflict"], .connection-error {
+  color: var(--danger);
+}
+
+.network-toggle {
+  appearance: none;
+  width: 36px;
+  height: 22px;
+  flex: 0 0 36px;
+  margin: 0;
+  padding: 2px;
+  border: 1px solid var(--text-muted);
+  border-radius: 12px;
+  background: var(--bg-input);
+  cursor: pointer;
+}
+
+.network-toggle::before {
+  content: "";
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+
+.network-toggle:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.network-toggle:checked::before {
+  transform: translateX(14px);
+  background: var(--bg-canvas);
+}
+
+.network-toggle:disabled {
+  cursor: not-allowed;
 }
 
 /* Shared controls */

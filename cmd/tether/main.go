@@ -21,6 +21,7 @@ import (
 	"github.com/jeffhuen/tether-browser/packages/client"
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
+
 const helpText = `tether v0.1.32 - remote-to-local browser bridge for AI agents
 Usage:
   tether connect <host>        Link local Chrome to a remote server via SSH in one command
@@ -294,28 +295,24 @@ func runNativeHost(args []string) int {
 		cancel()
 	}()
 
+	var ssh sshSession
+	defer ssh.Close()
+
 	onSys := func(msgType string, payload []byte) (any, error) {
 		switch msgType {
 		case "system_ssh_connect":
 			var req struct {
 				TargetHost string `json:"targetHost"`
+				ProxyPort  int    `json:"proxyPort"`
 			}
 			if err := json.Unmarshal(payload, &req); err != nil {
 				return nil, err
 			}
-			if req.TargetHost == "" {
-				return nil, errors.New("targetHost is required")
-			}
-			saveActiveHost(req.TargetHost)
-			if err := runSSHBackground(req.TargetHost); err != nil {
-				return nil, err
-			}
-			return map[string]any{"ok": true}, nil
+			return ssh.Connect(ctx, req.TargetHost, req.ProxyPort)
+		case "system_ssh_status":
+			return ssh.Status(), nil
 		case "system_ssh_disconnect":
-			clearActiveHost()
-			_ = exec.Command("pkill", "-f", "ssh .* -R 9333:localhost:9333").Run()
-			_ = exec.Command("pkill", "-f", "tether daemon").Run()
-			return map[string]any{"ok": true}, nil
+			return ssh.Disconnect(), nil
 		case "system_save_screenshot":
 			var req struct {
 				Filename string `json:"filename"`
@@ -392,9 +389,12 @@ func runNativeHost(args []string) int {
 	return 0
 }
 
-func ensureDaemonRunning(token string) error {
+func ensureDaemonRunning(ctx context.Context, token string) error {
 	if daemonHealthy(token) {
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	selfExe, err := os.Executable()
 	if err != nil {
@@ -412,49 +412,20 @@ func ensureDaemonRunning(token string) error {
 	if err := daemonCmd.Start(); err != nil {
 		return fmt.Errorf("start daemon: %w", err)
 	}
+	go func() { _ = daemonCmd.Wait() }()
 
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if daemonHealthy(token) {
 			return nil
 		}
-		time.Sleep(200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
 	}
 	return errors.New("local workstation daemon failed to start on 127.0.0.1:9333")
-}
-
-func runSSHBackground(targetHost string) error {
-	token, err := cli.EnsureDaemonToken()
-	if err != nil {
-		return fmt.Errorf("resolve auth token: %w", err)
-	}
-
-	if err := ensureDaemonRunning(token); err != nil {
-		return fmt.Errorf("ensure local daemon: %w", err)
-	}
-
-	q := cli.ShellQuote(token)
-	remoteCmd := fmt.Sprintf("mkdir -p ~/.cache/tether && chmod 700 ~/.cache/tether && printf %%s %s > ~/.cache/tether/auth && chmod 600 ~/.cache/tether/auth", q)
-	syncCmd := exec.Command("ssh", "--", targetHost, remoteCmd)
-	if out, err := syncCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("sync auth token: %s (%w)", strings.TrimSpace(string(out)), err)
-	}
-
-	_ = exec.Command("pkill", "-f", "ssh .* -R 9333:localhost:9333").Run()
-
-	sshArgs := []string{
-		"-f", "-N",
-		"-o", "ExitOnForwardFailure=yes",
-		"-R", "9333:localhost:9333",
-		"--",
-		targetHost,
-	}
-
-	cmd := exec.Command("ssh", sshArgs...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("ssh tunnel: %s (%w)", strings.TrimSpace(string(out)), err)
-	}
-	return nil
 }
 
 func runConnect(args []string) int {

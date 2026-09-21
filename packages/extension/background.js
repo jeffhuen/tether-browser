@@ -1,6 +1,7 @@
 // Tether Browser Bridge - Manifest V3 Background Service Worker
 // Provides remote-to-local browser automation via chrome.debugger
 // and native tab groups inside the developer's active Chromium browser.
+import { initializeNetwork, networkStatus, networkDisconnected, connectSSH, disconnectSSH, setNetworkEnabled } from "./network.js";
 
 const NATIVE_HOST_NAME = "com.tether_browser.host";
 const CDP_TIMEOUT_MS = 25000;
@@ -24,24 +25,35 @@ let isDaemonConnected = false;
 const pendingNative = new Map();
 let nativeReqSeq = 0;
 
-function nativeRequest(msg) {
+function nativeRequest(msg, timeout = 15000) {
   return new Promise((resolve, reject) => {
     if (!nativePort) {
       reject(new Error("Native host not connected"));
       return;
     }
     const id = `nr_${Date.now()}_${nativeReqSeq++}`;
-    pendingNative.set(id, { resolve, reject });
-    nativePort.postMessage({ ...msg, id });
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       const p = pendingNative.get(id);
       if (p) {
         pendingNative.delete(id);
         p.reject(new Error("Native request timed out"));
       }
-    }, 15000);
+    }, timeout);
+    pendingNative.set(id, { resolve, reject, timer });
+    try {
+      nativePort.postMessage({ ...msg, id });
+    } catch (error) {
+      clearTimeout(timer);
+      pendingNative.delete(id);
+      reject(error);
+    }
   });
 }
+
+initializeNetwork(nativeRequest);
+chrome.proxy.settings.onChange.addListener(() => {
+  void networkStatus().catch((error) => console.warn("[Tether] Remote network:", error.message));
+});
 // Prevent unhandled rejections from terminating the service worker
 self.addEventListener("unhandledrejection", (event) => {
   event.preventDefault();
@@ -60,9 +72,14 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 function connectNativeHost() {
   if (nativePort) return;
   try {
-    nativePort = chrome.runtime.connectNative(NATIVE_HOST_NAME);
-    nativePort.onMessage.addListener(handleNativeMessage);
-    nativePort.onDisconnect.addListener(handleNativeDisconnect);
+    const port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
+    nativePort = port;
+    port.onMessage.addListener((message) => {
+      if (nativePort === port) void handleNativeMessage(message);
+    });
+    port.onDisconnect.addListener(() => {
+      if (nativePort === port) handleNativeDisconnect();
+    });
     startHeartbeat();
     console.log("[Tether] Connected to native messaging host:", NATIVE_HOST_NAME);
   } catch (err) {
@@ -80,6 +97,13 @@ function handleNativeDisconnect() {
     console.log("[Tether] Native host disconnected");
   }
   nativePort = null;
+  isDaemonConnected = false;
+  networkDisconnected();
+  for (const pending of pendingNative.values()) {
+    clearTimeout(pending.timer);
+    pending.reject(new Error("Native host disconnected"));
+  }
+  pendingNative.clear();
   scheduleReconnect();
 }
 
@@ -100,6 +124,7 @@ function startHeartbeat() {
     } catch {
       // Handled by onDisconnect
     }
+    void networkStatus().catch((error) => console.warn("[Tether] Remote network:", error.message));
   }, 15000);
 }
 
@@ -165,7 +190,7 @@ async function ensureTabGroup(createIfEmpty = true) {
     const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
     if (windows && windows.length > 0) {
       const targetWin = windows.find((w) => w.focused) || windows[0];
-      const tab = await chrome.tabs.create({ windowId: targetWin.id, url: "about:blank", active: true });
+      const tab = await chrome.tabs.create({ windowId: targetWin.id, url: "data:text/html,", active: true });
       const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
       await chrome.tabGroups.update(groupId, { title: "Tether", color: "blue" });
       tabGroupId = groupId;
@@ -178,7 +203,7 @@ async function ensureTabGroup(createIfEmpty = true) {
   }
 
   // Fallback: create focused window if no normal window exists
-  const win = await chrome.windows.create({ focused: true, url: "about:blank" });
+  const win = await chrome.windows.create({ focused: true, url: "data:text/html," });
   const tab = win.tabs[0];
   const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
   await chrome.tabGroups.update(groupId, { title: "Tether", color: "blue" });
@@ -190,11 +215,31 @@ async function ensureTabGroup(createIfEmpty = true) {
 
 // --- CDP Connection Management ---
 
+// about:blank can inherit our extension origin; empty automation tabs must be opaque.
+const AUTOMATION_PROTOCOLS = new Set(["http:", "https:", "data:", "file:"]);
+
+function assertAutomationURL(url) {
+  url = new URL(String(url), chrome.runtime.getURL(""));
+  if (url.protocol === "blob:" && url.pathname.startsWith("null/")) return;
+  if (url.protocol === "blob:" || url.protocol === "filesystem:") url = new URL(url.pathname);
+  if (!AUTOMATION_PROTOCOLS.has(url.protocol)) {
+    throw new Error("Remote automation cannot access browser or extension pages");
+  }
+}
+
+async function assertAutomationTab(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  if (!tab.url && !tab.pendingUrl) throw new Error("Wait for the tab to finish navigating");
+  if (tab.url) assertAutomationURL(tab.url);
+  if (tab.pendingUrl) assertAutomationURL(tab.pendingUrl);
+}
+
 async function ensureAttached(tabId) {
   if (attachedTabs.has(tabId)) return;
   if (attachingTabs.has(tabId)) return attachingTabs.get(tabId);
 
   const attachPromise = (async () => {
+    await assertAutomationTab(tabId);
     await chrome.debugger.attach({ tabId }, "1.3");
     attachedTabs.set(tabId, { enabledDomains: new Set() });
 
@@ -225,7 +270,9 @@ async function ensureDomain(tabId, domain) {
   state.enabledDomains.add(domain);
 }
 
-function cdp(tabId, method, params = {}) {
+async function cdp(tabId, method, params = {}) {
+  // A tab can navigate after attachment. Recheck at the command boundary.
+  await assertAutomationTab(tabId);
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new Error(`CDP command ${method} timed out after ${CDP_TIMEOUT_MS}ms`));
@@ -304,6 +351,15 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
 // Track user navigation, redirects, and title updates
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url) {
+    try {
+      assertAutomationURL(changeInfo.url);
+    } catch {
+      tabGroupTabs.delete(tabId);
+      if (attachedTabs.has(tabId)) void chrome.debugger.detach({ tabId }).catch(() => {});
+      return;
+    }
+  }
   if (tabGroupId !== null && tab.groupId === tabGroupId) {
     tabGroupTabs.add(tabId);
   }
@@ -322,11 +378,13 @@ chrome.tabs.onCreated.addListener(async (tab) => {
   }
 });
 async function handleOpen(params = {}) {
-  const url = params.url || "about:blank";
+  const url = params.url || "data:text/html,";
+  assertAutomationURL(url);
   await ensureTabGroup(true);
 
   let targetTabId = resolveTargetTabId(params);
-  if (params.newTab || !targetTabId || !tabGroupTabs.has(targetTabId)) {
+  // Empty requests need a new tab: Chrome blocks data: navigation in existing tabs.
+  if (!params.url || params.newTab || !targetTabId || !tabGroupTabs.has(targetTabId)) {
     // Create new tab in group
     const tab = await chrome.tabs.create({ url, active: true });
     await chrome.tabs.group({ tabIds: [tab.id], groupId: tabGroupId });
@@ -335,6 +393,7 @@ async function handleOpen(params = {}) {
     targetTabId = tab.id;
   } else {
     // Navigate existing tab
+    await assertAutomationTab(targetTabId);
     await chrome.tabs.update(targetTabId, { url, active: true });
   }
 
@@ -779,6 +838,7 @@ async function handleTabSwitch(params = {}) {
   if (isNaN(tabId)) {
     throw new Error(`Invalid tab ID: ${target}`);
   }
+  await assertAutomationTab(tabId);
   await chrome.tabs.update(tabId, { active: true });
   activeTabId = tabId;
 
@@ -878,6 +938,7 @@ async function handleNativeMessage(msg) {
 
   if (msg.id && pendingNative.has(msg.id)) {
     const p = pendingNative.get(msg.id);
+    clearTimeout(p.timer);
     pendingNative.delete(msg.id);
     if (msg.error) {
       p.reject(new Error(msg.error.message || String(msg.error)));
@@ -966,7 +1027,26 @@ async function handleNativeMessage(msg) {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
+      if (["popup_network_status", "popup_network_set", "popup_ssh_connect", "popup_ssh_disconnect", "popup_reload_remote_tabs"].includes(msg.type) &&
+          (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL("popup.html"))) {
+        throw new Error("Connection settings can only be changed from the Tether popup.");
+      }
       switch (msg.type) {
+        case "popup_network_status":
+          if (!nativePort) connectNativeHost();
+          sendResponse(await networkStatus());
+          break;
+        case "popup_network_set":
+          if (typeof msg.enabled !== "boolean") throw new Error("Invalid network setting.");
+          await setNetworkEnabled(msg.enabled, msg.sessionId);
+          sendResponse({ ok: true });
+          break;
+        case "popup_reload_remote_tabs": {
+          const tabs = await handleTabList();
+          await Promise.all(tabs.tabs.filter((tab) => tab.inGroup).map((tab) => chrome.tabs.reload(Number(tab.id))));
+          sendResponse({ ok: true });
+          break;
+        }
         case "popup_get_status": {
           if (!nativePort) {
             connectNativeHost();
@@ -995,25 +1075,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
           break;
         }
-        case "popup_ssh_disconnect": {
-          try {
-            const res = await nativeRequest({ type: "system_ssh_disconnect" });
-            isDaemonConnected = false;
-            sendResponse(res);
-          } catch (err) {
-            sendResponse({ error: err.message || String(err) });
-          }
+        case "popup_ssh_disconnect":
+          sendResponse(await disconnectSSH());
           break;
-        }
-        case "popup_ssh_connect": {
-          try {
-            const res = await nativeRequest({ type: "system_ssh_connect", targetHost: msg.targetHost });
-            sendResponse(res);
-          } catch (err) {
-            sendResponse({ error: err.message || String(err) });
-          }
+        case "popup_ssh_connect":
+          sendResponse(await connectSSH(msg.targetHost));
           break;
-        }
         case "popup_switch_tab": {
           await handleTabSwitch({ targetId: msg.tabId });
           sendResponse({ ok: true });

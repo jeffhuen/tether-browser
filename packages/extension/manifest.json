@@ -16,6 +16,7 @@
     "tabGroups",
     "tabs",
     "nativeMessaging",
+    "proxy",
     "storage",
     "unlimitedStorage",
     "alarms"
@@ -35,11 +36,5 @@
       "32": "icons/icon32.png",
       "48": "icons/icon48.png"
     }
-  },
-  "web_accessible_resources": [
-    {
-      "resources": ["review/overlay.js"],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  }
 }

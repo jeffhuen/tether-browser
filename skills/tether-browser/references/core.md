@@ -9,12 +9,14 @@
 Navigates the active tab to the specified URL. If no tab exists in the Tether group, a new tab is created.
 
 ```bash
-# Open with automatic HTTPS resolution
+# Use a full HTTP(S) URL
 tether open https://example.com
 
-# Open about:blank for a clean page
-tether open about:blank
+# Extension mode: open a clean, opaque tab
+tether open ""
 ```
+
+In extension mode, an empty quoted URL creates a new tab without closing existing tabs. Use it to recover from an old `about:blank` target, which the extension now blocks. Direct CDP mode still accepts `about:blank`.
 
 ---
 

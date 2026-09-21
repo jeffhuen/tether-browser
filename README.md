@@ -78,6 +78,24 @@ tether fill @e1 "user@example.com" && tether click @e2
 tether screenshot output.png
 ```
 
+### Browse using the remote server's network
+
+The popup's **Remote** switch uses its connected SSH host. It becomes available only after Tether verifies SSH forwarding, not merely the browser bridge. Click **Remote**, then **Enable for this profile** to route web traffic through that host.
+
+- HTTP, HTTPS, WebSockets, and destination DNS use SSH SOCKS forwarding. `localhost`, `127.0.0.1`, and `::1` refer to the remote host, on any port.
+- This affects **all regular tabs in the Chrome profile**, not just the Tether group. Incognito is excluded. Chrome still renders locally and keeps its existing authentication and passkey support.
+- Use a trusted development host. Localhost cookies and storage are shared across hosts; use a separate Chrome profile when you need isolation.
+- If SSH drops, **Remote** stays on and new proxied requests fail. Open connection settings to reconnect to the same host, or turn **Remote** off. OFF restores your previous proxy settings even when the native helper is unavailable.
+- Turn **Remote** off before switching hosts. Existing connections can keep their old route after a switch. Under connection settings, expand **Scope & recovery** to reload Tether tabs; reopen other affected tabs yourself.
+
+This is a web proxy, not a VPN or a network sandbox. WebRTC and other non-web traffic are not covered. Browser policy, other proxy extensions, or disabling Tether can override or remove the proxy. It does not protect against other programs on your workstation taking over the proxy port after the native helper exits.
+
+The extension rejects automation commands for browser and extension pages, including `about:blank`, which can inherit the extension's origin. Empty-page requests create a new `data:text/html,` tab. Use **New Tab** or `tether open ""` to recover from an old blank tab without closing existing tabs.
+
+Update the local `tether` binary and reload the extension together; the extension now requires Chrome's `proxy` permission. SSH uses your local configuration and agent without interactive prompts. If connection setup fails, run `ssh user@host` in a terminal first to resolve authentication or host-key prompts.
+
+For a terminal-created tunnel, connect to the same host in the popup. Tether reuses the reverse tunnel after a status check and leaves the terminal's SSH process alone when you disconnect from the popup. If that terminal exits, Tether establishes its own reverse tunnel.
+
 ---
 
 ## 3. How It Works: Remote-to-Local Bridge

@@ -57,7 +57,10 @@ async function checkLayout() {
   const layout = await evaluate(() => {
     const panel = document.querySelector('.tab-panel:not([hidden])');
     const boxes = [...panel.children].map((element) => element.getBoundingClientRect());
+    const brand = document.querySelector(".brand").getBoundingClientRect();
+    const actions = document.querySelector(".header-actions").getBoundingClientRect();
     return {
+      headerOneRow: brand.bottom > actions.top,
       overflow: document.documentElement.scrollWidth > innerWidth,
       stacked: boxes.every((box, index) => index === 0 || box.top >= boxes[index - 1].bottom),
       buttonsFit: [...document.querySelectorAll("button")].filter((button) => button.getClientRects().length).every((button) => {
@@ -67,18 +70,135 @@ async function checkLayout() {
     };
   });
   assert.equal(layout.overflow, false, "Popup must not scroll horizontally");
+  assert(layout.headerOneRow, "Connection and routing controls must fit the top bar");
   assert(layout.stacked, "Workspace sections must stack vertically");
   assert(layout.buttonsFit, "Buttons must stay within the popup and remain usable");
 }
 let saved;
 try {
+  await evaluate(async (endpoint) => {
+    const privilegedBlob = URL.createObjectURL(new Blob(["private"], { type: "text/html" }));
+    try {
+      for (const url of [chrome.runtime.getURL("popup.html"), "popup.html", privilegedBlob, "about:extensions", "about:blank"]) {
+        const response = await chrome.runtime.sendMessage({ type: "popup_navigate", url, newTab: true });
+        if (!response.error) throw new Error("Automation opened a privileged browser or extension page");
+      }
+    } finally {
+      URL.revokeObjectURL(privilegedBlob);
+    }
+    const previousTabs = new Set((await chrome.tabs.query({})).map((tab) => tab.id));
+    const opened = await chrome.runtime.sendMessage({ type: "popup_navigate", newTab: false });
+    if (opened.error) throw new Error(opened.error);
+    const tab = (await chrome.tabs.query({ active: true })).find((tab) => !previousTabs.has(tab.id));
+    if (!tab) throw new Error("Default automation tab was not created");
+    const waitComplete = async (previousURL) => {
+      for (let i = 0; i < 100; i++) {
+        const current = await chrome.tabs.get(tab.id);
+        if (current.status === "complete" && current.url !== previousURL) return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error("Guard check tab did not finish loading");
+    };
+    try {
+      await waitComplete();
+      const emptyURL = (await chrome.tabs.get(tab.id)).url;
+      const createdOrigin = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+        expression: "origin", returnByValue: true,
+      });
+      if (createdOrigin.result.value !== "null") throw new Error("Empty automation tab inherited a privileged origin");
+      await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+        expression: `location.href = ${JSON.stringify(chrome.runtime.getURL("popup.html"))}`,
+      });
+      await waitComplete(emptyURL);
+      if ((await chrome.tabs.get(tab.id)).url === chrome.runtime.getURL("popup.html")) {
+        throw new Error("An empty automation page reached the extension controls");
+      }
+      await chrome.tabs.update(tab.id, { url: `${endpoint}/json/version` });
+      await waitComplete();
+      const started = await chrome.runtime.sendMessage({ type: "popup_start_review", tabId: tab.id });
+      if (started.error) throw new Error(started.error);
+      const blob = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+        expression: "URL.createObjectURL(new Blob(['<h1>Web blob</h1>'], {type: 'text/html'}))",
+        returnByValue: true,
+      });
+      await chrome.tabs.update(tab.id, { url: blob.result.value });
+      await waitComplete();
+      const blobReview = await chrome.runtime.sendMessage({ type: "popup_start_review", tabId: tab.id });
+      if (blobReview.error) throw new Error(`Ordinary web blob lost automation access: ${blobReview.error}`);
+      const switched = await chrome.runtime.sendMessage({ type: "popup_switch_tab", tabId: tab.id });
+      if (switched.error) throw new Error(switched.error);
+      const blankNavigation = await chrome.runtime.sendMessage({ type: "popup_navigate", url: "about:blank", newTab: false });
+      if (!blankNavigation.error) throw new Error("Existing-tab navigation admitted an inherited-origin blank page");
+      await chrome.tabs.update(tab.id, { url: "about:blank" });
+      await waitComplete();
+      const blankSwitch = await chrome.runtime.sendMessage({ type: "popup_switch_tab", tabId: tab.id });
+      if (!blankSwitch.error) throw new Error("Tab switching admitted an inherited-origin blank page");
+      await chrome.tabs.update(tab.id, { url: chrome.runtime.getURL("popup.html") });
+      await waitComplete();
+      const blocked = await chrome.runtime.sendMessage({ type: "popup_clear_notes", tabId: tab.id });
+      if (!blocked.error) throw new Error("An attached tab kept automation access after navigating into the extension");
+    } finally {
+      await chrome.tabs.remove(tab.id);
+    }
+  }, endpoint);
   saved = await evaluate(async () => {
     const saved = await chrome.storage.local.get(["recent_hosts", "tether_screenshots", "tether_popup_tab"]);
     window.popupCheckSend = chrome.runtime.sendMessage.bind(chrome.runtime);
-    chrome.runtime.sendMessage = (message, callback) => message.type === "popup_get_status"
-      ? callback(window.popupCheckStatus)
-      : window.popupCheckSend(message, callback);
+    window.popupCheckNetwork = { enabled: false, state: "off", canEnable: false, ssh: { state: "disconnected" } };
+    chrome.runtime.sendMessage = (message, callback) => {
+      if (message.type === "popup_get_status") return callback(window.popupCheckStatus);
+      if (message.type === "popup_network_status") return callback(window.popupCheckNetwork);
+      if (message.type === "popup_network_set") {
+        if (window.popupCheckActionError) return callback({ error: window.popupCheckActionError });
+        window.popupCheckNetwork = { ...window.popupCheckNetwork, enabled: message.enabled, state: message.enabled ? "on" : "off" };
+        return callback({ ok: true });
+      }
+      return window.popupCheckSend(message, callback);
+    };
     return saved;
+  });
+  await evaluate(async () => {
+    window.popupCheckStatus = { connected: true, tabs: [], notes: [] };
+    const refresh = async () => {
+      document.querySelector("#btn-refresh-tabs").click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    await refresh();
+    const toggle = document.querySelector("#network-toggle");
+    if (!toggle.disabled) throw new Error("A browser bridge alone enabled remote browsing");
+    window.popupCheckNetwork.ssh = { state: "connecting", host: "dev-host", sessionId: "fixture" };
+    await refresh();
+    if (!toggle.disabled) throw new Error("Unverified SSH startup enabled remote browsing");
+    window.popupCheckNetwork = { enabled: false, state: "off", host: "dev-host", canEnable: true, ssh: { state: "connected", host: "dev-host", sessionId: "fixture" } };
+    await refresh();
+    toggle.click();
+    const enable = document.querySelector("#network-enable");
+    if (document.querySelector("#network-confirm").hidden || enable.disabled || document.activeElement !== enable) {
+      throw new Error("Enable confirmation must be immediately usable and focused");
+    }
+    window.popupCheckActionError = "Proxy policy changed";
+    enable.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await refresh();
+    if (toggle.checked || document.querySelector("#network-error").hidden) throw new Error("Polling hid a failed enable action");
+    delete window.popupCheckActionError;
+    toggle.click();
+    enable.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (!toggle.checked) throw new Error("Confirmed remote routing was not shown as on");
+    window.popupCheckNetwork = { ...window.popupCheckNetwork, state: "unavailable", canEnable: false, ssh: { state: "disconnected", error: "Helper unavailable" } };
+    await refresh();
+    if (!toggle.checked || toggle.disabled) throw new Error("SSH loss must leave the checked OFF control usable");
+    toggle.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (toggle.checked) throw new Error("OFF remained checked after helper loss");
+    const previous = window.popupCheckNetwork;
+    window.popupCheckNetwork = { error: "Status poll failed" };
+    await refresh();
+    if (document.querySelector("#network-error").hidden) throw new Error("A failed status poll was hidden");
+    window.popupCheckNetwork = previous;
+    await refresh();
+    if (!document.querySelector("#network-error").hidden) throw new Error("A recovered status poll left a stale error");
   });
   for (const width of [384, 320]) {
     await cdp("Emulation.setDeviceMetricsOverride", { width, height: 600, deviceScaleFactor: 1, mobile: false });
@@ -98,6 +218,10 @@ try {
           tabs: populated ? [{ id: "10", active: true, inGroup: true, title: "A long page title that must not squeeze the toolbar or buttons", url: "https://example.test/a/long/path" }] : [],
           notes: populated ? [{ comment: "Keep the primary action aligned with the text input.", payload: { target: { selector: 'main > section.settings-panel > form.account-settings > button[type="submit"]' } } }] : [],
         };
+        window.popupCheckNetwork = {
+          enabled: false, state: "off", canEnable: populated,
+          ssh: { state: populated ? "connected" : "disconnected", host: populated ? "dev-host" : "", sessionId: "fixture" },
+        };
         await chrome.storage.local.set({
           recent_hosts: ["reviewer@very-long-remote-development-host.example.test"],
           tether_screenshots: populated ? [{ filename: "popup-layout-check.png", data: canvas.toDataURL("image/png").split(",")[1], label: "A long screenshot title that must not squeeze the delete button", url: "https://example.test/a/long/path", dimensions: "1200 × 800", remotePath: "/tmp/tether-screenshots/a-long-screenshot-filename.png", comment: "Align the action with the form fields." }] : [],
@@ -115,7 +239,8 @@ try {
         }, panel, populated);
         await checkLayout();
         if (width === 384 && !populated) {
-          assert(await evaluate(() => document.documentElement.scrollHeight <= 600), "Empty popup must fit within Chrome's 600px height limit");
+          const height = await evaluate(() => document.documentElement.scrollHeight);
+          assert(height <= 600, `Empty ${panel} popup is ${height}px; Chrome's height limit is 600px`);
         }
         await screenshot(`${width}-${populated ? "populated" : "empty"}-${panel}`);
       }
@@ -196,7 +321,7 @@ try {
   await evaluate(async () => {
     const status = await window.popupCheckSend({ type: "popup_get_status" });
     if (status.connected) throw new Error("Capture checks require a disposable, disconnected profile");
-    window.captureCheckTab = await chrome.tabs.create({ url: "about:blank", active: true });
+    window.captureCheckTab = await chrome.tabs.create({ url: "data:text/html,", active: true });
     window.captureCheckCommand = (method, params = {}) => chrome.debugger.sendCommand({ tabId: window.captureCheckTab.id }, method, params);
     const attached = await window.popupCheckSend({ type: "popup_capture_screenshot", tabId: window.captureCheckTab.id });
     if (attached.error) throw new Error(attached.error);
@@ -420,6 +545,8 @@ try {
     chrome.runtime.sendMessage = window.popupCheckSend;
     delete window.popupCheckSend;
     delete window.popupCheckStatus;
+    delete window.popupCheckNetwork;
+    delete window.popupCheckActionError;
     await chrome.storage.local.remove(["recent_hosts", "tether_screenshots", "tether_popup_tab"]);
     await chrome.storage.local.set(saved);
   }, saved);

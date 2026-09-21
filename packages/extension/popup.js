@@ -219,6 +219,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   // 1. Load Status & Initial Data
   async function refresh() {
+    void refreshNetwork();
     try {
       let currentTabId = null;
       let currentTab = null;
@@ -249,6 +250,126 @@ document.addEventListener("DOMContentLoaded", async () => {
   const btnDoConnect = document.getElementById("btn-do-connect");
   const recentHostsWrapper = document.getElementById("recent-hosts-wrapper");
   const recentHostsList = document.getElementById("recent-hosts-list");
+  const networkToggle = document.getElementById("network-toggle");
+  const networkStatusText = document.getElementById("network-status");
+  const networkConfirm = document.getElementById("network-confirm");
+  const networkEnable = document.getElementById("network-enable");
+  const networkError = document.getElementById("network-error");
+  let network = { enabled: false, state: "off", canEnable: false, ssh: { state: "disconnected" } };
+  let bridgeConnected = false;
+  let connectionPanelOpen = null;
+  let networkBusy = false;
+  let networkRevision = 0;
+  let confirmedSession = "";
+  let actionError = "";
+  let statusError = "";
+
+  async function refreshNetwork() {
+    const current = networkRevision;
+    try {
+      const result = await sendMessage({ type: "popup_network_status" });
+      if (current !== networkRevision || networkBusy) return;
+      statusError = "";
+      network = result;
+      renderConnection();
+    } catch (error) {
+      if (current !== networkRevision || networkBusy) return;
+      statusError = error.message;
+      renderConnection();
+    }
+  }
+
+  async function networkAction(action) {
+    const current = ++networkRevision;
+    networkBusy = true;
+    actionError = "";
+    renderConnection();
+    try {
+      await action();
+    } catch (error) {
+      if (current === networkRevision) actionError = error.message;
+    } finally {
+      if (current === networkRevision) {
+        networkBusy = false;
+        networkRevision++;
+        renderConnection();
+        await refreshNetwork();
+      }
+    }
+  }
+
+  networkToggle.addEventListener("change", () => {
+    networkToggle.checked = network.enabled;
+    if (network.enabled) {
+      networkConfirm.hidden = true;
+      void networkAction(async () => {
+        await sendMessage({ type: "popup_network_set", enabled: false });
+        network = { ...network, enabled: false, state: "off" };
+        document.getElementById("network-reload").hidden = false;
+      });
+    } else {
+      confirmedSession = network.ssh.sessionId;
+      document.getElementById("network-confirm-host").textContent = network.ssh.host;
+      networkConfirm.hidden = false;
+      renderConnection();
+      networkEnable.focus();
+    }
+  });
+  document.getElementById("network-cancel").addEventListener("click", () => {
+    networkConfirm.hidden = true;
+    networkToggle.focus();
+  });
+  networkEnable.addEventListener("click", () => {
+    networkConfirm.hidden = true;
+    void networkAction(async () => {
+      await sendMessage({ type: "popup_network_set", enabled: true, sessionId: confirmedSession });
+      document.getElementById("network-reload").hidden = false;
+    });
+  });
+  document.getElementById("network-reload-tabs").addEventListener("click", () => {
+    if (confirm("Reload every tab in the Tether group? Unsaved changes may be lost. Other tabs will not be reloaded.")) {
+      void networkAction(() => sendMessage({ type: "popup_reload_remote_tabs" }));
+    }
+  });
+
+  function renderConnection() {
+    const ssh = network.ssh || {};
+    const connecting = ssh.state === "connecting";
+    const connected = ssh.state === "connected";
+    statusBadge.className = `badge ${connected || bridgeConnected ? "badge-connected" : "badge-disconnected"}`;
+    statusText.textContent = connecting ? "Connecting..." : connected ? "SSH ready" : bridgeConnected ? "Bridge ready" : "Disconnected";
+    statusBadge.title = connected ? `Connected to ${ssh.host}. Show connection settings.` : "Show connection settings";
+    connectSection.style.display = (connectionPanelOpen ?? !connected) ? "block" : "none";
+    statusBadge.setAttribute("aria-expanded", String(connectSection.style.display !== "none"));
+    btnDisconnect.style.display = connected || connecting ? "inline-flex" : "none";
+    btnDisconnect.setAttribute("aria-label", connecting ? "Cancel SSH connection" : "Disconnect SSH tunnel");
+    btnDisconnect.title = connecting ? "Cancel SSH connection" : "Disconnect SSH tunnel";
+    btnDoConnect.disabled = networkBusy || connecting;
+    btnDoConnect.textContent = connecting ? "Connecting..." : network.enabled && !connected ? "Reconnect" : "Connect";
+    connectHostInput.disabled = connecting || network.enabled;
+    if (network.enabled) connectHostInput.value = network.host;
+    else if (!connectHostInput.value && ssh.host) connectHostInput.value = ssh.host;
+    recentHostsList.querySelectorAll("button").forEach((button) => { button.disabled = connecting || network.enabled || networkBusy; });
+    const connectionError = document.getElementById("connection-error");
+    connectionError.textContent = ssh.error || "";
+    connectionError.hidden = !ssh.error;
+    networkToggle.checked = network.enabled;
+    // Turning OFF remains available during reconnection and helper failure.
+    networkToggle.disabled = !network.enabled && (!network.canEnable || networkBusy);
+    networkEnable.disabled = !network.canEnable || networkBusy || confirmedSession !== ssh.sessionId;
+    networkStatusText.dataset.state = network.state;
+    networkStatusText.hidden = !network.enabled && !connecting;
+    document.querySelector(".network-details").hidden = !connected && !network.enabled;
+    networkStatusText.textContent = network.state === "on" ? `On · ${network.host}` :
+      network.state === "unavailable" ? `On · Remote unavailable (${network.host})` :
+      network.state === "conflict" ? "On requested · Remote proxy is not active" :
+      connecting ? `Connecting to ${ssh.host}...` :
+      connected ? `Off · Ready to use ${ssh.host}` : "Off · Connect to an SSH host to enable.";
+    networkToggle.closest("label").title = `${networkStatusText.textContent} All regular tabs in this profile, including localhost.`;
+    networkError.textContent = actionError || statusError || (network.state === "conflict" || (!network.enabled && connected && !network.canEnable) ? network.message : "") || "";
+    networkError.hidden = !networkError.textContent;
+    if (network.enabled) document.getElementById("network-reload").hidden = false;
+  }
 
   async function loadRecentHosts() {
     try {
@@ -266,6 +387,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           chip.type = "button";
           chip.className = "recent-chip";
           chip.textContent = h;
+          chip.disabled = network.enabled || network.ssh?.state === "connecting" || networkBusy;
           chip.title = `Connect to ${h}`;
           chip.addEventListener("click", () => {
             if (connectHostInput) connectHostInput.value = h;
@@ -289,25 +411,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   async function doConnect(host) {
     if (!host) return;
-    if (btnDoConnect) {
-      btnDoConnect.disabled = true;
-      btnDoConnect.textContent = "Connecting...";
-    }
-    showToast(`Connecting to ${host}...`, 3000);
-
-    try {
+    connectionPanelOpen = null;
+    await networkAction(async () => {
+      const ssh = await sendMessage({ type: "popup_ssh_connect", targetHost: host });
+      network = { ...network, ssh };
       await saveRecentHost(host);
-      await sendMessage({ type: "popup_ssh_connect", targetHost: host });
-      showToast(`✓ Connected to ${host}!`, 2000);
-      refresh();
-    } catch (err) {
-      showToast("Connect error: " + err.message, 3000);
-    } finally {
-      if (btnDoConnect) {
-        btnDoConnect.disabled = false;
-        btnDoConnect.textContent = "Connect";
-      }
-    }
+    });
   }
 
   if (connectForm) {
@@ -323,6 +432,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     statusBadge.addEventListener("click", () => {
       if (connectSection) {
         const isShown = connectSection.style.display !== "none";
+        connectionPanelOpen = !isShown;
         connectSection.style.display = isShown ? "none" : "block";
         statusBadge.setAttribute("aria-expanded", String(!isShown));
         if (!isShown) loadRecentHosts();
@@ -333,28 +443,23 @@ document.addEventListener("DOMContentLoaded", async () => {
   const btnDisconnect = document.getElementById("btn-disconnect");
   if (btnDisconnect) {
     btnDisconnect.addEventListener("click", async () => {
-      if (confirm("Disconnect SSH tunnel?")) {
-        await sendMessage({ type: "popup_ssh_disconnect" });
-        refresh();
+      const warning = network.enabled
+        ? "Disconnect SSH? Remote browsing will stay on and new web requests will fail until you reconnect or turn it off."
+        : "Disconnect SSH tunnel?";
+      if (network.ssh?.state === "connecting" || confirm(warning)) {
+        await networkAction(async () => {
+          const ssh = await sendMessage({ type: "popup_ssh_disconnect" });
+          network = { ...network, ssh };
+        });
       }
     });
   }
 
   function updateStatusUI(status) {
-    if (status && status.connected) {
-      statusBadge.className = "badge badge-connected";
-      statusText.textContent = "Connected";
-      if (connectSection) connectSection.style.display = "none";
-      if (btnDisconnect) btnDisconnect.style.display = "inline-flex";
-    } else {
-      statusBadge.className = "badge badge-disconnected";
-      statusText.textContent = "Disconnected";
-      if (connectSection) connectSection.style.display = "block";
-      if (btnDisconnect) btnDisconnect.style.display = "none";
-      loadRecentHosts();
-    }
-    statusBadge.setAttribute("aria-expanded", String(connectSection.style.display !== "none"));
+    bridgeConnected = Boolean(status?.connected);
+    renderConnection();
   }
+  loadRecentHosts();
 
   function updateTabsUI(tabs, activeId) {
     if (!tabs || tabs.length === 0) {
@@ -648,8 +753,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (btnNavNew) {
     btnNavNew.addEventListener("click", async () => {
       let url = navInput.value.trim();
-      if (!url) url = "about:blank";
-      if (url !== "about:blank" && !url.startsWith("http://") && !url.startsWith("https://")) {
+      if (url && !url.startsWith("http://") && !url.startsWith("https://")) {
         url = "https://" + url;
       }
       navInput.value = "";
