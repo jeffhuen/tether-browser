@@ -599,6 +599,20 @@ async function handleClick(params = {}, clickCount = 1) {
     throw new Error(`Click requires either a valid @ref, selector, or (x, y) coordinates; received: ${sel || "none"}`);
   }
 
+  // Act-time hit-test & viewport validation
+  const hitCheck = await cdp(tabId, "Runtime.evaluate", {
+    expression: `(() => {
+      const el = document.elementFromPoint(${x}, ${y});
+      if (!el) return { ok: false, reason: "off-viewport" };
+      return { ok: true, tag: el.tagName };
+    })()`,
+    returnByValue: true,
+  }).catch(() => null);
+
+  if (hitCheck?.result?.value && !hitCheck.result.value.ok) {
+    throw new Error(`Click target at (${x}, ${y}) is outside visible viewport`);
+  }
+
   await ensureDomain(tabId, "Input");
 
   await cdp(tabId, "Input.dispatchMouseEvent", {
@@ -849,16 +863,18 @@ async function handleScroll(params = {}) {
   let deltaY = params.deltaY || 0;
   let deltaX = params.deltaX || 0;
 
-  if (params.direction === "up") {
-    deltaY = -600;
-  } else if (params.direction === "down" || (!deltaY && !deltaX)) {
-    deltaY = 600;
-  } else if (params.direction === "top") {
+  if (params.direction === "top") {
     await cdp(tabId, "Runtime.evaluate", { expression: "window.scrollTo(0, 0)" });
     return { tabId, scrolled: "top" };
   } else if (params.direction === "bottom") {
     await cdp(tabId, "Runtime.evaluate", { expression: "window.scrollTo(0, document.body.scrollHeight)" });
     return { tabId, scrolled: "bottom" };
+  } else if (params.direction === "up") {
+    deltaY = -600;
+  } else if (params.direction === "down") {
+    deltaY = 600;
+  } else if (!deltaY && !deltaX) {
+    deltaY = 600;
   }
 
   await cdp(tabId, "Input.dispatchMouseEvent", {

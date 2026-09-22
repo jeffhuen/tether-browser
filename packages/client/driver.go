@@ -723,16 +723,18 @@ func (d *CDPDriver) Scroll(ctx context.Context, params protocol.ScrollParams) er
 	}
 	deltaY := params.DeltaY
 	deltaX := params.DeltaX
-	if params.Direction == "up" {
-		deltaY = -600
-	} else if params.Direction == "down" || (deltaY == 0 && deltaX == 0) {
-		deltaY = 600
-	} else if params.Direction == "top" {
+	if params.Direction == "top" {
 		_, err := client.Call(ctx, "Runtime.evaluate", map[string]any{"expression": "window.scrollTo(0, 0)"})
 		return err
 	} else if params.Direction == "bottom" {
 		_, err := client.Call(ctx, "Runtime.evaluate", map[string]any{"expression": "window.scrollTo(0, document.body.scrollHeight)"})
 		return err
+	} else if params.Direction == "up" {
+		deltaY = -600
+	} else if params.Direction == "down" {
+		deltaY = 600
+	} else if deltaY == 0 && deltaX == 0 {
+		deltaY = 600
 	}
 	wheel := map[string]any{
 		"type":   "mouseWheel",
