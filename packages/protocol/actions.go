@@ -16,6 +16,7 @@ const (
 	MethodFocus       = "browser.focus"
 	MethodEval        = "browser.eval"
 	MethodWait        = "browser.wait"
+	MethodScroll      = "browser.scroll"
 	MethodScreenshot  = "browser.screenshot"
 	MethodPDF         = "browser.pdf"
 	MethodClose       = "browser.close"
@@ -137,6 +138,15 @@ type WaitParams struct {
 	DurationMs int      `json:"durationMs,omitempty"`
 	State      string   `json:"state,omitempty"` // "visible", "hidden", "attached"
 	TimeoutMs  int      `json:"timeoutMs,omitempty"`
+}
+
+// ScrollParams specifies direction or pixel delta for scrolling.
+type ScrollParams struct {
+	TargetID  TargetID `json:"targetId,omitempty"`
+	Direction string   `json:"direction,omitempty"` // "up", "down", "top", "bottom"
+	DeltaX    float64  `json:"deltaX,omitempty"`
+	DeltaY    float64  `json:"deltaY,omitempty"`
+	TimeoutMs int      `json:"timeoutMs,omitempty"`
 }
 
 // ScreenshotParams captures an image of the viewport or element.

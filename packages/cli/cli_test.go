@@ -237,6 +237,41 @@ func TestParseArgsEvalAndWait(t *testing.T) {
 	}
 }
 
+func TestParseArgsScroll(t *testing.T) {
+	// default down
+	cmd, err := ParseArgs([]string{"scroll"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cmd.Method != protocol.MethodScroll {
+		t.Fatalf("expected Method %q, got %q", protocol.MethodScroll, cmd.Method)
+	}
+	p := cmd.Params.(protocol.ScrollParams)
+	if p.Direction != "down" {
+		t.Errorf("expected direction 'down', got %q", p.Direction)
+	}
+
+	// direction up
+	cmdUp, err := ParseArgs([]string{"scroll", "up"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pUp := cmdUp.Params.(protocol.ScrollParams)
+	if pUp.Direction != "up" {
+		t.Errorf("expected direction 'up', got %q", pUp.Direction)
+	}
+
+	// pixel delta
+	cmdDelta, err := ParseArgs([]string{"scroll", "450"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pDelta := cmdDelta.Params.(protocol.ScrollParams)
+	if pDelta.DeltaY != 450 {
+		t.Errorf("expected DeltaY 450, got %f", pDelta.DeltaY)
+	}
+}
+
 func TestParseArgsScreenshotCloseStatusBroker(t *testing.T) {
 	// screenshot without path
 	cmd, err := ParseArgs([]string{"screenshot"})

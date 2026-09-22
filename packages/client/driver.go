@@ -30,6 +30,7 @@ type BrowserDriver interface {
 	Focus(ctx context.Context, params protocol.FocusParams) error
 	Eval(ctx context.Context, params protocol.EvalParams) (*protocol.EvalResult, error)
 	Wait(ctx context.Context, params protocol.WaitParams) error
+	Scroll(ctx context.Context, params protocol.ScrollParams) error
 	Screenshot(ctx context.Context, params protocol.ScreenshotParams) (*protocol.ScreenshotResult, error)
 	Status(ctx context.Context, params protocol.StatusParams) (*protocol.StatusResult, error)
 	ListTabs(ctx context.Context) (*protocol.TabListResult, error)
@@ -467,10 +468,11 @@ func (d *CDPDriver) Snapshot(ctx context.Context, params protocol.SnapshotParams
 		let ref = "";
 		let backendId = 0;
 		if (interactive) {
-			ref = "@e" + refCounter++;
+			ref = "@e" + refCounter;
 			refs[ref] = el;
 			backendId = refCounter;
 			refMap[ref] = backendId;
+			refCounter++;
 		}
 
 		let rect = null;
@@ -678,10 +680,15 @@ func (d *CDPDriver) Fill(ctx context.Context, params protocol.FillParams) error 
 	if (!el) return { notFound: true };
 	if (!el.isConnected) return { stale: true };
 	el.focus();
-	el.value = txt;
+	const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set ||
+	                     Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+	if (nativeSetter) {
+		nativeSetter.call(el, txt);
+	} else {
+		el.value = txt;
+	}
 	el.dispatchEvent(new Event('input', { bubbles: true }));
 	el.dispatchEvent(new Event('change', { bubbles: true }));
-	return { ok: true };
 })(%q, %q)
 `, params.Selector, params.Text)
 
@@ -707,6 +714,36 @@ func (d *CDPDriver) Fill(ctx context.Context, params protocol.FillParams) error 
 	return nil
 }
 
+
+// Scroll scrolls the active page using mouse wheel or window.scrollTo.
+func (d *CDPDriver) Scroll(ctx context.Context, params protocol.ScrollParams) error {
+	client, _, err := d.getTargetClient(params.TargetID)
+	if err != nil {
+		return err
+	}
+	deltaY := params.DeltaY
+	deltaX := params.DeltaX
+	if params.Direction == "up" {
+		deltaY = -600
+	} else if params.Direction == "down" || (deltaY == 0 && deltaX == 0) {
+		deltaY = 600
+	} else if params.Direction == "top" {
+		_, err := client.Call(ctx, "Runtime.evaluate", map[string]any{"expression": "window.scrollTo(0, 0)"})
+		return err
+	} else if params.Direction == "bottom" {
+		_, err := client.Call(ctx, "Runtime.evaluate", map[string]any{"expression": "window.scrollTo(0, document.body.scrollHeight)"})
+		return err
+	}
+	wheel := map[string]any{
+		"type":   "mouseWheel",
+		"x":      500,
+		"y":      400,
+		"deltaX": deltaX,
+		"deltaY": deltaY,
+	}
+	_, err = client.Call(ctx, "Input.dispatchMouseEvent", wheel)
+	return err
+}
 // Type inserts text into an element preserving selection and caret.
 func (d *CDPDriver) Type(ctx context.Context, params protocol.TypeParams) error {
 	client, _, err := d.getTargetClient(params.TargetID)

@@ -520,6 +520,17 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
 		return resp
 
+	case protocol.MethodScroll:
+		var p protocol.ScrollParams
+		if err := req.UnmarshalParams(&p); err != nil {
+			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
+		}
+		if err := s.driver.Scroll(ctx, p); err != nil {
+			return mapDriverError(req, err)
+		}
+		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
+		return resp
+
 	case protocol.MethodScreenshot:
 		var p protocol.ScreenshotParams
 		if err := req.UnmarshalParams(&p); err != nil {

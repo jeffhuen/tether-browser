@@ -32,6 +32,7 @@ type mockDriver struct {
 	lastWait     protocol.WaitParams
 	lastShot     protocol.ScreenshotParams
 	lastClose    protocol.CloseParams
+	lastScroll   protocol.ScrollParams
 	snapshotResp *protocol.SnapshotResult
 	evalResp     any
 	errToReturn  error
@@ -128,6 +129,14 @@ func (m *mockDriver) Focus(ctx context.Context, p protocol.FocusParams) error {
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, "Focus")
 	m.lastFocus = p
+	return m.errToReturn
+}
+
+func (m *mockDriver) Scroll(ctx context.Context, p protocol.ScrollParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "Scroll")
+	m.lastScroll = p
 	return m.errToReturn
 }
 

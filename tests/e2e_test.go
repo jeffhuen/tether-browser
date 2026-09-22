@@ -127,6 +127,10 @@ func (m *e2eMockDriver) Wait(ctx context.Context, p protocol.WaitParams) error {
 	return nil
 }
 
+func (m *e2eMockDriver) Scroll(ctx context.Context, p protocol.ScrollParams) error {
+	return nil
+}
+
 func (m *e2eMockDriver) Screenshot(ctx context.Context, p protocol.ScreenshotParams) (*protocol.ScreenshotResult, error) {
 	return &protocol.ScreenshotResult{
 		Base64: "dGVzdC1zY3JlZW5zaG90", // "test-screenshot"

@@ -26,6 +26,7 @@ Commands:
   focus <sel>                Focus element
   eval <js>                  Run JavaScript expression
   wait <sel|ms>              Wait for element or duration
+  scroll [dir|px]            Scroll page (up, down, top, bottom, or deltaY)
   screenshot [path]          Capture screenshot
   close [--all]              Close active tab or all tabs
   status                     Show daemon and target connectivity

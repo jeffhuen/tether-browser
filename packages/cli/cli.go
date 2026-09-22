@@ -273,6 +273,25 @@ func ParseArgs(args []string) (*Command, error) {
 		cmd.Method = protocol.MethodWait
 		cmd.Params = p
 
+	case "scroll":
+		p := protocol.ScrollParams{
+			TimeoutMs: global.TimeoutMs,
+		}
+		if len(allArgs) > 0 {
+			dir := strings.ToLower(allArgs[0])
+			if dir == "up" || dir == "down" || dir == "top" || dir == "bottom" {
+				p.Direction = dir
+			} else if dy, err := strconv.ParseFloat(allArgs[0], 64); err == nil {
+				p.DeltaY = dy
+			} else {
+				p.Direction = "down"
+			}
+		} else {
+			p.Direction = "down"
+		}
+		cmd.Method = protocol.MethodScroll
+		cmd.Params = p
+
 	case "screenshot":
 		p := protocol.ScreenshotParams{
 			Format:    "png",

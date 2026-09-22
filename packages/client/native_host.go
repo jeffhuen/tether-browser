@@ -589,6 +589,11 @@ func (d *ExtensionDriver) Focus(ctx context.Context, params protocol.FocusParams
 	_, err := d.call(ctx, protocol.MethodFocus, params)
 	return err
 }
+
+func (d *ExtensionDriver) Scroll(ctx context.Context, params protocol.ScrollParams) error {
+	_, err := d.call(ctx, protocol.MethodScroll, params)
+	return err
+}
 func (d *ExtensionDriver) Eval(ctx context.Context, params protocol.EvalParams) (*protocol.EvalResult, error) {
 	res, err := d.call(ctx, protocol.MethodEval, params)
 	if err != nil {

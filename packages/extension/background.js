@@ -20,6 +20,9 @@ const attachingTabs = new Map();
 
 // Node reference registry for compact @e1, @e2 element references: tabId -> Map<ref, nodeInfo>
 const elementRefsByTab = new Map();
+// Tab snapshot generation and fingerprint cache: tabId -> { generation: number, lastHash: string }
+const tabSnapshotStates = new Map();
+const NO_ENABLE_DOMAINS = new Set(["Input"]);
 let activeNotesCache = [];
 let isDaemonConnected = false;
 const pendingNative = new Map();
@@ -265,7 +268,7 @@ async function ensureAttached(tabId) {
 async function ensureDomain(tabId, domain) {
   await ensureAttached(tabId);
   const state = attachedTabs.get(tabId);
-  if (!state || domain === "Input" || state.enabledDomains.has(domain)) return;
+  if (!state || NO_ENABLE_DOMAINS.has(domain) || state.enabledDomains.has(domain)) return;
   await cdp(tabId, `${domain}.enable`, {});
   state.enabledDomains.add(domain);
 }
@@ -351,6 +354,10 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
 // Track user navigation, redirects, and title updates
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === "loading" || changeInfo.url) {
+    elementRefsByTab.delete(tabId);
+    tabSnapshotStates.delete(tabId);
+  }
   if (changeInfo.url) {
     try {
       assertAutomationURL(changeInfo.url);
@@ -405,11 +412,29 @@ async function handleOpen(params = {}) {
   };
 }
 
+function computeTreeHash(nodes, targetUrl, title) {
+  let h = 0x811c9dc5;
+  const str = (targetUrl || "") + "|" + (title || "") + "|" + nodes.map((n) => `${n.ref}:${n.role}:${n.name}:${n.value || ""}:${n.checked || ""}:${n.selected || ""}:${n.expanded || ""}:${n.disabled || ""}`).join(";");
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return `hash-${(h >>> 0).toString(16)}`;
+}
+
 async function handleSnapshot(params = {}) {
   const tabId = resolveTargetTabId(params);
   if (!tabId) throw new Error("No active tab in Tether group");
   await ensureDomain(tabId, "Accessibility");
   await ensureDomain(tabId, "DOM");
+
+  let targetUrl = "";
+  let title = "";
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    targetUrl = tab.url || "";
+    title = tab.title || "";
+  } catch {}
 
   const axResult = await cdp(tabId, "Accessibility.getFullAXTree", {});
   const nodes = axResult.nodes || [];
@@ -424,6 +449,11 @@ async function handleSnapshot(params = {}) {
     const role = node.role?.value || "";
     const name = node.name?.value || "";
     const value = node.value?.value;
+
+    const props = {};
+    for (const p of node.properties || []) {
+      props[p.name] = p.value?.value;
+    }
 
     const isInteractive = [
       "button", "link", "textbox", "checkbox", "radio", "combobox",
@@ -443,24 +473,53 @@ async function handleSnapshot(params = {}) {
       });
     }
 
-    simplifiedTree.push({
+    const nodeData = {
       ref,
       role,
       name,
       value,
-      disabled: node.disabled?.value || false,
-    });
+      disabled: props.disabled === true || node.disabled?.value === true || false,
+      focused: props.focused === true || false,
+      selected: props.selected === true || false,
+      expanded: props.expanded === true || false,
+    };
+    if (props.checked !== undefined) {
+      nodeData.checked = String(props.checked);
+    }
+
+    simplifiedTree.push(nodeData);
   }
   elementRefsByTab.set(tabId, refMap);
+
+  let tabState = tabSnapshotStates.get(tabId) || { generation: 0, lastHash: "" };
+  const currentHash = computeTreeHash(simplifiedTree, targetUrl, title);
+  if (currentHash !== tabState.lastHash) {
+    tabState.generation++;
+    tabState.lastHash = currentHash;
+  }
+  tabSnapshotStates.set(tabId, tabState);
+
+  const refTable = {};
+  for (const [r, info] of refMap.entries()) {
+    if (info.backendDOMNodeId) {
+      refTable[r] = info.backendDOMNodeId;
+    }
+  }
 
   return {
     targetId: String(tabId),
     tabId,
+    targetUrl,
+    title,
+    generation: tabState.generation,
+    rootHash: currentHash,
+    modified: !params.lastGeneration || params.lastGeneration !== tabState.generation,
     nodes: simplifiedTree,
     nodeCount: simplifiedTree.length,
-    rootHash: `hash-${Date.now()}`,
+    refTable,
   };
 }
+
 
 async function resolveRefCoordinates(tabId, ref) {
   const refMap = elementRefsByTab.get(tabId);
@@ -471,6 +530,11 @@ async function resolveRefCoordinates(tabId, ref) {
   if (!item.backendDOMNodeId) {
     throw new Error(`Element reference ${ref} has no backend node ID`);
   }
+
+  await ensureDomain(tabId, "DOM");
+  try {
+    await cdp(tabId, "DOM.scrollIntoViewIfNeeded", { backendNodeId: item.backendDOMNodeId });
+  } catch {}
 
   const boxModel = await cdp(tabId, "DOM.getBoxModel", {
     backendNodeId: item.backendDOMNodeId,
@@ -484,7 +548,7 @@ async function resolveRefCoordinates(tabId, ref) {
   // Calculate center of quad: [x1, y1, x2, y2, x3, y3, x4, y4]
   const x = (content[0] + content[2] + content[4] + content[6]) / 4;
   const y = (content[1] + content[3] + content[5] + content[7]) / 4;
-  return { x: Math.round(x), y: Math.round(y) };
+  return { x: Math.round(x), y: Math.round(y), backendNodeId: item.backendDOMNodeId };
 }
 async function resolveSelectorCoordinates(tabId, sel) {
   await ensureDomain(tabId, "DOM");
@@ -548,6 +612,7 @@ async function handleClick(params = {}, clickCount = 1) {
     x,
     y,
     button: "left",
+    buttons: 1,
     clickCount,
   });
 
@@ -556,6 +621,7 @@ async function handleClick(params = {}, clickCount = 1) {
     x,
     y,
     button: "left",
+    buttons: 0,
     clickCount,
   });
 
@@ -571,9 +637,21 @@ async function handleFill(params = {}) {
   if (!tabId) throw new Error("No active tab in Tether group");
 
   const sel = params.selector || params.ref;
+  let coords = null;
   if (sel && typeof sel === "string") {
+    coords = await resolveCoordinates(tabId, sel);
+  }
+
+  if (coords?.backendNodeId) {
+    await ensureDomain(tabId, "DOM");
+    try {
+      await cdp(tabId, "DOM.focus", { backendNodeId: coords.backendNodeId });
+    } catch {}
+  }
+  if (coords) {
     await handleClick({ targetId: tabId, selector: sel });
   }
+
   await ensureDomain(tabId, "Input");
 
   await cdp(tabId, "Input.dispatchKeyEvent", {
@@ -593,9 +671,21 @@ async function handleType(params = {}) {
   if (!tabId) throw new Error("No active tab in Tether group");
 
   const sel = params.selector || params.ref;
+  let coords = null;
   if (sel && typeof sel === "string") {
+    coords = await resolveCoordinates(tabId, sel);
+  }
+
+  if (coords?.backendNodeId) {
+    await ensureDomain(tabId, "DOM");
+    try {
+      await cdp(tabId, "DOM.focus", { backendNodeId: coords.backendNodeId });
+    } catch {}
+  }
+  if (coords) {
     await handleClick({ targetId: tabId, selector: sel });
   }
+
   await ensureDomain(tabId, "Input");
 
   if (params.text) {
@@ -604,6 +694,7 @@ async function handleType(params = {}) {
 
   return { tabId, typed: params.text };
 }
+
 
 async function handleHover(params = {}) {
   const tabId = resolveTargetTabId(params);
@@ -652,6 +743,33 @@ async function handlePress(params = {}) {
 
   await ensureDomain(tabId, "Input");
 
+  let key = params.key;
+  let modifiers = 0;
+
+  if (key.includes("+")) {
+    const parts = key.split("+");
+    key = parts.pop() || "+";
+    for (const mod of parts) {
+      switch (mod.toLowerCase()) {
+        case "ctrl":
+        case "control":
+          modifiers |= 2;
+          break;
+        case "alt":
+          modifiers |= 1;
+          break;
+        case "shift":
+          modifiers |= 8;
+          break;
+        case "meta":
+        case "cmd":
+        case "command":
+          modifiers |= 4;
+          break;
+      }
+    }
+  }
+
   const keyMap = {
     Enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" },
     Tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
@@ -665,29 +783,93 @@ async function handlePress(params = {}) {
     PageUp: { key: "PageUp", code: "PageUp", windowsVirtualKeyCode: 33 },
   };
 
-  const keyDef = keyMap[params.key] || {
-    key: params.key,
-    code: params.key,
-    windowsVirtualKeyCode: params.key.charCodeAt(0) || 0,
-  };
+  let keyDef = keyMap[key];
+  if (!keyDef) {
+    const isSingleChar = key.length === 1;
+    let code = key;
+    let vk = key.charCodeAt(0) || 0;
+    if (isSingleChar) {
+      if (key >= "a" && key <= "z") {
+        code = `Key${key.toUpperCase()}`;
+        vk = key.toUpperCase().charCodeAt(0);
+      } else if (key >= "A" && key <= "Z") {
+        code = `Key${key}`;
+        vk = key.charCodeAt(0);
+      } else if (key >= "0" && key <= "9") {
+        code = `Digit${key}`;
+        vk = key.charCodeAt(0);
+      }
+    }
+    keyDef = {
+      key,
+      code,
+      windowsVirtualKeyCode: vk,
+      text: isSingleChar && !(modifiers & (2 | 1 | 4)) ? key : undefined,
+    };
+  }
 
   await cdp(tabId, "Input.dispatchKeyEvent", {
     type: "rawKeyDown",
     key: keyDef.key,
     code: keyDef.code,
+    modifiers,
     windowsVirtualKeyCode: keyDef.windowsVirtualKeyCode,
     text: keyDef.text,
     unmodifiedText: keyDef.text,
   });
 
+  if (keyDef.text) {
+    await cdp(tabId, "Input.dispatchKeyEvent", {
+      type: "char",
+      key: keyDef.key,
+      code: keyDef.code,
+      modifiers,
+      windowsVirtualKeyCode: keyDef.windowsVirtualKeyCode,
+      text: keyDef.text,
+      unmodifiedText: keyDef.text,
+    });
+  }
+
   await cdp(tabId, "Input.dispatchKeyEvent", {
     type: "keyUp",
     key: keyDef.key,
     code: keyDef.code,
+    modifiers,
     windowsVirtualKeyCode: keyDef.windowsVirtualKeyCode,
   });
 
   return { tabId, pressed: params.key };
+}
+
+async function handleScroll(params = {}) {
+  const tabId = resolveTargetTabId(params);
+  if (!tabId) throw new Error("No active tab in Tether group");
+  await ensureDomain(tabId, "Input");
+
+  let deltaY = params.deltaY || 0;
+  let deltaX = params.deltaX || 0;
+
+  if (params.direction === "up") {
+    deltaY = -600;
+  } else if (params.direction === "down" || (!deltaY && !deltaX)) {
+    deltaY = 600;
+  } else if (params.direction === "top") {
+    await cdp(tabId, "Runtime.evaluate", { expression: "window.scrollTo(0, 0)" });
+    return { tabId, scrolled: "top" };
+  } else if (params.direction === "bottom") {
+    await cdp(tabId, "Runtime.evaluate", { expression: "window.scrollTo(0, document.body.scrollHeight)" });
+    return { tabId, scrolled: "bottom" };
+  }
+
+  await cdp(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseWheel",
+    x: 400,
+    y: 300,
+    deltaX,
+    deltaY,
+  });
+
+  return { tabId, scrolled: { deltaX, deltaY } };
 }
 
 async function handleWait(params = {}) {
@@ -982,6 +1164,9 @@ async function handleNativeMessage(msg) {
         break;
       case "browser.wait":
         result = await handleWait(params);
+        break;
+      case "browser.scroll":
+        result = await handleScroll(params);
         break;
       case "browser.close":
         result = await handleClose(params);
