@@ -67,3 +67,15 @@ When publishing a new release:
 4. Click **Tether Browser Bridge** (`ddfmonciifjlnpdjbijgeachabjebbfh`).
 5. In the **Package** tab, click **Upload new package** and upload the new `.zip`.
 6. Click **Submit for Review**.
+
+---
+
+## 5. Chrome Web Store Permission Justifications
+
+When submitting to the Chrome Web Store, enter these justifications under the **Privacy practices** tab:
+
+### Justification for `proxy`:
+> The proxy permission is required for the optional 'Remote Browsing' feature. When enabled by the user in the extension popup, Tether routes browser automation traffic through a verified local SOCKS5 proxy established over an encrypted SSH reverse tunnel to the developer's remote development server. This allows AI coding agents running in remote Linux/cloud environments to browse internal development networks while browser rendering and authentication stay on the local workstation. The proxy is strictly user-toggled, disabled by default, and only active when connected to an authorized SSH host.
+
+### Justification for `unlimitedStorage`:
+> The unlimitedStorage permission is required for the in-extension visual review system. The extension allows developers to capture area crops, viewport screenshots, and full-page captures as high-resolution PNG data URLs and attach element-level design review notes. Because multiple full-page or high-DPI screenshots quickly exceed Chrome's default 5MB storage limit, unlimitedStorage ensures user-captured visual feedback and review notes can be saved locally on the device without data loss before being exported to AI coding agents. All stored data remains strictly local on the developer's machine.
