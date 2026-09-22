@@ -67,12 +67,17 @@ async function checkLayout() {
         const box = button.getBoundingClientRect();
         return box.left >= 0 && box.right <= innerWidth && box.height >= 24;
       }),
+      statusesVisible: [...document.querySelectorAll(".connection-state")].every((element) => {
+        const box = element.getBoundingClientRect();
+        return box.width > 0 && box.left >= 0 && box.right <= innerWidth && box.bottom <= innerHeight;
+      }),
     };
   });
   assert.equal(layout.overflow, false, "Popup must not scroll horizontally");
   assert(layout.headerOneRow, "Connection status must fit beside the brand in the top bar");
   assert(layout.stacked, "Workspace sections must stack vertically");
   assert(layout.buttonsFit, "Buttons must stay within the popup and remain usable");
+  assert(layout.statusesVisible, "All connection indicators must remain visible when settings are collapsed");
 }
 let saved;
 try {
@@ -182,15 +187,21 @@ try {
     if (!toggle.disabled) throw new Error("Unverified SSH startup enabled remote browsing");
     window.popupCheckStatus.connected = false;
     await refresh();
-    if (document.querySelector("#status-text").textContent !== "Connecting...") throw new Error("Connection progress disappeared");
+    if (document.querySelector("#status-text").textContent !== "Disconnected" ||
+        document.querySelector("#ssh-status").textContent !== "Connecting...") {
+      throw new Error("SSH progress must not replace agent connection status");
+    }
     window.popupCheckNetwork = { enabled: false, state: "off", host: "dev-host", canEnable: true, ssh: { state: "connected", host: "dev-host", sessionId: "fixture", proxyPort: 12345 } };
     await refresh();
-    if (document.querySelector("#status-text").textContent !== "Disconnected" || document.querySelector("#network-ready").textContent !== "Ready") {
+    if (document.querySelector("#status-text").textContent !== "Disconnected" ||
+        document.querySelector("#ssh-status").textContent !== "Connected" ||
+        document.querySelector("#remote-status").textContent !== "Off" ||
+        document.querySelector("#network-ready").textContent !== "Ready") {
       throw new Error("Remote readiness incorrectly implied that the original connection was up");
     }
     window.popupCheckStatus.connected = true;
     await refresh();
-    document.querySelector("#status-badge").click();
+    if (document.querySelector("#status-badge").getAttribute("aria-expanded") !== "true") document.querySelector("#status-badge").click();
     if (!toggle.getClientRects().length) throw new Error("Connection settings did not reveal the remote switch");
     toggle.click();
     const enable = document.querySelector("#network-enable");
@@ -202,18 +213,35 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await refresh();
     if (toggle.checked || document.querySelector("#network-error").hidden) throw new Error("Polling hid a failed enable action");
+    if (document.querySelectorAll(".connection-error:not([hidden])").length !== 1 ||
+        document.querySelector("#network-error-details").open ||
+        document.querySelector("#network-error-detail").textContent !== window.popupCheckActionError ||
+        document.querySelector("#network-error").textContent.includes(window.popupCheckActionError)) {
+      throw new Error("A failed action needs one plain message with its original error in collapsed details");
+    }
     delete window.popupCheckActionError;
     toggle.click();
     enable.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     if (!toggle.checked) throw new Error("Confirmed remote routing was not shown as on");
-    if (document.querySelector("#status-text").textContent !== "Connected Remote") throw new Error("Active remote routing is not visible in the header");
+    if (document.querySelector("#status-text").textContent !== "Connected" ||
+        document.querySelector("#remote-status").textContent !== "On") {
+      throw new Error("Agent connection and enabled remote browsing must have separate indicators");
+    }
     document.querySelector("#status-badge").click();
     window.popupCheckNetwork = { ...window.popupCheckNetwork, state: "unavailable", canEnable: false, ssh: { state: "disconnected", error: "Helper unavailable" } };
     await refresh();
     if (!toggle.checked || toggle.disabled) throw new Error("SSH loss must leave the checked OFF control usable");
+    if (document.querySelectorAll(".connection-error:not([hidden])").length !== 1) {
+      throw new Error("SSH loss and remote browsing failure must share one warning");
+    }
     if (document.querySelector("#network-ready").textContent !== "Not ready" || document.querySelector("#network-error").hidden) {
       throw new Error("A failed remote route was presented as healthy");
+    }
+    if (document.querySelector("#status-text").textContent !== "Connected" ||
+        document.querySelector("#ssh-status").textContent !== "Error" ||
+        document.querySelector("#remote-status").textContent !== "On, not ready") {
+      throw new Error("SSH loss must not hide a working agent bridge or a retained remote route");
     }
     document.querySelector("#status-badge").click();
     toggle.click();
@@ -223,26 +251,67 @@ try {
     window.popupCheckNetwork = { error: "Status poll failed" };
     await refresh();
     if (document.querySelector("#network-error").hidden) throw new Error("A failed status poll was hidden");
+    if (document.querySelector("#ssh-status").textContent !== "Unknown" ||
+        document.querySelector("#remote-status").textContent !== "Unknown") {
+      throw new Error("Failed polling must not present cached SSH or route status as current");
+    }
     window.popupCheckNetwork = previous;
     await refresh();
-    if (!document.querySelector("#network-error").hidden) throw new Error("A recovered status poll left a stale error");
+    if (document.querySelector("#network-error-detail").textContent.includes("Status poll failed")) {
+      throw new Error("A recovered poll left stale details instead of the current SSH error");
+    }
+    window.popupCheckNetwork = {
+      enabled: false, state: "off", canEnable: false,
+      ssh: { state: "disconnected", error: "Tailscale SSH requires reauthentication at https://login.tailscale.com/a/fixture-with-a-long-authentication-token" },
+    };
+    await refresh();
+    if (document.querySelector("#status-text").textContent !== "Connected" ||
+        document.querySelector("#ssh-status").textContent !== "Error" ||
+        document.querySelector("#remote-status").textContent !== "Off" ||
+        document.querySelector("#network-error").hidden) {
+      throw new Error("SSH authentication failure must stay visible without changing agent or browsing status");
+    }
+    window.popupCheckNetwork.message = window.popupCheckNetwork.ssh.error;
+    await refresh();
+    const details = document.querySelector("#network-error-details");
+    if (details.hidden || details.open || document.querySelector("#network-error-detail").textContent !== window.popupCheckNetwork.ssh.error) {
+      throw new Error("SSH diagnostics must remain available once, with details initially collapsed");
+    }
+    details.querySelector("summary").click();
+    if (!document.querySelector("#network-error-detail").getClientRects().length) throw new Error("Technical details cannot be expanded");
+    details.querySelector("summary").click();
+    document.querySelector("#status-badge").click();
+    if (!document.querySelector("#ssh-status").getClientRects().length) throw new Error("Collapsing settings hid the SSH failure");
+    window.popupCheckNetwork = { enabled: false, state: "off", canEnable: true, ssh: { state: "connected", host: "dev-host", sessionId: "fixture" } };
+    await refresh();
+    if (!document.querySelector("#network-error").hidden || !details.hidden) throw new Error("A recovered connection left a stale warning");
+    window.popupCheckNetwork.ssh.error = "Stale message from a previous failure";
+    await refresh();
+    if (document.querySelector("#ssh-status").textContent !== "Connected" ||
+        !document.querySelector("#network-error").hidden || !details.hidden) {
+      throw new Error("A live tunnel must not report a stale helper message as a failure");
+    }
   });
   for (const width of [384, 320]) {
     await cdp("Emulation.setDeviceMetricsOverride", { width, height: 600, deviceScaleFactor: 1, mobile: false });
-    for (const state of ["disconnected", "ready", "on", "blocked", "offline", "reconnecting"]) {
+    for (const state of ["disconnected", "ready", "on", "blocked", "offline", "reconnecting", "ssh-error"]) {
       await evaluate(async (state) => {
-        const enabled = state !== "ready" && state !== "disconnected";
+        const enabled = !["ready", "disconnected", "ssh-error"].includes(state);
         const disconnected = state === "disconnected" || state === "offline" || state === "blocked";
-        window.popupCheckStatus = { connected: state === "ready" || state === "on" || state === "blocked", tabs: [], notes: [] };
+        window.popupCheckStatus = { connected: ["ready", "on", "blocked", "ssh-error"].includes(state), tabs: [], notes: [] };
         window.popupCheckNetwork = {
           enabled, state: !enabled ? "off" : state === "on" ? "on" : "unavailable",
           host: "dev-host", canEnable: state === "ready",
-          ssh: { state: state === "reconnecting" ? "connecting" : disconnected ? "disconnected" : "connected", host: "dev-host", sessionId: "fixture", proxyPort: 12345 },
+          ssh: {
+            state: state === "reconnecting" ? "connecting" : disconnected || state === "ssh-error" ? "disconnected" : "connected",
+            host: "dev-host", sessionId: "fixture", proxyPort: 12345,
+            error: state === "ssh-error" ? "Tailscale SSH requires reauthentication at https://login.tailscale.com/a/fixture-with-a-long-authentication-token" : "",
+          },
         };
         await window.popupCheckRefresh();
         if (document.querySelector("#status-badge").getAttribute("aria-expanded") !== "true") document.querySelector("#status-badge").click();
         const toggle = document.querySelector("#network-toggle");
-        if (state === "disconnected") {
+        if (state === "disconnected" || state === "ssh-error") {
           if (!toggle.disabled) throw new Error("An unavailable remote route must not be enabled");
         } else {
           toggle.focus();

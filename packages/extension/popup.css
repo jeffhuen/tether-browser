@@ -10,6 +10,7 @@
   --accent: #38bdf8;
   --accent-glow: rgba(56, 189, 248, 0.1);
   --accent-hover: #7dd3fc;
+  --success: #34d399;
   --danger: #f87171;
   --danger-bg: rgba(239, 68, 68, 0.1);
   --border: rgba(255, 255, 255, 0.12);
@@ -172,34 +173,39 @@ svg {
   }
 }
 
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 28px;
-  padding: 0 8px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+.connection-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 2px 0 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.connection-summary dt {
   color: var(--text-muted);
   font-size: 11px;
-  white-space: nowrap;
 }
 
-.dot {
-  width: 6px;
-  height: 6px;
-  flex-shrink: 0;
-  border-radius: 50%;
-  background: currentColor;
+.connection-state {
+  margin-top: 2px;
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
-.badge-connected {
-  color: #34d399;
+.connection-state[data-state="connected"] {
+  color: var(--success);
 }
 
-.badge-warning {
+.connection-state[data-state="error"] {
   color: var(--danger);
+}
+
+.connection-state[data-state="connecting"] {
+  color: var(--accent);
+}
+
+[aria-expanded="true"] .connection-chevron {
+  transform: rotate(180deg);
 }
 
 .connect-card {
@@ -324,15 +330,11 @@ svg {
   text-align: right;
 }
 
-.network-status, .network-help, .connection-error {
+.network-help, .connection-error {
   margin: 0;
   font-size: 12px;
   line-height: 1.5;
   overflow-wrap: anywhere;
-}
-
-.network-status {
-  color: var(--text-secondary);
 }
 
 .network-help, .network-details {
@@ -350,8 +352,12 @@ svg {
   margin-top: 6px;
 }
 
-.network-status[data-state="unavailable"], .network-status[data-state="conflict"], .connection-error {
+.connection-error {
   color: var(--danger);
+}
+
+#network-error-detail {
+  white-space: pre-wrap;
 }
 
 .network-toggle {

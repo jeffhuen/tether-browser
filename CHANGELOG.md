@@ -5,6 +5,12 @@ All notable changes to `tether-browser` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Separate the popup's agent bridge, SSH tunnel, and remote browsing indicators. SSH readiness no longer implies an agent connection, and failed status polls show unknown SSH and browsing state.
+- Rewrite remote browsing help in plain language and combine connection errors into one warning, with the original errors under **Technical details**.
+
 ## [0.1.34] - 2026-09-22
 
 ### Added

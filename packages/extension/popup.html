@@ -31,12 +31,35 @@
             <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
           </svg>
         </button>
-        <button type="button" id="status-badge" class="badge badge-disconnected" aria-controls="connect-section" title="Show connection settings">
-          <span class="dot"></span>
-          <span id="status-text">Disconnected</span>
+        <button type="button" id="status-badge" class="btn-pill" aria-controls="connect-section" aria-expanded="false" title="Show connection settings">
+          <span>Connections</span>
+          <svg class="connection-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="m6 9 6 6 6-6"/>
+          </svg>
         </button>
       </div>
     </header>
+
+    <dl class="connection-summary" aria-label="Connection status">
+      <div>
+        <dt>Agent bridge</dt>
+        <dd id="status-text" class="connection-state" role="status">Checking...</dd>
+      </div>
+      <div>
+        <dt>SSH tunnel</dt>
+        <dd id="ssh-status" class="connection-state" role="status">Checking...</dd>
+      </div>
+      <div>
+        <dt>Remote browsing</dt>
+        <dd id="remote-status" class="connection-state" role="status">Checking...</dd>
+      </div>
+    </dl>
+
+    <p id="network-error" class="connection-error" role="status" hidden></p>
+    <details id="network-error-details" class="network-details" hidden>
+      <summary>Technical details</summary>
+      <p id="network-error-detail" class="network-help"></p>
+    </details>
 
     <!-- Connect to Remote Server Card (shows when disconnected or clicked) -->
     <section id="connect-section" class="section" style="display:none;">
@@ -57,7 +80,6 @@
             <button type="submit" id="btn-do-connect" class="btn-connect">Connect</button>
           </div>
         </form>
-        <p id="connection-error" class="connection-error" role="status" hidden></p>
         <div id="recent-hosts-wrapper" class="recent-hosts-wrapper" style="display:none;">
           <span class="recent-label">Recent:</span>
           <div id="recent-hosts-list" class="recent-chips"></div>
@@ -67,24 +89,23 @@
             <span id="network-label">Remote browsing</span>
             <span id="network-ready" class="network-readiness" role="status">Not ready</span>
             <span id="network-value" class="network-value" aria-hidden="true">OFF</span>
-            <input id="network-toggle" class="network-toggle" type="checkbox" role="switch" aria-labelledby="network-label" aria-describedby="network-ready network-description network-scope network-status" disabled>
+            <input id="network-toggle" class="network-toggle" type="checkbox" role="switch" aria-labelledby="network-label" aria-describedby="network-ready network-description network-scope" disabled>
           </label>
-          <p id="network-description" class="network-help">Browse using this server's network. <code>localhost</code> reaches services on this server.</p>
-          <p id="network-scope" class="network-help">All regular tabs in this profile. Incognito is excluded.</p>
-          <p id="network-status" class="network-status" role="status" hidden></p>
+          <p id="network-description" class="network-help">Open websites through your server. Use <code>localhost</code> to reach apps running there.</p>
+          <p id="network-scope" class="network-help">Applies to all tabs in this Chrome profile, except Incognito.</p>
           <div id="network-confirm" class="section" hidden>
-            <p class="network-help">Route all regular tabs in this Chrome profile through <strong id="network-confirm-host"></strong>, including localhost and destination DNS? Use a host you trust. Localhost cookies and storage are shared between hosts.</p>
+            <p class="network-help">Use <strong id="network-confirm-host"></strong> for all tabs in this Chrome profile, except Incognito? This includes localhost and website address lookups. Only use a server you trust. Chrome shares localhost cookies and saved data between servers.</p>
             <div class="network-actions">
-              <button id="network-enable" class="btn-connect" type="button">Enable for this profile</button>
+              <button id="network-enable" class="btn-connect" type="button">Turn on for this profile</button>
               <button id="network-cancel" class="btn-pill" type="button">Cancel</button>
             </div>
           </div>
       <details class="network-details">
-        <summary>Scope &amp; recovery</summary>
-        <p class="network-help">HTTP, HTTPS and WebSockets use SSH. WebRTC and other non-web traffic are not covered: this is not a VPN. Incognito is excluded.</p>
-        <p class="network-help">If SSH drops, the switch stays on and new proxied requests fail. Turn it off to restore your previous network settings. Disabling this extension removes that protection.</p>
+        <summary>How it works</summary>
+        <p class="network-help">Web pages and WebSocket connections use your server's network. Other traffic, such as WebRTC calls, may use your usual connection. This is not a VPN.</p>
+        <p class="network-help">If your server disconnects, Remote browsing stays on and new pages may stop loading. Reconnect, or turn it off to browse normally. If you disable Tether, Chrome may use your usual connection instead.</p>
       <div id="network-reload" class="section" hidden>
-        <p class="network-help">Existing connections may keep their old route. Reload your dev tabs; reopen other tabs yourself.</p>
+        <p class="network-help">After switching networks, some open pages may still use the old connection. Reload your Tether tabs and reopen any other affected tabs.</p>
         <button id="network-reload-tabs" class="btn-pill" type="button">Reload Tether tabs</button>
       </div>
       </details>
@@ -92,7 +113,6 @@
       </div>
     </section>
 
-      <p id="network-error" class="connection-error" role="status" hidden></p>
 
     <!-- Workspace Tabs: Notes vs Screenshots -->
     <nav class="main-tabs" role="tablist" aria-label="Review tools">

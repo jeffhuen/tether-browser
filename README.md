@@ -89,13 +89,17 @@ tether screenshot output.png
 
 ### Browse using the remote server's network
 
-Click the popup's connection status to open connection settings. **Remote browsing** shows **Ready** only when Tether has verified SSH forwarding, independently of the browser/agent connection. Turn the switch on, then click **Enable for this profile** to route web traffic through that SSH host. The header changes from **Connected** to **Connected Remote** when both are active.
+The popup shows separate **Agent bridge**, **SSH tunnel**, and **Remote browsing** indicators, even when connection settings are closed. An SSH connection does not imply that an agent is connected. SSH errors and remote-route failures appear under their own indicators.
+
+Click **Connections** to open settings. **Remote browsing** shows **Ready** only when Tether has verified SSH forwarding, independently of the agent bridge. Turn the switch on, then click **Turn on for this profile** to route web traffic through that SSH host. Its indicator changes to **On**. If the route becomes unavailable, it shows **On, not ready** and the switch remains available to turn it off.
+
+Connection problems appear in one warning below the status indicators. Expand **Technical details** to see the original errors.
 
 - HTTP, HTTPS, WebSockets, and destination DNS use SSH SOCKS forwarding. `localhost`, `127.0.0.1`, and `::1` refer to the remote host, on any port.
 - This affects **all regular tabs in the Chrome profile**, not just the Tether group. Incognito is excluded. Chrome still renders locally and keeps its existing authentication and passkey support.
 - Use a trusted development host. Localhost cookies and storage are shared across hosts; use a separate Chrome profile when you need isolation.
 - If SSH drops, **Remote browsing** stays **ON**, shows **Not ready**, and displays a warning. New proxied requests fail. Open connection settings to reconnect to the same host, or turn the switch off. OFF restores your previous proxy settings even when the native helper is unavailable.
-- Turn **Remote browsing** off before switching hosts. Existing connections can keep their old route after a switch. Under connection settings, expand **Scope & recovery** to reload Tether tabs; reopen other affected tabs yourself.
+- Turn **Remote browsing** off before switching hosts. Existing connections can keep their old route after a switch. Under connection settings, expand **How it works** to reload Tether tabs; reopen other affected tabs yourself.
 
 This is a web proxy, not a VPN or a network sandbox. WebRTC and other non-web traffic are not covered. Browser policy, other proxy extensions, or disabling Tether can override or remove the proxy. It does not protect against other programs on your workstation taking over the proxy port after the native helper exits.
 

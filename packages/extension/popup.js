@@ -4,6 +4,8 @@
 document.addEventListener("DOMContentLoaded", async () => {
   const statusBadge = document.getElementById("status-badge");
   const statusText = document.getElementById("status-text");
+  const sshStatus = document.getElementById("ssh-status");
+  const remoteStatus = document.getElementById("remote-status");
   const btnInspect = document.getElementById("btn-inspect");
   const btnCopyNotes = document.getElementById("btn-copy-notes");
   const btnClearNotes = document.getElementById("btn-clear-notes");
@@ -251,19 +253,21 @@ document.addEventListener("DOMContentLoaded", async () => {
   const recentHostsWrapper = document.getElementById("recent-hosts-wrapper");
   const recentHostsList = document.getElementById("recent-hosts-list");
   const networkToggle = document.getElementById("network-toggle");
-  const networkStatusText = document.getElementById("network-status");
   const networkReadiness = document.getElementById("network-ready");
   const networkValue = document.getElementById("network-value");
   const networkConfirm = document.getElementById("network-confirm");
   const networkEnable = document.getElementById("network-enable");
   const networkError = document.getElementById("network-error");
-  let network = { enabled: false, state: "off", canEnable: false, ssh: { state: "disconnected" } };
+  const networkErrorDetails = document.getElementById("network-error-details");
+  const networkErrorDetail = document.getElementById("network-error-detail");
+  let network = { enabled: false, state: "checking", canEnable: false, ssh: { state: "checking" } };
   let bridgeConnected = false;
   let connectionPanelOpen = null;
   let networkBusy = false;
   let networkRevision = 0;
   let confirmedSession = "";
   let actionError = "";
+  let actionErrorDetails = "";
   let statusError = "";
 
   async function refreshNetwork() {
@@ -281,15 +285,19 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  async function networkAction(action) {
+  async function networkAction(action, failureMessage) {
     const current = ++networkRevision;
     networkBusy = true;
     actionError = "";
+    actionErrorDetails = "";
     renderConnection();
     try {
       await action();
     } catch (error) {
-      if (current === networkRevision) actionError = error.message;
+      if (current === networkRevision) {
+        actionError = failureMessage;
+        actionErrorDetails = error.message;
+      }
     } finally {
       if (current === networkRevision) {
         networkBusy = false;
@@ -308,7 +316,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         await sendMessage({ type: "popup_network_set", enabled: false });
         network = { ...network, enabled: false, state: "off" };
         document.getElementById("network-reload").hidden = false;
-      });
+      }, "Could not turn off remote browsing.");
     } else {
       confirmedSession = network.ssh.sessionId;
       document.getElementById("network-confirm-host").textContent = network.ssh.host;
@@ -326,11 +334,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     void networkAction(async () => {
       await sendMessage({ type: "popup_network_set", enabled: true, sessionId: confirmedSession });
       document.getElementById("network-reload").hidden = false;
-    });
+    }, "Could not turn on remote browsing.");
   });
   document.getElementById("network-reload-tabs").addEventListener("click", () => {
     if (confirm("Reload every tab in the Tether group? Unsaved changes may be lost. Other tabs will not be reloaded.")) {
-      void networkAction(() => sendMessage({ type: "popup_reload_remote_tabs" }));
+      void networkAction(() => sendMessage({ type: "popup_reload_remote_tabs" }), "Could not reload the Tether tabs.");
     }
   });
 
@@ -341,26 +349,19 @@ document.addEventListener("DOMContentLoaded", async () => {
     // canEnable and "on" come from the controller's validated SSH/proxy state.
     const remoteReady = !statusError && (network.canEnable || network.state === "on");
     const remoteProblem = network.enabled && !remoteReady;
-    const hasSshError = Boolean(ssh.error && !connected);
-    const hasProblem = remoteProblem || hasSshError;
+    // A live tunnel is never an error, even when the helper reports a stale message.
+    const hasSshError = Boolean(ssh.error) && !connected;
 
-    let label = "Disconnected";
-    if (remoteProblem) {
-      label = hasSshError ? "SSH Error" : "Remote Attention";
-    } else if (hasSshError) {
-      label = "SSH Error";
-    } else if (connecting) {
-      label = "Connecting...";
-    } else if (connected) {
-      label = network.enabled ? "Connected Remote" : "Connected";
-    } else if (bridgeConnected) {
-      label = "Connected";
-    }
-
-    statusBadge.className = `badge ${hasProblem ? "badge-warning" : (connected || bridgeConnected) ? "badge-connected" : "badge-disconnected"}`;
-    statusText.textContent = label;
-    statusBadge.title = `${label}${ssh.host ? ` to ${ssh.host}` : ""}. ${hasSshError ? `Error: ${ssh.error}. ` : ""}${network.enabled ? remoteProblem ? "Remote browsing needs attention. " : "Remote browsing is on. " : ""}Show connection settings.`;
-    connectSection.style.display = (connectionPanelOpen ?? (!bridgeConnected || connecting)) ? "block" : "none";
+    statusText.textContent = bridgeConnected ? "Connected" : "Disconnected";
+    statusText.dataset.state = bridgeConnected ? "connected" : "disconnected";
+    sshStatus.textContent = statusError ? "Unknown" : connecting ? "Connecting..." :
+      hasSshError ? "Error" : connected ? "Connected" : ssh.state === "checking" ? "Checking..." : "Disconnected";
+    sshStatus.dataset.state = statusError || hasSshError ? "error" : ssh.state;
+    sshStatus.title = ssh.host || "";
+    remoteStatus.textContent = statusError ? "Unknown" : network.state === "checking" ? "Checking..." :
+      network.enabled ? remoteReady ? "On" : "On, not ready" : "Off";
+    remoteStatus.dataset.state = statusError || remoteProblem ? "error" : network.enabled ? "connected" : "off";
+    connectSection.style.display = (connectionPanelOpen ?? (!bridgeConnected || connecting || hasSshError || remoteProblem || statusError)) ? "block" : "none";
     statusBadge.setAttribute("aria-expanded", String(connectSection.style.display !== "none"));
     btnDisconnect.style.display = connected || connecting ? "inline-flex" : "none";
     btnDisconnect.setAttribute("aria-label", connecting ? "Cancel SSH connection" : "Disconnect SSH tunnel");
@@ -371,9 +372,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (network.enabled) connectHostInput.value = network.host;
     else if (!connectHostInput.value && ssh.host) connectHostInput.value = ssh.host;
     recentHostsList.querySelectorAll("button").forEach((button) => { button.disabled = connecting || network.enabled || networkBusy; });
-    const connectionError = document.getElementById("connection-error");
-    connectionError.textContent = ssh.error || "";
-    connectionError.hidden = !ssh.error;
     networkToggle.checked = network.enabled;
     // Turning OFF remains available during reconnection and helper failure.
     networkToggle.disabled = !network.enabled && (!remoteReady || networkBusy);
@@ -381,14 +379,28 @@ document.addEventListener("DOMContentLoaded", async () => {
     networkReadiness.textContent = remoteReady ? "Ready" : "Not ready";
     networkReadiness.dataset.ready = String(Boolean(remoteReady));
     networkValue.textContent = network.enabled ? "ON" : "OFF";
-    networkStatusText.dataset.state = network.state;
-    networkStatusText.hidden = !connecting;
-    networkStatusText.textContent = connecting ? `Connecting to ${ssh.host}...` : "";
-    networkToggle.closest("label").title = `${remoteReady ? "Ready" : "Not ready"}${ssh.host ? ` · ${ssh.host}` : ""}. All regular tabs in this profile, including localhost.`;
-    networkError.textContent = actionError || statusError ||
-      (network.state === "conflict" || (!network.enabled && connected && !network.canEnable) ? network.message :
-        remoteProblem ? "Remote browsing is still on, but its route is unavailable. New proxied requests are blocked. Reconnect or turn Remote browsing off." : "") || "";
+    networkToggle.closest("label").title = `${remoteReady ? "Ready" : "Not ready"}${ssh.host ? ` · ${ssh.host}` : ""}. Applies to all tabs in this Chrome profile, except Incognito.`;
+
+    // Show one explanation; retain all diagnostic messages without repeating them.
+    if (actionError) {
+      networkError.textContent = `${actionError} Check the details below, then try again.`;
+    } else if (statusError) {
+      networkError.textContent = "Tether can't check the connection right now. Reopen this popup to try again.";
+    } else if (network.state === "conflict" || (!network.enabled && connected && !network.canEnable)) {
+      networkError.textContent = network.enabled
+        ? "Remote browsing isn't active. Turn it off, then check your proxy extensions or Chrome's network settings."
+        : "Chrome won't let Tether use your server's network. Check your proxy extensions or Chrome's network settings.";
+    } else if (remoteProblem) {
+      networkError.textContent = "Remote browsing can't reach your server. New pages may not load. Reconnect, or turn Remote browsing off to browse normally.";
+    } else if (hasSshError) {
+      networkError.textContent = "Couldn't connect to your server. Check the address and your SSH sign-in, then try again.";
+    } else {
+      networkError.textContent = "";
+    }
     networkError.hidden = !networkError.textContent;
+    networkErrorDetail.textContent = [...new Set([actionErrorDetails, statusError, ssh.error, network.message].filter(Boolean))].join("\n\n");
+    networkErrorDetails.hidden = networkError.hidden || !networkErrorDetail.textContent;
+    if (networkErrorDetails.hidden) networkErrorDetails.open = false;
     if (network.enabled) document.getElementById("network-reload").hidden = false;
   }
 
@@ -437,7 +449,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const ssh = await sendMessage({ type: "popup_ssh_connect", targetHost: host });
       network = { ...network, ssh };
       await saveRecentHost(host);
-    });
+    }, "Could not connect to the server.");
   }
 
   if (connectForm) {
@@ -449,7 +461,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   if (statusBadge) {
-    statusBadge.style.cursor = "pointer";
     statusBadge.addEventListener("click", () => {
       if (connectSection) {
         const isShown = connectSection.style.display !== "none";
@@ -465,13 +476,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (btnDisconnect) {
     btnDisconnect.addEventListener("click", async () => {
       const warning = network.enabled
-        ? "Disconnect SSH? Remote browsing will stay on and new web requests will fail until you reconnect or turn it off."
-        : "Disconnect SSH tunnel?";
+        ? "Disconnect from the server? Remote browsing will stay on, so new pages may not load until you reconnect or turn it off."
+        : "Disconnect from the server?";
       if (network.ssh?.state === "connecting" || confirm(warning)) {
         await networkAction(async () => {
           const ssh = await sendMessage({ type: "popup_ssh_disconnect" });
           network = { ...network, ssh };
-        });
+        }, "Could not disconnect from the server.");
       }
     });
   }
