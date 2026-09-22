@@ -5,6 +5,12 @@ Remote-to-local browser bridge for AI coding agents across Herdr, tmux, and SSH 
 No pixel streaming. No VNC. No cloud browser subscription.
 
 <p align="center">
+  <a href="https://chromewebstore.google.com/detail/tether-browser-bridge/ddfmonciifjlnpdjbijgeachabjebbfh">
+    <img src="https://img.shields.io/badge/Chrome_Web_Store-Tether_Browser_Bridge-blue?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Chrome Web Store" />
+  </a>
+</p>
+
+<p align="center">
   <img src="docs/assets/tether-in-action.png" alt="Tether Browser Bridge in Action" width="100%" />
 </p>
 
@@ -37,13 +43,16 @@ The installer automatically registers the Native Messaging Host for Chrome, Brav
 
 Read the script before you run it. To inspect it first, run `curl -fsSL https://raw.githubusercontent.com/jeffhuen/tether-browser/main/install.sh -o install.sh`, read `install.sh`, then run `bash install.sh`.
 
-### Step 2: Load the Extension in Chrome
+### Step 2: Install the Chrome Extension
 
-1. Open `chrome://extensions` in Chrome, Brave, or Edge.
-2. Toggle **Developer mode** on in the top-right corner.
-3. Click **Load unpacked** and select the `packages/extension` folder from your repository clone.
+**Option A (Recommended): Chrome Web Store**  
+Install [Tether Browser Bridge from the Chrome Web Store](https://chromewebstore.google.com/detail/tether-browser-bridge/ddfmonciifjlnpdjbijgeachabjebbfh) for one-click installation and automatic background updates.
+
+**Option B: Load Unpacked (Local Development)**  
+1. Open `chrome://extensions` in Chrome, Brave, or Edge.  
+2. Toggle **Developer mode** on in the top-right corner.  
+3. Click **Load unpacked** and select the `packages/extension` folder from your repository clone.  
 4. The extension loads with deterministic ID `kaloekddddlgghmifoaapnhekggjcggn`.
-
 ### Step 3: Connect to your Remote Server
 
 Run in your local terminal:
