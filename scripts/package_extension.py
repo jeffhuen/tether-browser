@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parent.parent
 EXT_DIR = ROOT / "packages" / "extension"
 DIST_DIR = ROOT / "dist"
 DIST_DIR.mkdir(exist_ok=True)
-ZIP_PATH = DIST_DIR / "tether-extension-v0.1.33.zip"
+ZIP_PATH = DIST_DIR / "tether-extension-v0.1.34.zip"
 
 print(f"Packaging Tether Chrome Extension from {EXT_DIR}...")
 

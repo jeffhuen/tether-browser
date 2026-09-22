@@ -586,12 +586,14 @@ async function handleClick(params = {}, clickCount = 1) {
 
   let x = params.x;
   let y = params.y;
+  let backendNodeId = null;
   const sel = params.selector || params.ref;
   if (sel && typeof sel === "string") {
     const coords = await resolveCoordinates(tabId, sel);
     if (coords) {
       x = coords.x;
       y = coords.y;
+      backendNodeId = coords.backendNodeId;
     }
   }
 
@@ -599,20 +601,39 @@ async function handleClick(params = {}, clickCount = 1) {
     throw new Error(`Click requires either a valid @ref, selector, or (x, y) coordinates; received: ${sel || "none"}`);
   }
 
-  // Act-time hit-test & viewport validation
-  const hitCheck = await cdp(tabId, "Runtime.evaluate", {
-    expression: `(() => {
-      const el = document.elementFromPoint(${x}, ${y});
-      if (!el) return { ok: false, reason: "off-viewport" };
-      return { ok: true, tag: el.tagName };
-    })()`,
-    returnByValue: true,
-  }).catch(() => null);
+  // Act-time hit-test, occlusion check, and viewport validation
+  if (backendNodeId) {
+    const hitCheck = await cdp(tabId, "Runtime.evaluate", {
+      expression: `(() => {
+        const el = document.elementFromPoint(${x}, ${y});
+        if (!el) return { ok: false, reason: "off-viewport" };
+        return { ok: true, tag: el.tagName };
+      })()`,
+      returnByValue: true,
+    }).catch(() => null);
 
-  if (hitCheck?.result?.value && !hitCheck.result.value.ok) {
-    throw new Error(`Click target at (${x}, ${y}) is outside visible viewport`);
+    if (hitCheck?.result?.value && !hitCheck.result.value.ok) {
+      throw new Error(`Click target at (${x}, ${y}) is outside visible viewport`);
+    }
+
+    try {
+      const loc = await cdp(tabId, "DOM.getNodeForLocation", {
+        x: Math.round(x),
+        y: Math.round(y),
+        includeUserAgentShadowDOM: true,
+      });
+      if (loc?.backendNodeId && loc.backendNodeId !== backendNodeId) {
+        const desc = await cdp(tabId, "DOM.describeNode", { backendNodeId: loc.backendNodeId, depth: 1 });
+        const hitTag = desc?.node?.nodeName || "ELEMENT";
+        const attrs = JSON.stringify(desc?.node?.attributes || []);
+        if (hitTag === "BODY" || hitTag === "HTML" || /dialog|modal|overlay|backdrop|cookie|banner|mantine/i.test(attrs)) {
+          throw new Error(`Click target at (${x}, ${y}) is occluded by <${hitTag}>`);
+        }
+      }
+    } catch (err) {
+      if (err.message?.includes("occluded")) throw err;
+    }
   }
-
   await ensureDomain(tabId, "Input");
 
   await cdp(tabId, "Input.dispatchMouseEvent", {
