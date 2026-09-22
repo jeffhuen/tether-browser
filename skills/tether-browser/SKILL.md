@@ -39,6 +39,8 @@ tether snapshot -i
 ### Why this loop is required:
 * **Snapshot first**: `tether snapshot -i` extracts the page accessibility tree and assigns compact `@eN` references to interactive elements. Always inspect the snapshot before clicking or typing so you target verified elements instead of guessing brittle CSS selectors.
 * **Re-snapshot after actions**: Clicks, form submits, and page navigations mutate the DOM. These mutations invalidate previous `@eN` references. Always run `tether snapshot -i` after an interaction before you issue your next command.
+* **Dismiss modals & cookie banners on arrival**: Tether uses native CDP mouse events with act-time hit-testing (`elementFromPoint`). If a modal backdrop, cookie consent dialog, or notification overlay is open, click its confirmation or dismiss button first. Clicking through an occluded element will be rejected.
+* **Inspect state flags**: The snapshot outputs actionable states: `(disabled)`, `(focused)`, `(selected)`, `(expanded)`, and `checked=true|false`. Always check these attributes before toggling switches or attempting to fill already-populated inputs.
 
 ---
 
