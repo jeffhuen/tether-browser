@@ -1024,7 +1024,6 @@ async function handleStatus() {
   await ensureTabGroup(false);
   const tabs = await getLiveTabs();
   return {
-    connected: true,
     tabGroupId,
     tabs: tabs.map((t) => t.id),
     targetCount: tabs.length,

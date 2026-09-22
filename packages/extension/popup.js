@@ -343,10 +343,23 @@ document.addEventListener("DOMContentLoaded", async () => {
     const remoteProblem = network.enabled && !remoteReady;
     const hasSshError = Boolean(ssh.error && !connected);
     const hasProblem = remoteProblem || hasSshError;
-    const connectionLabel = hasSshError ? "SSH Error" : (bridgeConnected ? "Connected" : connecting ? "Connecting" : "Disconnected");
-    statusBadge.className = `badge ${hasProblem ? "badge-warning" : bridgeConnected ? "badge-connected" : "badge-disconnected"}`;
-    statusText.textContent = `${connectionLabel}${network.enabled ? " Remote" : ""}${connecting && !bridgeConnected ? "..." : ""}`;
-    statusBadge.title = `${connectionLabel}${ssh.host ? ` to ${ssh.host}` : ""}. ${hasSshError ? `Error: ${ssh.error}. ` : ""}${network.enabled ? remoteProblem ? "Remote browsing needs attention. " : "Remote browsing is on. " : ""}Show connection settings.`;
+
+    let label = "Disconnected";
+    if (remoteProblem) {
+      label = hasSshError ? "SSH Error" : "Remote Attention";
+    } else if (hasSshError) {
+      label = "SSH Error";
+    } else if (connecting) {
+      label = "Connecting...";
+    } else if (connected) {
+      label = network.enabled ? "Connected Remote" : "Connected";
+    } else if (bridgeConnected) {
+      label = "Connected";
+    }
+
+    statusBadge.className = `badge ${hasProblem ? "badge-warning" : (connected || bridgeConnected) ? "badge-connected" : "badge-disconnected"}`;
+    statusText.textContent = label;
+    statusBadge.title = `${label}${ssh.host ? ` to ${ssh.host}` : ""}. ${hasSshError ? `Error: ${ssh.error}. ` : ""}${network.enabled ? remoteProblem ? "Remote browsing needs attention. " : "Remote browsing is on. " : ""}Show connection settings.`;
     connectSection.style.display = (connectionPanelOpen ?? (!bridgeConnected || connecting)) ? "block" : "none";
     statusBadge.setAttribute("aria-expanded", String(connectSection.style.display !== "none"));
     btnDisconnect.style.display = connected || connecting ? "inline-flex" : "none";
