@@ -149,7 +149,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprint(stdout, out)
 
-	case "click", "dblclick", "fill", "type", "press", "hover", "focus", "wait", "close":
+	case "click", "dblclick", "fill", "type", "press", "hover", "focus", "wait", "close", "scroll":
 		var res protocol.ActionResult
 		_ = resp.UnmarshalResult(&res)
 		out, err := FormatAction(&res, cmd.Global.JSON)
