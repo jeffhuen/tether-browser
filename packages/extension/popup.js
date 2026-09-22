@@ -341,10 +341,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     // canEnable and "on" come from the controller's validated SSH/proxy state.
     const remoteReady = !statusError && (network.canEnable || network.state === "on");
     const remoteProblem = network.enabled && !remoteReady;
-    const connectionLabel = bridgeConnected ? "Connected" : connecting ? "Connecting" : "Disconnected";
-    statusBadge.className = `badge ${remoteProblem ? "badge-warning" : bridgeConnected ? "badge-connected" : "badge-disconnected"}`;
+    const hasSshError = Boolean(ssh.error && !connected);
+    const hasProblem = remoteProblem || hasSshError;
+    const connectionLabel = hasSshError ? "SSH Error" : (bridgeConnected ? "Connected" : connecting ? "Connecting" : "Disconnected");
+    statusBadge.className = `badge ${hasProblem ? "badge-warning" : bridgeConnected ? "badge-connected" : "badge-disconnected"}`;
     statusText.textContent = `${connectionLabel}${network.enabled ? " Remote" : ""}${connecting && !bridgeConnected ? "..." : ""}`;
-    statusBadge.title = `${connectionLabel}${ssh.host ? ` to ${ssh.host}` : ""}. ${network.enabled ? remoteProblem ? "Remote browsing needs attention. " : "Remote browsing is on. " : ""}Show connection settings.`;
+    statusBadge.title = `${connectionLabel}${ssh.host ? ` to ${ssh.host}` : ""}. ${hasSshError ? `Error: ${ssh.error}. ` : ""}${network.enabled ? remoteProblem ? "Remote browsing needs attention. " : "Remote browsing is on. " : ""}Show connection settings.`;
     connectSection.style.display = (connectionPanelOpen ?? (!bridgeConnected || connecting)) ? "block" : "none";
     statusBadge.setAttribute("aria-expanded", String(connectSection.style.display !== "none"));
     btnDisconnect.style.display = connected || connecting ? "inline-flex" : "none";
