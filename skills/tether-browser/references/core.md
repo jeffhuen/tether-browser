@@ -112,6 +112,25 @@ tether focus @e8
 ```
 ---
 
+
+### `tether scroll [direction or deltaY]`
+Scrolls the active tab using mouse wheel emulation or window positioning. Accepts `up`, `down`, `top`, `bottom`, or a numerical pixel delta (default: `down`).
+
+```bash
+# Scroll down by one viewport
+tether scroll down
+tether scroll
+
+# Scroll up
+tether scroll up
+
+# Jump to top or bottom of document
+tether scroll top
+tether scroll bottom
+
+# Scroll by specific pixel delta
+tether scroll 450
+```
 ## 4. Evaluation and Extraction
 
 ### `tether eval "<javascript>"`

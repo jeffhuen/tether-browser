@@ -57,6 +57,7 @@ tether snapshot -i
 | Focus input | `tether focus <@ref or selector>` |
 | Run JavaScript | `tether eval "document.title"` |
 | Wait for state | `tether wait "div.alert-success"` or `tether wait 1000` |
+| Scroll page | `tether scroll [up\|down\|top\|bottom\|px]` |
 | Screenshot | `tether screenshot /tmp/capture.png` (supports `--full`) |
 | Close tab | `tether close` or `tether close --all` |
 | Connection status | `tether status` |
