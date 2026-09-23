@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -172,6 +173,7 @@ func TestBrokerLifecycleAndTargetInjection(t *testing.T) {
 
 func TestRunJSONResults(t *testing.T) {
 	t.Setenv("TETHER_BROKER_SOCKET", filepath.Join(t.TempDir(), "absent.sock"))
+	screenshotPath := filepath.Join(t.TempDir(), "screenshot.png")
 	for _, tc := range []struct {
 		name   string
 		args   []string
@@ -180,6 +182,7 @@ func TestRunJSONResults(t *testing.T) {
 	}{
 		{"empty tabs", []string{"tabs", "--json"}, json.RawMessage(`{"tabs":[],"activeId":""}`), 0},
 		{"eval error", []string{"eval", "throw new Error('bad')", "--json"}, json.RawMessage(`{"value":null,"error":"bad"}`), 1},
+		{"screenshot file", []string{"screenshot", screenshotPath, "--json"}, json.RawMessage(`{"base64":"AAECAw==","format":"png","width":1,"height":1}`), 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -205,6 +208,15 @@ func TestRunJSONResults(t *testing.T) {
 			code := Run(tc.args, &stdout, &stderr)
 			if code != tc.code {
 				t.Fatalf("exit code %d, expected %d; stderr: %s", code, tc.code, &stderr)
+			}
+			if tc.args[0] == "screenshot" {
+				data, err := os.ReadFile(screenshotPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(data, []byte{0, 1, 2, 3}) {
+					t.Fatalf("saved screenshot bytes differ: %v", data)
+				}
 			}
 			var compact bytes.Buffer
 			if err := json.Compact(&compact, stdout.Bytes()); err != nil {

@@ -128,6 +128,23 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%v\n", err)
 		return 1
 	}
+	if cmd.Name == "screenshot" && cmd.ScreenshotPath != "" {
+		var res protocol.ScreenshotResult
+		_ = resp.UnmarshalResult(&res)
+		if len(res.Base64) == 0 {
+			fmt.Fprintln(stderr, "Error: empty screenshot data received")
+			return 1
+		}
+		data, err := base64.StdEncoding.DecodeString(res.Base64)
+		if err != nil {
+			fmt.Fprintf(stderr, "Error: failed to decode screenshot base64: %v\n", err)
+			return 1
+		}
+		if err := os.WriteFile(cmd.ScreenshotPath, data, 0644); err != nil {
+			fmt.Fprintf(stderr, "Error: failed to write screenshot to %s: %v\n", cmd.ScreenshotPath, err)
+			return 1
+		}
+	}
 	if cmd.Global.JSON {
 		var out bytes.Buffer
 		if err := json.Indent(&out, resp.Result, "", "  "); err != nil {
@@ -174,21 +191,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "screenshot":
 		var res protocol.ScreenshotResult
 		_ = resp.UnmarshalResult(&res)
-		if cmd.ScreenshotPath != "" {
-			if len(res.Base64) == 0 {
-				fmt.Fprintln(stderr, "Error: empty screenshot data received")
-				return 1
-			}
-			data, err := base64.StdEncoding.DecodeString(res.Base64)
-			if err != nil {
-				fmt.Fprintf(stderr, "Error: failed to decode screenshot base64: %v\n", err)
-				return 1
-			}
-			if err := os.WriteFile(cmd.ScreenshotPath, data, 0644); err != nil {
-				fmt.Fprintf(stderr, "Error: failed to write screenshot to %s: %v\n", cmd.ScreenshotPath, err)
-				return 1
-			}
-		}
 		fmt.Fprint(stdout, FormatScreenshot(&res, cmd.ScreenshotPath))
 
 	case "status":
