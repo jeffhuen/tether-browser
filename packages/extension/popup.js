@@ -574,7 +574,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function updateTabsUI(tabs, activeId) {
     if (!tabs || tabs.length === 0) {
-      tabsList.innerHTML = '<div class="empty-state">No open tabs found.</div>';
+      tabsList.innerHTML = '<div class="empty-state">No tethered tabs found. Open a URL below or click <b>+ New Tab</b> to start.</div>';
       tabsList.dataset.rendered = "";
       return;
     }
@@ -607,10 +607,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           <span class="tab-title">${escapeHTML(tab.title || "Untitled")}</span>
           <span class="tab-url">${escapeHTML(tab.url || "")}</span>
         </span>
-        <span class="tab-badges">
-          ${tab.inGroup ? '<span class="tab-badge">TETHER</span>' : ''}
-          ${isActive ? '<span class="tab-badge">ACTIVE</span>' : ''}
-        </span>
+        ${isActive ? '<span class="tab-badges"><span class="tab-badge">ACTIVE</span></span>' : ''}
       `;
 
       item.addEventListener("click", async () => {

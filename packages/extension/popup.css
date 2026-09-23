@@ -877,6 +877,12 @@ svg {
   letter-spacing: 0.04em;
 }
 
+.tab-item.active .tab-badge {
+  background: var(--accent-glow);
+  border-color: rgba(249, 115, 22, 0.35);
+  color: var(--accent);
+}
+
 /* Screenshot feed and preview */
 .dest-indicator {
   color: var(--text-muted);
