@@ -809,9 +809,6 @@ svg {
   white-space: pre-wrap;
 }
 
-.tabs-container {
-  max-height: 144px;
-}
 
 .tab-item {
   display: flex;
