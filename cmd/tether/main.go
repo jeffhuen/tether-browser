@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -578,8 +579,15 @@ func stopStaleDaemon(token string) error {
 	if !ok || status.DaemonVersion == protocol.Version {
 		return nil
 	}
-	if status.DaemonPID <= 0 {
-		return errors.New("a tether daemon older than 0.1.36 is running on 127.0.0.1:9333; stop it once with: pkill -f 'tether daemon'")
+	if !isLocalTetherDaemon(status.DaemonPID) {
+		// Through a reverse tunnel, 127.0.0.1:9333 can be another machine's daemon,
+		// and daemons older than 0.1.36 report no PID. Leave both running.
+		version := status.DaemonVersion
+		if version == "" {
+			version = "older than 0.1.36"
+		}
+		fmt.Fprintf(os.Stderr, "Warning: reusing tether daemon (%s) on 127.0.0.1:9333; this tether is %s. If that daemon runs on this machine, stop it with: pkill -f 'tether daemon'\n", version, protocol.Version)
+		return nil
 	}
 	proc, err := os.FindProcess(status.DaemonPID)
 	if err == nil {
@@ -596,4 +604,14 @@ func stopStaleDaemon(token string) error {
 		_ = conn.Close()
 	}
 	return fmt.Errorf("tether daemon %s (pid %d) did not stop within 10s", status.DaemonVersion, status.DaemonPID)
+}
+
+// isLocalTetherDaemon reports whether pid is a `tether daemon` process on this machine.
+func isLocalTetherDaemon(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	out, err := exec.Command("ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
+	fields := strings.Fields(string(out))
+	return err == nil && len(fields) >= 2 && strings.Contains(filepath.Base(fields[0]), "tether") && fields[1] == "daemon"
 }

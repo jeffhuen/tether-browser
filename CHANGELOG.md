@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.36] - 2026-09-23
 
 ### Changed
-- `tether connect` and the extension's **Connect** button replace a running daemon from a different `tether` version, so a reinstall takes effect when you reconnect. Before, they reused whatever daemon was already running. A daemon older than 0.1.36 must be stopped once by hand with `pkill -f 'tether daemon'`.
+- `tether connect` and the extension's **Connect** button replace a running daemon from a different `tether` version, so a reinstall takes effect when you reconnect. Before, they reused whatever daemon was already running. They only stop a `tether daemon` process on the same machine. A daemon older than 0.1.36 reports no process ID, so `tether connect` warns and keeps it: stop it once with `pkill -f 'tether daemon'`.
 - `tether status` shows `Daemon Version`, the version of the `tether` binary running the daemon. In extension mode, `Version` is the extension's version.
 
 ### Fixed
