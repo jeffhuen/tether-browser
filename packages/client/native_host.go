@@ -553,8 +553,14 @@ func (d *ExtensionDriver) Snapshot(ctx context.Context, params protocol.Snapshot
 	}
 	for i := range out.Nodes {
 		node := &out.Nodes[i]
-		if node.Value != nil {
-			node.AXNode.Value = fmt.Sprint(node.Value)
+		switch value := node.Value.(type) {
+		case nil:
+		case string:
+			node.AXNode.Value = value
+		case float64, bool:
+			node.AXNode.Value = fmt.Sprint(value)
+		default:
+			return nil, fmt.Errorf("snapshot node %d has invalid accessibility value %T", i, value)
 		}
 		out.SnapshotResult.Nodes[i] = &node.AXNode
 	}
