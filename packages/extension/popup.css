@@ -110,7 +110,7 @@ svg {
   gap: 8px;
   padding: 10px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
   background: var(--bg-surface);
 }
 
@@ -568,12 +568,11 @@ svg {
   color: #ffffff;
 }
 
-/* Workspace tabs: physical folder tabs connecting to the tool panel below */
+/* Workspace tabs: 50/50 folder tabs seamlessly attached to the panel */
 .main-tabs {
-  display: flex;
-  align-items: flex-end;
-  gap: 4px;
-  padding: 0 8px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 0;
   margin-bottom: -8px;
   position: relative;
   z-index: 2;
@@ -582,22 +581,31 @@ svg {
 }
 
 .main-tab {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 28px;
-  padding: 5px 12px;
-  border: 1px solid var(--border-subtle);
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-  background: rgba(20, 23, 34, 0.45);
+  background: rgba(14, 17, 26, 0.6);
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 500;
   letter-spacing: -0.01em;
   white-space: nowrap;
+  cursor: pointer;
   transition: background-color 150ms ease, color 150ms ease;
+}
+
+.main-tab:first-child {
+  border-radius: var(--radius-md) 0 0 0;
+}
+
+.main-tab:last-child {
+  border-radius: 0 var(--radius-md) 0 0;
+  margin-left: -1px;
 }
 
 .main-tab:hover:not(.active) {
@@ -611,6 +619,8 @@ svg {
   border-color: var(--border);
   border-bottom: 1px solid var(--bg-surface);
   margin-bottom: -1px;
+  position: relative;
+  z-index: 3;
   font-weight: 600;
 }
 .tab-badge-count {
