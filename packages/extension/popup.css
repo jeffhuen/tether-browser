@@ -93,7 +93,7 @@ svg {
   flex-shrink: 0;
 }
 
-.popup-container, .tab-panel, .section {
+.popup-container, .popup-main, .tab-panel, .section {
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -101,6 +101,10 @@ svg {
 
 .popup-container {
   padding: 10px 12px 8px;
+  gap: 7px;
+}
+
+.popup-main {
   gap: 7px;
 }
 
@@ -198,7 +202,7 @@ svg {
 
 .connection-summary {
   display: grid;
-  grid-template-columns: repeat(3, auto) 12px;
+  grid-template-columns: 1fr 1fr 12px;
   justify-content: space-between;
   align-items: start;
   gap: 8px;
@@ -313,6 +317,10 @@ svg {
 
 .connect-input:focus, .nav-input:focus, .shot-comment:focus {
   border-color: var(--accent);
+}
+
+.connect-input[hidden] + .btn-connect {
+  flex: 1;
 }
 
 .recent-hosts-wrapper {
@@ -1011,7 +1019,7 @@ svg {
   color: var(--text-muted);
   font-size: 10px;
   text-align: center;
-  opacity: 0.65;
+  opacity: 1;
 }
 
 

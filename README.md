@@ -53,13 +53,11 @@ Install [Tether Browser Bridge from the Chrome Web Store](https://chromewebstore
 2. Toggle **Developer mode** on in the top-right corner.  
 3. Click **Load unpacked** and select the `packages/extension` folder from your repository clone.  
 4. The extension loads with deterministic ID `kaloekddddlgghmifoaapnhekggjcggn`.
-### Step 3: Connect to your Remote Server
+### Step 3: Connect Tether to your Remote Server
 
-Run in your local terminal:
-```bash
-tether connect user@remote-server
-```
-Alternatively, click the **Tether extension icon** in your Chrome toolbar, enter `user@host`, and click **Connect**.
+Click the **Tether extension icon** in Chrome, enter `user@remote-server`, and click **Connect Tether**. A new installation starts disconnected. Connecting opens the extension's native agent bridge and SSH tunnel; **Remote browsing** stays off until you turn it on.
+
+You can also run `tether connect user@remote-server` in your local terminal. That command owns a separate tunnel and can fall back to a separate browser if the extension is disconnected. Connect in the popup as well to use your existing Chrome tabs. Stop the terminal command separately when you no longer want its tunnel or fallback browser.
 
 ### Step 4: Install `tether` on your Remote Server
 
@@ -89,25 +87,23 @@ tether screenshot output.png
 
 ### Browse using the remote server's network
 
-The popup shows separate **Agent bridge**, **SSH tunnel**, and **Remote browsing** indicators, even when connection settings are closed. An SSH connection does not imply that an agent is connected. SSH errors and remote-route failures appear under their own indicators.
+The popup shows two connection states: **Tether** and **Remote browsing**. Click the status strip to expand their controls. **Disconnect Tether** closes the extension's agent bridge and managed SSH session, detaches its Chrome debugger targets, and turns Remote browsing off. It does not stop a separate `tether connect` process in your terminal.
 
-Click the status strip to open connection settings. **Remote browsing** shows **Ready** only when Tether has verified SSH forwarding, independently of the agent bridge. Turn the switch on, then click **Turn on for this profile** to route web traffic through that SSH host. Its indicator changes to **On**. If the route becomes unavailable, it shows **On, not ready** and the switch remains available to turn it off.
-
-Connection problems appear in one warning directly below the status strip, even when settings are closed. Expand **Technical details** to see the original errors.
+**Remote browsing** shows **Ready** only when the shared SSH connection is available. Turn the switch on, then click **Turn on for this profile** to route web traffic through that host. Turn Remote browsing off to restore the previous proxy without disconnecting Tether or your agent. Connection problems appear below the status strip; expand **Technical details** for the original errors.
 
 - HTTP, HTTPS, WebSockets, and destination DNS use SSH SOCKS forwarding. `localhost`, `127.0.0.1`, and `::1` refer to the remote host, on any port.
 - This affects **all regular tabs in the Chrome profile**, not just the Tether group. Incognito is excluded. Chrome still renders locally and keeps its existing authentication and passkey support.
 - Use a trusted development host. Localhost cookies and storage are shared across hosts; use a separate Chrome profile when you need isolation.
-- If SSH drops, **Remote browsing** stays **ON**, shows **Not ready**, and displays a warning. New proxied requests fail. Open connection settings to reconnect to the same host, or turn the switch off. OFF restores your previous proxy settings even when the native helper is unavailable.
-- Turn **Remote browsing** off before switching hosts. Existing connections can keep their old route after a switch. Under connection settings, expand **How it works** to reload Tether tabs; reopen other affected tabs yourself.
+- If SSH drops unexpectedly, **Remote browsing** stays **ON**, shows **Not ready**, and displays a warning. New proxied requests fail rather than silently using your usual network. Turn Remote browsing off to restore the previous proxy, or disconnect and reconnect Tether to the same host.
+- To switch hosts, disconnect Tether first, then connect to the new host. Existing pages can keep their old route after a switch. Under connection settings, expand **How it works** to reload Tether tabs; reopen other affected tabs yourself.
 
 This is a web proxy, not a VPN or a network sandbox. WebRTC and other non-web traffic are not covered. Browser policy, other proxy extensions, or disabling Tether can override or remove the proxy. It does not protect against other programs on your workstation taking over the proxy port after the native helper exits.
 
-The extension rejects automation commands for browser and extension pages, including `about:blank`, which can inherit the extension's origin. Empty-page requests create a new `data:text/html,` tab. Use **New Tab** or `tether open ""` to recover from an old blank tab without closing existing tabs.
+The extension rejects remote automation commands for tabs outside the Tether group, and for browser and extension pages, including `about:blank`, which can inherit the extension's origin. A local popup action can explicitly select another tab. Empty-page requests create a new `data:text/html,` tab. Use **New Tab** or `tether open ""` to recover from an old blank tab without closing existing tabs.
 
 Update the local `tether` binary and reload the extension together; the extension now requires Chrome's `proxy` permission. SSH uses your local configuration and agent without interactive prompts. If connection setup fails, run `ssh user@host` in a terminal first to resolve authentication or host-key prompts.
 
-For a terminal-created tunnel, connect to the same host in the popup. Tether reuses the reverse tunnel after a status check and leaves the terminal's SSH process alone when you disconnect from the popup. If that terminal exits, Tether establishes its own reverse tunnel.
+For a terminal-created tunnel, connect to the same host in the popup. Tether reuses the reverse tunnel after a status check and leaves the terminal's SSH process alone when you disconnect in the popup. Stop that terminal process separately to close its tunnel.
 
 ---
 

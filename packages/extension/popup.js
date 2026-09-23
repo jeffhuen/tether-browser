@@ -5,7 +5,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   const connectionToggle = document.getElementById("connection-toggle");
   const connectionAnnouncement = document.getElementById("connection-announcement");
   const statusText = document.getElementById("status-text");
-  const sshStatus = document.getElementById("ssh-status");
   const remoteStatus = document.getElementById("remote-status");
   const btnInspect = document.getElementById("btn-inspect");
   const btnCopyNotes = document.getElementById("btn-copy-notes");
@@ -192,6 +191,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   const connectSection = document.getElementById("connect-section");
   const connectHostInput = document.getElementById("connect-host-input");
+  const connectHint = document.querySelector(".connect-hint");
   const btnDoConnect = document.getElementById("btn-do-connect");
   const recentHostsWrapper = document.getElementById("recent-hosts-wrapper");
   const recentHostsList = document.getElementById("recent-hosts-list");
@@ -203,8 +203,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const networkError = document.getElementById("network-error");
   const networkErrorDetails = document.getElementById("network-error-details");
   const networkErrorDetail = document.getElementById("network-error-detail");
-  let network = { enabled: false, state: "checking", canEnable: false, ssh: { state: "checking" } };
-  let bridgeConnected = false;
+  let network = { tetherEnabled: false, nativeConnected: false, enabled: false, state: "checking", canEnable: false, ssh: { state: "checking" } };
+  let tetherConnected = false;
   let connectionPanelOpen = null;
   let networkBusy = false;
   let networkRevision = 0;
@@ -219,6 +219,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       const result = await sendMessage({ type: "popup_network_status" });
       if (current !== networkRevision || networkBusy) return;
       statusError = "";
+      tetherConnected = Boolean(result.tetherEnabled);
       network = result;
       renderConnection();
     } catch (error) {
@@ -289,78 +290,47 @@ document.addEventListener("DOMContentLoaded", async () => {
     const ssh = network.ssh || {};
     const connecting = ssh.state === "connecting";
     const connected = ssh.state === "connected";
-    // canEnable and "on" come from the controller's validated SSH/proxy state.
-    const remoteReady = !statusError && (network.canEnable || network.state === "on");
+    const remoteReady = tetherConnected && network.nativeConnected && !statusError && (network.canEnable || network.state === "on");
     const remoteProblem = network.enabled && !remoteReady;
-    // A live tunnel is never an error, even when the helper reports a stale message.
-    const hasSshError = Boolean(ssh.error) && !connected;
+    const needsAttention = tetherConnected && (!network.nativeConnected || (ssh.state === "disconnected" && network.nativeConnected));
+    const hasSshError = tetherConnected && Boolean(ssh.error) && !connected;
 
-    statusText.textContent = bridgeConnected ? "Connected" : "Disconnected";
-    statusText.dataset.state = bridgeConnected ? "connected" : "disconnected";
-    sshStatus.textContent = statusError ? "Unknown" : connecting ? "Connecting..." :
-      hasSshError ? "Error" : connected ? "Connected" : ssh.state === "checking" ? "Checking..." : "Disconnected";
-    sshStatus.dataset.state = statusError || hasSshError ? "error" : ssh.state;
-    sshStatus.title = ssh.host || "";
+    statusText.textContent = statusError ? "Unknown" : !tetherConnected ? "Disconnected" :
+      needsAttention ? "Needs attention" : connecting ? "Connecting..." : connected ? "Connected" : "Checking...";
+    statusText.dataset.state = needsAttention || statusError ? "error" : !tetherConnected ? "disconnected" : ssh.state;
     remoteStatus.textContent = statusError ? "Unknown" : network.state === "checking" ? "Checking..." :
       network.enabled ? remoteReady ? "On" : "On, not ready" : "Off";
-    const announcement = `Agent bridge ${statusText.textContent}. SSH tunnel ${sshStatus.textContent}. Remote browsing ${remoteStatus.textContent}.`;
-    // Only changed text should be announced by screen readers.
-    if (connectionAnnouncement.textContent !== announcement) connectionAnnouncement.textContent = announcement;
     remoteStatus.dataset.state = statusError || remoteProblem ? "error" : network.enabled ? "connected" : "off";
-    connectSection.style.display = (connectionPanelOpen ?? (!bridgeConnected || connecting || hasSshError || remoteProblem || statusError)) ? "block" : "none";
+    const announcement = `Tether ${statusText.textContent}. Remote browsing ${remoteStatus.textContent}.`;
+    if (connectionAnnouncement.textContent !== announcement) connectionAnnouncement.textContent = announcement;
+
+    connectSection.style.display = (connectionPanelOpen ?? (!tetherConnected || needsAttention || remoteProblem || statusError)) ? "block" : "none";
     connectionToggle.setAttribute("aria-expanded", String(connectSection.style.display !== "none"));
-    connectHostInput.disabled = connecting || network.enabled;
-    if (network.enabled) {
-      connectHostInput.value = network.host || ssh.host || "";
-    } else if (!connectHostInput.value && ssh.host && document.activeElement !== connectHostInput) {
+    connectHostInput.hidden = tetherConnected;
+    connectHostInput.disabled = tetherConnected || networkBusy;
+    connectHint.textContent = tetherConnected ? ssh.host || network.host || "" : "SSH host or alias";
+    recentHostsWrapper.hidden = tetherConnected;
+    if (!connectHostInput.value && ssh.host && !tetherConnected && document.activeElement !== connectHostInput) {
       connectHostInput.value = ssh.host;
     }
 
-    const currentInput = connectHostInput.value.trim();
-    const isSameHost = Boolean(ssh.host && currentInput.toLowerCase() === ssh.host.toLowerCase());
-
     btnDoConnect.classList.remove("btn-connect-secondary", "btn-connect-danger");
-    if (connecting) {
-      btnDoConnect.textContent = "Cancel";
-      btnDoConnect.disabled = networkBusy;
-      btnDoConnect.classList.add("btn-connect-secondary");
-      btnDoConnect.title = "Cancel in-flight SSH connection";
-    } else if (connected) {
-      if (isSameHost || network.enabled) {
-        btnDoConnect.textContent = "Disconnect";
-        btnDoConnect.disabled = networkBusy;
-        if (network.enabled) {
-          btnDoConnect.classList.add("btn-connect-danger");
-          btnDoConnect.title = "Disconnect SSH tunnel (remote browsing is on)";
-        } else {
-          btnDoConnect.classList.add("btn-connect-secondary");
-          btnDoConnect.title = "Disconnect SSH tunnel";
-        }
-      } else {
-        btnDoConnect.textContent = "Switch";
-        btnDoConnect.disabled = networkBusy || !currentInput;
-        btnDoConnect.title = currentInput ? `Switch connection to ${currentInput}` : "Enter remote host to switch";
-      }
-    } else if (network.enabled && !connected) {
-      btnDoConnect.textContent = "Reconnect";
-      btnDoConnect.disabled = networkBusy;
-      btnDoConnect.title = `Reconnect to ${network.host || ssh.host}`;
-    } else {
-      btnDoConnect.textContent = "Connect";
-      btnDoConnect.disabled = networkBusy || !currentInput;
-      btnDoConnect.title = currentInput ? `Connect to ${currentInput}` : "Enter remote host to connect";
-    }
-    recentHostsList.querySelectorAll("button").forEach((button) => { button.disabled = connecting || network.enabled || networkBusy; });
+    btnDoConnect.textContent = tetherConnected ? "Disconnect Tether" : "Connect Tether";
+    btnDoConnect.disabled = networkBusy || (!tetherConnected && !connectHostInput.value.trim());
+    if (tetherConnected) btnDoConnect.classList.add(network.enabled ? "btn-connect-danger" : "btn-connect-secondary");
+    btnDoConnect.title = tetherConnected
+      ? "Close agent access and SSH, release Chrome debugger, and restore the previous proxy"
+      : "Connect Tether to this SSH host";
+    recentHostsList.querySelectorAll("button").forEach((button) => { button.disabled = tetherConnected || networkBusy; });
+
     networkToggle.checked = network.enabled;
-    // Turning OFF remains available during reconnection and helper failure.
-    networkToggle.disabled = !network.enabled && (!remoteReady || networkBusy);
+    networkToggle.disabled = networkBusy || (!network.enabled && !remoteReady);
     networkEnable.disabled = !remoteReady || networkBusy || confirmedSession !== ssh.sessionId;
     networkReadiness.textContent = remoteReady ? "Ready" : "Not ready";
     networkReadiness.dataset.ready = String(Boolean(remoteReady));
     networkValue.textContent = network.enabled ? "ON" : "OFF";
     networkToggle.closest("label").title = `${remoteReady ? "Ready" : "Not ready"}${ssh.host ? ` · ${ssh.host}` : ""}. Applies to all tabs in this Chrome profile, except Incognito.`;
 
-    // Show one explanation; retain all diagnostic messages without repeating them.
     if (actionError) {
       networkError.textContent = `${actionError} Check the details below, then try again.`;
     } else if (statusError) {
@@ -370,14 +340,14 @@ document.addEventListener("DOMContentLoaded", async () => {
         ? "Remote browsing isn't active. Turn it off, then check your proxy extensions or Chrome's network settings."
         : "Chrome won't let Tether use your server's network. Check your proxy extensions or Chrome's network settings.";
     } else if (remoteProblem) {
-      networkError.textContent = "Remote browsing can't reach your server. New pages may not load. Reconnect, or turn Remote browsing off to browse normally.";
-    } else if (hasSshError) {
-      networkError.textContent = "Couldn't connect to your server. Check the address and your SSH sign-in, then try again.";
+      networkError.textContent = "Remote browsing can't reach your server. New pages may not load. Turn Remote browsing off to browse normally.";
+    } else if (needsAttention || hasSshError) {
+      networkError.textContent = "Tether lost its server connection. Disconnect Tether, then connect again.";
     } else {
       networkError.textContent = "";
     }
     networkError.hidden = !networkError.textContent;
-    networkErrorDetail.textContent = [...new Set([actionErrorDetails, statusError, ssh.error, network.message].filter(Boolean))].join("\n\n");
+    networkErrorDetail.textContent = [...new Set([actionErrorDetails, statusError, tetherConnected ? ssh.error : "", network.message].filter(Boolean))].join("\n\n");
     networkErrorDetails.hidden = networkError.hidden || !networkErrorDetail.textContent;
     if (networkErrorDetails.hidden) networkErrorDetails.open = false;
     if (network.enabled) document.getElementById("network-reload").hidden = false;
@@ -398,7 +368,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           chip.type = "button";
           chip.className = "recent-chip";
           chip.textContent = h;
-          chip.disabled = network.enabled || network.ssh?.state === "connecting" || networkBusy;
+          chip.disabled = tetherConnected || networkBusy;
           chip.title = `Connect to ${h}`;
           chip.addEventListener("click", () => {
             connectHostInput.value = h;
@@ -423,63 +393,34 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!host) return;
     connectionPanelOpen = null;
     await networkAction(async () => {
-      const ssh = await sendMessage({ type: "popup_ssh_connect", targetHost: host });
-      network = { ...network, ssh };
+      const ssh = await sendMessage({ type: "popup_tether_connect", targetHost: host });
+      tetherConnected = true;
+      network = { ...network, tetherEnabled: true, nativeConnected: true, ssh };
       await saveRecentHost(host);
-    }, "Could not connect to the server.");
+    }, "Could not connect Tether.");
   }
 
   async function doDisconnect() {
-    const warning = network.enabled
-      ? "Disconnect from the server? Remote browsing will stay on, so new pages may not load until you reconnect or turn it off."
-      : "Disconnect from the server?";
-    if (network.ssh?.state === "connecting" || confirm(warning)) {
-      await networkAction(async () => {
-        const ssh = await sendMessage({ type: "popup_ssh_disconnect" });
-        network = { ...network, ssh };
-      }, "Could not disconnect from the server.");
-    }
+    if (!confirm("Disconnect Tether? This closes agent access and SSH, releases Chrome's debugger, and turns Remote browsing off.")) return;
+    networkConfirm.hidden = true;
+    await networkAction(async () => {
+      await sendMessage({ type: "popup_tether_disconnect" });
+      tetherConnected = false;
+      network = { ...network, tetherEnabled: false, nativeConnected: false, enabled: false, state: "off" };
+    }, "Could not fully disconnect Tether.");
   }
 
   async function handleConnectAction() {
-    const ssh = network.ssh || {};
-    const connecting = ssh.state === "connecting";
-    const connected = ssh.state === "connected";
-    const inputVal = connectHostInput.value.trim();
-    const isSameHost = Boolean(ssh.host && inputVal.toLowerCase() === ssh.host.toLowerCase());
-
-    if (connecting || (connected && (isSameHost || network.enabled))) {
-      await doDisconnect();
-      return;
-    }
-
-    const targetHost = (connected && !isSameHost) ? inputVal : (inputVal || ssh.host || network.host);
-    if (targetHost) {
-      await doConnect(targetHost);
-    }
+    if (tetherConnected) await doDisconnect();
+    else await doConnect(connectHostInput.value.trim());
   }
 
-  btnDoConnect.addEventListener("click", (e) => {
-    e.preventDefault();
-    handleConnectAction();
+  document.getElementById("connect-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void handleConnectAction();
   });
 
   connectHostInput.addEventListener("input", renderConnection);
-  connectHostInput.addEventListener("keydown", (e) => {
-    const ssh = network.ssh || {};
-    if (e.key === "Enter") {
-      e.preventDefault();
-      const host = connectHostInput.value.trim();
-      if (!networkBusy && !network.enabled && ssh.state !== "connecting" &&
-          !(ssh.state === "connected" && host.toLowerCase() === ssh.host?.toLowerCase())) {
-        void doConnect(host);
-      }
-    } else if (e.key === "Escape" && ssh.state === "connected" && ssh.host) {
-      e.preventDefault();
-      connectHostInput.value = ssh.host;
-      renderConnection();
-    }
-  });
 
   connectionToggle.addEventListener("click", () => {
     const isShown = connectSection.style.display !== "none";
@@ -490,7 +431,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   function updateStatusUI(status) {
-    bridgeConnected = Boolean(status?.connected);
+    if (networkBusy) return;
+    tetherConnected = Boolean(status?.tetherEnabled);
+    for (const button of [btnInspect, btnCaptureArea, btnCaptureViewport, btnCaptureFull]) {
+      button.disabled = !tetherConnected;
+    }
+    navInput.disabled = !tetherConnected;
+    tabsList.tabIndex = tetherConnected ? -1 : 0;
+    document.querySelectorAll("#nav-form button, #tabs-list button").forEach((button) => { button.disabled = !tetherConnected; });
     renderConnection();
   }
   loadRecentHosts();
@@ -523,6 +471,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       item.type = "button";
       item.dataset.tabId = String(tab.id);
       item.className = `tab-item ${isActive ? "active" : ""}`;
+      item.disabled = !tetherConnected;
       item.title = `${tab.title}\n${tab.url}`;
 
       item.innerHTML = `
@@ -550,7 +499,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   function updateNotesUI(notes, activeTab) {
     currentNotes = notes || [];
     btnCopyNotes.disabled = !currentReport;
-    btnClearNotes.disabled = currentNotes.length === 0;
+    btnClearNotes.disabled = !tetherConnected || currentNotes.length === 0;
     document.getElementById("notes-badge").textContent = currentNotes.length;
       if (activeTab && activeTab.title) {
         const cleanTitle = activeTab.title.replace(/^\[Tether\]\s*/, "");
@@ -603,7 +552,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       btnInspect.disabled = false;
     }
   });
-
   // 3. Action: Take Screenshot
   for (const [button, label, fullPage] of [[btnCaptureViewport, "Viewport", false], [btnCaptureFull, "Full Page", true]]) {
     button.addEventListener("click", async () => {

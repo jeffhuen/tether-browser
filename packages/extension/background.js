@@ -14,6 +14,48 @@ let heartbeatTimer = null;
 let tabGroupId = null;
 let tabGroupTabs = new Set();
 let activeTabId = null;
+let tetherEnabled = false;
+let tetherConnecting = false;
+let tetherRevision = 0;
+let tetherHost = "";
+let tetherDisconnecting = null;
+let tetherStorage = Promise.resolve();
+let sessionAbort = new AbortController();
+const activeAutomation = new Set();
+function trackAutomation(operation) {
+  activeAutomation.add(operation);
+  void operation.finally(() => activeAutomation.delete(operation)).catch(() => {});
+}
+
+function pauseAutomation(ms) {
+  const signal = sessionAbort.signal;
+  if (!tetherEnabled || signal.aborted) return Promise.reject(new Error("Tether disconnected."));
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      clearTimeout(timer);
+      reject(new Error("Tether disconnected."));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", abort, { once: true });
+  });
+}
+function saveTether(values) {
+  const next = tetherStorage.then(() => chrome.storage.local.set(values));
+  tetherStorage = next.catch(() => {});
+  return next;
+}
+const tetherReady = chrome.storage.local.get(["tether_enabled", "tether_host", "tether_remote_network"]).then(async (saved) => {
+  // Preserve an active legacy route before its child switch can clear the old storage key.
+  const legacyRoute = saved.tether_enabled === undefined && saved.tether_remote_network;
+  if (saved.tether_enabled !== true && !legacyRoute) return;
+  tetherHost = saved.tether_host || saved.tether_remote_network?.host || "";
+  if (legacyRoute) await saveTether({ tether_enabled: true, tether_host: tetherHost });
+  tetherEnabled = true;
+  connectNativeHost();
+}).catch((error) => console.warn("[Tether] Could not restore connection:", error.message));
 
 // Attached CDP tabs: tabId -> { enabledDomains: Set }
 const attachedTabs = new Map();
@@ -65,25 +107,28 @@ self.addEventListener("unhandledrejection", (event) => {
 // Alarm keep-alive backstop for MV3 service worker
 chrome.alarms.create("tether_keepalive", { periodInMinutes: 1 });
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "tether_keepalive" && !nativePort) {
-    connectNativeHost();
-  }
+  if (alarm.name === "tether_keepalive" && tetherEnabled && !nativePort) connectNativeHost();
 });
 
 // --- Native Messaging Connection ---
 
 function connectNativeHost() {
-  if (nativePort) return;
+  if (nativePort || (!tetherEnabled && !tetherConnecting)) return;
   try {
     const port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
     nativePort = port;
     port.onMessage.addListener((message) => {
-      if (nativePort === port) void handleNativeMessage(message);
+      if (nativePort !== port) return;
+      const operation = handleNativeMessage(message);
+      if (message?.method) trackAutomation(operation);
     });
     port.onDisconnect.addListener(() => {
       if (nativePort === port) handleNativeDisconnect();
     });
     startHeartbeat();
+    if (tetherEnabled && tetherHost) {
+      void connectSSH(tetherHost).catch((error) => console.warn("[Tether] SSH reconnect:", error.message));
+    }
     console.log("[Tether] Connected to native messaging host:", NATIVE_HOST_NAME);
   } catch (err) {
     console.warn("[Tether] Failed to connect to native messaging host:", err.message);
@@ -107,11 +152,11 @@ function handleNativeDisconnect() {
     pending.reject(new Error("Native host disconnected"));
   }
   pendingNative.clear();
-  scheduleReconnect();
+  if (tetherEnabled || tetherConnecting) scheduleReconnect();
 }
 
 function scheduleReconnect() {
-  if (reconnectTimer) return;
+  if (reconnectTimer || (!tetherEnabled && !tetherConnecting)) return;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connectNativeHost();
@@ -136,6 +181,88 @@ function stopHeartbeat() {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
   }
+}
+
+async function connectTether(host) {
+  await tetherReady;
+  if (tetherEnabled || tetherConnecting || tetherDisconnecting) throw new Error("Tether is already connected or disconnecting.");
+  host = String(host || "").trim();
+  if (!host) throw new Error("Enter an SSH host to connect Tether.");
+  const revision = ++tetherRevision;
+  tetherConnecting = true;
+  try {
+    connectNativeHost();
+    const ssh = await connectSSH(host);
+    if (revision !== tetherRevision) throw new Error("Tether connection cancelled.");
+    await saveTether({ tether_enabled: true, tether_host: host });
+    if (revision !== tetherRevision) throw new Error("Tether connection cancelled.");
+    tetherHost = host;
+    sessionAbort = new AbortController();
+    tetherEnabled = true;
+    return ssh;
+  } catch (error) {
+    if (revision === tetherRevision) await disconnectTether();
+    throw error;
+  } finally {
+    tetherConnecting = false;
+  }
+}
+
+function disconnectTether() {
+  if (tetherDisconnecting) return tetherDisconnecting;
+  ++tetherRevision;
+  tetherEnabled = false;
+  sessionAbort.abort();
+  tetherConnecting = false;
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  tetherDisconnecting = (async () => {
+    await tetherReady;
+    let failure;
+    try {
+      await saveTether({ tether_enabled: false });
+    } catch (error) {
+      failure = error;
+    }
+    try {
+      await setNetworkEnabled(false);
+    } catch (error) {
+      failure ||= error;
+    }
+    if (nativePort) {
+      try {
+        await disconnectSSH();
+      } catch (error) {
+        failure ||= error;
+      }
+      const port = nativePort;
+      if (port) {
+        handleNativeDisconnect();
+        try {
+          port.disconnect();
+        } catch (error) {
+          failure ||= error;
+        }
+      }
+    } else {
+      networkDisconnected();
+    }
+    await Promise.allSettled([...attachingTabs.values()]);
+    await Promise.all([...attachedTabs.keys()].map(async (tabId) => {
+      try {
+        await chrome.debugger.detach({ tabId });
+      } catch (error) {
+        if (!/No tab with given id|Debugger is not attached/.test(error.message)) failure ||= error;
+      }
+    }));
+    attachedTabs.clear();
+    attachingTabs.clear();
+    elementRefsByTab.clear();
+    tabSnapshotStates.clear();
+    await Promise.allSettled([...activeAutomation]);
+    if (failure) throw failure;
+  })().finally(() => { tetherDisconnecting = null; });
+  return tetherDisconnecting;
 }
 
 function sendResponse(id, result) {
@@ -186,6 +313,7 @@ async function ensureTabGroup(createIfEmpty = true) {
   } catch {}
 
   if (!createIfEmpty) return null;
+  if (!tetherEnabled) throw new Error("Tether disconnected.");
 
   // Use chrome.windows.getAll to find user's visible normal window
   // (In service workers, currentWindow:true returns [] when Chrome is unfocused)
@@ -193,6 +321,7 @@ async function ensureTabGroup(createIfEmpty = true) {
     const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
     if (windows && windows.length > 0) {
       const targetWin = windows.find((w) => w.focused) || windows[0];
+      if (!tetherEnabled) throw new Error("Tether disconnected.");
       const tab = await chrome.tabs.create({ windowId: targetWin.id, url: "data:text/html,", active: true });
       const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
       await chrome.tabGroups.update(groupId, { title: "Tether", color: "blue" });
@@ -206,6 +335,7 @@ async function ensureTabGroup(createIfEmpty = true) {
   }
 
   // Fallback: create focused window if no normal window exists
+  if (!tetherEnabled) throw new Error("Tether disconnected.");
   const win = await chrome.windows.create({ focused: true, url: "data:text/html," });
   const tab = win.tabs[0];
   const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
@@ -238,12 +368,18 @@ async function assertAutomationTab(tabId) {
 }
 
 async function ensureAttached(tabId) {
+  if (!tetherEnabled) throw new Error("Connect Tether before using browser automation.");
   if (attachedTabs.has(tabId)) return;
   if (attachingTabs.has(tabId)) return attachingTabs.get(tabId);
 
   const attachPromise = (async () => {
     await assertAutomationTab(tabId);
+    if (!tetherEnabled) throw new Error("Tether disconnected.");
     await chrome.debugger.attach({ tabId }, "1.3");
+    if (!tetherEnabled) {
+      await chrome.debugger.detach({ tabId });
+      throw new Error("Tether disconnected.");
+    }
     attachedTabs.set(tabId, { enabledDomains: new Set() });
 
     // Focus emulation: allows background/unselected tabs to receive input
@@ -274,8 +410,10 @@ async function ensureDomain(tabId, domain) {
 }
 
 async function cdp(tabId, method, params = {}) {
+  if (!tetherEnabled) throw new Error("Tether disconnected.");
   // A tab can navigate after attachment. Recheck at the command boundary.
   await assertAutomationTab(tabId);
+  if (!tetherEnabled) throw new Error("Tether disconnected.");
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new Error(`CDP command ${method} timed out after ${CDP_TIMEOUT_MS}ms`));
@@ -343,6 +481,7 @@ async function getLiveTabs() {
 
 // Track user tab switching in Chrome
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  if (!tetherEnabled) return;
   try {
     const tab = await chrome.tabs.get(activeInfo.tabId);
     if (tab && tabGroupId !== null && tab.groupId === tabGroupId) {
@@ -354,6 +493,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
 // Track user navigation, redirects, and title updates
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (!tetherEnabled) return;
   if (changeInfo.status === "loading" || changeInfo.url) {
     elementRefsByTab.delete(tabId);
     tabSnapshotStates.delete(tabId);
@@ -374,6 +514,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 // Track popups and links with target="_blank"
 chrome.tabs.onCreated.addListener(async (tab) => {
+  if (!tetherEnabled) return;
   if (tab.openerTabId && tabGroupTabs.has(tab.openerTabId)) {
     if (tabGroupId !== null) {
       try {
@@ -388,11 +529,13 @@ async function handleOpen(params = {}) {
   const url = params.url || "data:text/html,";
   assertAutomationURL(url);
   await ensureTabGroup(true);
+  if (!tetherEnabled) throw new Error("Tether disconnected.");
 
   let targetTabId = resolveTargetTabId(params);
   // Empty requests need a new tab: Chrome blocks data: navigation in existing tabs.
   if (!params.url || params.newTab || !targetTabId || !tabGroupTabs.has(targetTabId)) {
     // Create new tab in group
+    if (!tetherEnabled) throw new Error("Tether disconnected.");
     const tab = await chrome.tabs.create({ url, active: true });
     await chrome.tabs.group({ tabIds: [tab.id], groupId: tabGroupId });
     tabGroupTabs.add(tab.id);
@@ -401,6 +544,7 @@ async function handleOpen(params = {}) {
   } else {
     // Navigate existing tab
     await assertAutomationTab(targetTabId);
+    if (!tetherEnabled) throw new Error("Tether disconnected.");
     await chrome.tabs.update(targetTabId, { url, active: true });
   }
 
@@ -924,7 +1068,7 @@ async function handleWait(params = {}) {
   if (!tabId) throw new Error("No active tab in Tether group");
 
   if (params.durationMs && params.durationMs > 0) {
-    await new Promise((resolve) => setTimeout(resolve, params.durationMs));
+    await pauseAutomation(params.durationMs);
     return { tabId, waitedMs: params.durationMs };
   }
 
@@ -933,6 +1077,7 @@ async function handleWait(params = {}) {
     const start = Date.now();
     await ensureDomain(tabId, "DOM");
     while (Date.now() - start < timeoutMs) {
+      if (!tetherEnabled) throw new Error("Tether disconnected.");
       try {
         let matched = false;
         if (params.selector.startsWith("@")) {
@@ -974,6 +1119,7 @@ async function handleClose(params = {}) {
   if (params.closeAll) {
     const tabs = await getLiveTabs();
     for (const t of tabs) {
+      if (!tetherEnabled) throw new Error("Tether disconnected.");
       try {
         await chrome.tabs.remove(t.id);
       } catch (err) {}
@@ -982,6 +1128,7 @@ async function handleClose(params = {}) {
   }
   const tabId = resolveTargetTabId(params);
   if (!tabId) throw new Error("No active tab in Tether group");
+  if (!tetherEnabled) throw new Error("Tether disconnected.");
   await chrome.tabs.remove(tabId);
   return { tabId, closed: true };
 }
@@ -1084,6 +1231,7 @@ async function handleTabSwitch(params = {}) {
     throw new Error(`Invalid tab ID: ${target}`);
   }
   await assertAutomationTab(tabId);
+  if (!tetherEnabled) throw new Error("Tether disconnected.");
   await chrome.tabs.update(tabId, { active: true });
   activeTabId = tabId;
 
@@ -1195,17 +1343,21 @@ async function enrichReviewFrameworks(tabId) {
 async function handleReviewStart(params = {}) {
   const tabId = resolveTargetTabId(params);
   if (!tabId) throw new Error("No active tab in Tether group");
-
-  if (tabGroupId !== null) {
-    try {
-      await chrome.tabs.group({ tabIds: [tabId], groupId: tabGroupId });
-      tabGroupTabs.add(tabId);
-      activeTabId = tabId;
-    } catch {}
+  await assertAutomationTab(tabId);
+  if (!tetherEnabled) throw new Error("Tether disconnected.");
+  await ensureTabGroup(false);
+  if (!tetherEnabled) throw new Error("Tether disconnected.");
+  if (tabGroupId === null) {
+    tabGroupId = await chrome.tabs.group({ tabIds: [tabId] });
+    await chrome.tabGroups.update(tabGroupId, { title: "Tether", color: "blue" });
+  } else {
+    await chrome.tabs.group({ tabIds: [tabId], groupId: tabGroupId });
   }
+  tabGroupTabs.add(tabId);
+  activeTabId = tabId;
 
   const url = chrome.runtime.getURL("review/overlay.js");
-  const resp = await fetch(url);
+  const resp = await fetch(url, { signal: sessionAbort.signal });
   const code = await resp.text();
 
   await reviewEval(tabId, code);
@@ -1298,30 +1450,47 @@ async function handleNativeMessage(msg) {
       sendError(id, -32601, `Method ${method} not found in extension dispatcher`);
       return;
     }
+    if (!tetherEnabled) throw new Error("Tether is disconnected.");
+    if (!["browser.open", "browser.status", "browser.tab.list"].includes(method)) {
+      const tabId = resolveTargetTabId(params);
+      if (tabId) {
+        await ensureTabGroup(false);
+        const tab = await chrome.tabs.get(tabId);
+        if (tabGroupId === null || tab.groupId !== tabGroupId) {
+          throw new Error("Remote automation is limited to the Tether tab group.");
+        }
+      }
+    }
+    if (!tetherEnabled) throw new Error("Tether is disconnected.");
     sendResponse(id, await nativeHandlers[method](params));
   } catch (err) {
     sendError(id, -32000, err.message || String(err));
   }
 }
 
-// Start connection on service worker load
+// Only an explicit popup connection, or a previously saved one, opens the bridge.
 
 // --- Internal Message Router (for popup UI) ---
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  (async () => {
+  const operation = (async () => {
     try {
-      if (["popup_network_status", "popup_network_set", "popup_ssh_connect", "popup_ssh_disconnect", "popup_reload_remote_tabs"].includes(msg.type) &&
+      await tetherReady;
+      if (msg.type.startsWith("popup_") &&
           (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL("popup.html"))) {
-        throw new Error("Connection settings can only be changed from the Tether popup.");
+        throw new Error("Tether popup actions require the Tether popup.");
+      }
+      if (!tetherEnabled && ["popup_reload_remote_tabs", "popup_switch_tab", "popup_start_review",
+        "popup_clear_notes", "popup_capture_screenshot", "popup_start_crop", "popup_navigate"].includes(msg.type)) {
+        throw new Error("Connect Tether before using browser automation.");
       }
       switch (msg.type) {
         case "popup_network_status":
-          if (!nativePort) connectNativeHost();
-          sendResponse(await networkStatus());
+          sendResponse({ ...await networkStatus(tetherEnabled && nativePort !== null), tetherEnabled, nativeConnected: nativePort !== null });
           break;
         case "popup_network_set":
           if (typeof msg.enabled !== "boolean") throw new Error("Invalid network setting.");
+          if (msg.enabled && (!tetherEnabled || !nativePort)) throw new Error("Connect Tether before enabling remote browsing.");
           await setNetworkEnabled(msg.enabled, msg.sessionId);
           sendResponse({ ok: true });
           break;
@@ -1332,9 +1501,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case "popup_get_status": {
-          if (!nativePort) {
-            connectNativeHost();
-          }
           const tabList = await handleTabList();
           let targetTabId = msg.currentTabId || activeTabId;
           if (!targetTabId && tabList.tabs && tabList.tabs.length > 0) {
@@ -1343,7 +1509,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
           let notes = [];
           let report = "";
-          if (targetTabId) {
+          if (tetherEnabled && targetTabId && tabGroupTabs.has(targetTabId) && attachedTabs.has(targetTabId)) {
             try {
               await enrichReviewFrameworks(targetTabId);
               const value = await reviewEval(targetTabId, "window.__tetherReview ? {notes: window.__tetherReview.getNotes(), report: window.__tetherReview.buildSummaryText()} : {notes: [], report: ''}");
@@ -1355,7 +1521,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
 
           sendResponse({
-            connected: nativePort !== null && isDaemonConnected,
+            tetherEnabled,
+            connected: tetherEnabled && nativePort !== null && isDaemonConnected,
             activeTabId: targetTabId || activeTabId,
             tabs: tabList.tabs,
             notes,
@@ -1363,11 +1530,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
           break;
         }
-        case "popup_ssh_disconnect":
-          sendResponse(await disconnectSSH());
+        case "popup_tether_disconnect":
+          await disconnectTether();
+          sendResponse({ ok: true });
           break;
-        case "popup_ssh_connect":
-          sendResponse(await connectSSH(msg.targetHost));
+        case "popup_tether_connect":
+          sendResponse(await connectTether(msg.targetHost));
           break;
         case "popup_switch_tab": {
           await handleTabSwitch({ targetId: msg.tabId });
@@ -1429,7 +1597,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
 
           const url = chrome.runtime.getURL("review/overlay.js");
-          const resp = await fetch(url);
+          const resp = await fetch(url, { signal: sessionAbort.signal });
           const code = await resp.text();
           await reviewEval(targetTabId, code);
 
@@ -1439,12 +1607,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             throw new Error("Could not start area selection. Reload the page and try again.");
           }
 
-          (async () => {
+          trackAutomation((async () => {
             let failure = "";
             let saved = false;
             try {
               for (let i = 0; i < 150; i++) {
-                await new Promise((r) => setTimeout(r, 200));
+                await pauseAutomation(200);
                 const cropData = await reviewEval(targetTabId, `window.__tetherReview?.cropRequestId === ${JSON.stringify(requestId)} ? window.__tetherReview.cropResult : {cancelled:true}`);
                 if (!cropData) continue;
                 if (cropData.cancelled) break;
@@ -1488,7 +1656,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               const finished = await reviewEval(targetTabId, `window.__tetherReview?.cropRequestId === ${JSON.stringify(requestId)} && (window.__tetherReview.finishCrop?.(${JSON.stringify(failure)}), true)`).catch(() => null);
               if (saved && finished) await reopenPopup(targetTabId, "shots");
             }
-          })();
+          })());
 
           sendResponse({ ok: true });
           break;
@@ -1529,6 +1697,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ error: err.message || String(err) });
     }
   })();
+  if (["popup_get_status", "popup_reload_remote_tabs", "popup_switch_tab", "popup_start_review",
+    "popup_clear_notes", "popup_capture_screenshot", "popup_start_crop", "popup_navigate"].includes(msg?.type)) {
+    trackAutomation(operation);
+  }
   return true; // Keep message channel open for async sendResponse
 });
-connectNativeHost();

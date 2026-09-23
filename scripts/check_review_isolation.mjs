@@ -14,7 +14,7 @@ const port = {
 globalThis.self = { addEventListener() {} };
 globalThis.chrome = {
   proxy: { settings: { onChange: listen } },
-  storage: { local: { get: async () => ({}) } },
+  storage: { local: { get: async () => ({ tether_enabled: true }) } },
   alarms: { create() {}, onAlarm: listen },
   runtime: { connectNative: () => port, getURL: () => "chrome-extension://example/", onMessage: listen, lastError: null },
   debugger: {
@@ -38,7 +38,12 @@ globalThis.chrome = {
       return Promise.resolve(result);
     },
   },
-  tabs: { get: async () => ({ url: "https://example.test/" }), onActivated: listen, onUpdated: listen, onCreated: listen },
+  tabs: {
+    get: async (tabId) => ({ url: "https://example.test/", groupId: tabId === 1 ? 1 : -1 }),
+    query: async () => [{ id: 1, groupId: 1 }],
+    onActivated: listen, onUpdated: listen, onCreated: listen,
+  },
+  tabGroups: { query: async () => [{ id: 1 }] },
 };
 
 await import("../packages/extension/background.js");
@@ -47,5 +52,8 @@ receive({ id: "review-list", method: "browser.review.list", params: { tabId: 1 }
 const message = await response;
 assert.equal(message.type, "response", JSON.stringify(message));
 assert.deepEqual(message.result.notes, [{ comment: "Isolated note" }]);
+const rejected = new Promise((resolve) => { reply = resolve; });
+receive({ id: "outside-group", method: "browser.review.list", params: { tabId: 2 } });
+assert.match((await rejected).error.message, /Tether tab group/);
 console.log("PASS: native review list ignores page-world review state");
 process.exit(0); // The extension's heartbeat is intentionally still running.
