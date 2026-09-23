@@ -2,10 +2,8 @@ package client
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/subtle"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -196,95 +194,6 @@ func (s *Server) handleConn(conn net.Conn) {
 			respBytes, _ := json.Marshal(rpcResp)
 			fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(respBytes), string(respBytes))
 			if !req.ProtoAtLeast(1, 1) || req.Close {
-				return
-			}
-			continue
-		}
-
-		// Binary framing: FormatRaw
-		if firstByte == protocol.FormatRaw {
-			header := make([]byte, 5)
-			if _, err := io.ReadFull(br, header); err != nil {
-				return
-			}
-			uncompressedLen := binary.BigEndian.Uint32(header[1:5])
-			if uncompressedLen > protocol.MaxFramePayload {
-				return
-			}
-			var buf bytes.Buffer
-			buf.Write(header)
-			if _, err := io.CopyN(&buf, br, int64(uncompressedLen)); err != nil {
-				return
-			}
-			framed := buf.Bytes()
-			decompressed, err := protocol.DecompressPayload(framed)
-			if err != nil {
-				return
-			}
-			var req protocol.Request
-			if err := json.Unmarshal(decompressed, &req); err != nil {
-				return
-			}
-			if !s.isAuthorized(&req, nil) {
-				errResp := protocol.NewErrorResponse(req.ID, protocol.CodeAuthRequired, "authentication required: invalid or missing token", nil, req.Seq, req.Epoch)
-				respJSON, _ := json.Marshal(errResp)
-				respFramed, _ := protocol.CompressPayload(respJSON)
-				_, _ = conn.Write(respFramed)
-				continue
-			}
-			resp := s.Dispatch(context.Background(), &req)
-			respJSON, _ := json.Marshal(resp)
-			respFramed, err := protocol.CompressPayload(respJSON)
-			if err != nil {
-				return
-			}
-			if _, err := conn.Write(respFramed); err != nil {
-				return
-			}
-			continue
-		}
-
-		// Binary framing: FormatZstd
-		if firstByte == protocol.FormatZstd {
-			header := make([]byte, 9)
-			if _, err := io.ReadFull(br, header); err != nil {
-				return
-			}
-			compressedLen := binary.BigEndian.Uint32(header[1:5])
-			uncompressedLen := binary.BigEndian.Uint32(header[5:9])
-			if uncompressedLen > protocol.MaxFramePayload || compressedLen > protocol.MaxFramePayload {
-				return
-			}
-
-			var buf bytes.Buffer
-			buf.Write(header)
-			if _, err := io.CopyN(&buf, br, int64(compressedLen)); err != nil {
-				return
-			}
-			framed := buf.Bytes()
-			decompressed, err := protocol.DecompressPayload(framed)
-			if err != nil {
-				return
-			}
-
-			var req protocol.Request
-			if err := json.Unmarshal(decompressed, &req); err != nil {
-				return
-			}
-			if !s.isAuthorized(&req, nil) {
-				errResp := protocol.NewErrorResponse(req.ID, protocol.CodeAuthRequired, "authentication required: invalid or missing token", nil, req.Seq, req.Epoch)
-				respJSON, _ := json.Marshal(errResp)
-				respFramed, _ := protocol.CompressPayload(respJSON)
-				_, _ = conn.Write(respFramed)
-				continue
-			}
-			resp := s.Dispatch(context.Background(), &req)
-			respJSON, _ := json.Marshal(resp)
-			respFramed, err := protocol.CompressPayload(respJSON)
-			if err != nil {
-				return
-			}
-			if _, err := conn.Write(respFramed); err != nil {
 				return
 			}
 			continue
