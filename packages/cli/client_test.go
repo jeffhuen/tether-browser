@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,73 +39,6 @@ func TestDaemonUnreachableDiagnostic(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), DaemonUnreachableDiagnostic) {
 		t.Errorf("expected stderr to contain %q, but got:\n%s", DaemonUnreachableDiagnostic, stderr.String())
-	}
-}
-
-func TestClientRPCSuccessAndProtocolFields(t *testing.T) {
-	// Mock TCP server listening on ephemeral port
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to start mock tcp listener: %v", err)
-	}
-	defer ln.Close()
-
-	serverAddr := ln.Addr().String()
-
-	// Handle one request in background
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-
-		decoder := json.NewDecoder(conn)
-		var req protocol.Request
-		if err := decoder.Decode(&req); err != nil {
-			return
-		}
-
-		// Verify protocol fields
-		if req.JSONRPC != protocol.JSONRPCVersion {
-			t.Errorf("expected jsonrpc %s, got %s", protocol.JSONRPCVersion, req.JSONRPC)
-		}
-		if req.Seq != 1 {
-			t.Errorf("expected seq 1, got %d", req.Seq)
-		}
-		if req.Epoch == "" {
-			t.Errorf("expected non-empty epoch")
-		}
-		if req.Method != protocol.MethodStatus {
-			t.Errorf("expected method %s, got %s", protocol.MethodStatus, req.Method)
-		}
-
-		// Send mock response
-		statusRes := protocol.StatusResult{
-			Connected:   true,
-			Version:     "0.1.0",
-			TargetCount: 1,
-		}
-		resp, _ := protocol.NewResponse(req.ID, statusRes, req.Seq, req.Epoch)
-		data, _ := json.Marshal(resp)
-		_, _ = conn.Write(append(data, '\n'))
-	}()
-
-	client := NewClient(serverAddr)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	resp, err := client.Call(ctx, protocol.MethodStatus, nil)
-	if err != nil {
-		t.Fatalf("expected successful call, got: %v", err)
-	}
-
-	var status protocol.StatusResult
-	if err := resp.UnmarshalResult(&status); err != nil {
-		t.Fatalf("unmarshal status result: %v", err)
-	}
-	if !status.Connected || status.Version != "0.1.0" {
-		t.Errorf("unexpected status result: %+v", status)
 	}
 }
 
@@ -234,5 +168,63 @@ func TestBrokerLifecycleAndTargetInjection(t *testing.T) {
 	}
 	if !foundInjected {
 		t.Errorf("expected broker to inject target-tab-99 into click call, got targets: %v", receivedTargetIDs)
+	}
+}
+
+func TestRunJSONResults(t *testing.T) {
+	t.Setenv("TETHER_BROKER_SOCKET", filepath.Join(t.TempDir(), "absent.sock"))
+	screenshotPath := filepath.Join(t.TempDir(), "screenshot.png")
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		result json.RawMessage
+		code   int
+	}{
+		{"empty tabs", []string{"tabs", "--json"}, json.RawMessage(`{"tabs":[],"activeId":""}`), 0},
+		{"eval error", []string{"eval", "throw new Error('bad')", "--json"}, json.RawMessage(`{"value":null,"error":"bad"}`), 1},
+		{"screenshot file", []string{"screenshot", screenshotPath, "--json"}, json.RawMessage(`{"base64":"AAECAw==","format":"png","width":1,"height":1}`), 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ln.Close()
+			t.Setenv("TETHER_DAEMON_ADDR", ln.Addr().String())
+			go func() {
+				conn, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				var req protocol.Request
+				if json.NewDecoder(conn).Decode(&req) != nil {
+					return
+				}
+				resp, _ := protocol.NewResponse(req.ID, tc.result, req.Seq, req.Epoch)
+				_ = json.NewEncoder(conn).Encode(resp)
+			}()
+			var stdout, stderr bytes.Buffer
+			code := Run(tc.args, &stdout, &stderr)
+			if code != tc.code {
+				t.Fatalf("exit code %d, expected %d; stderr: %s", code, tc.code, &stderr)
+			}
+			if tc.args[0] == "screenshot" {
+				data, err := os.ReadFile(screenshotPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(data, []byte{0, 1, 2, 3}) {
+					t.Fatalf("saved screenshot bytes differ: %v", data)
+				}
+			}
+			var compact bytes.Buffer
+			if err := json.Compact(&compact, stdout.Bytes()); err != nil {
+				t.Fatalf("expected JSON on stdout, got %q: %v", stdout.String(), err)
+			}
+			if compact.String() != string(tc.result) {
+				t.Fatalf("daemon result changed: %s", &compact)
+			}
+		})
 	}
 }

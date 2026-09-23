@@ -2,10 +2,8 @@ package client
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/subtle"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -201,95 +199,6 @@ func (s *Server) handleConn(conn net.Conn) {
 			continue
 		}
 
-		// Binary framing: FormatRaw
-		if firstByte == protocol.FormatRaw {
-			header := make([]byte, 5)
-			if _, err := io.ReadFull(br, header); err != nil {
-				return
-			}
-			uncompressedLen := binary.BigEndian.Uint32(header[1:5])
-			if uncompressedLen > protocol.MaxFramePayload {
-				return
-			}
-			var buf bytes.Buffer
-			buf.Write(header)
-			if _, err := io.CopyN(&buf, br, int64(uncompressedLen)); err != nil {
-				return
-			}
-			framed := buf.Bytes()
-			decompressed, err := protocol.DecompressPayload(framed)
-			if err != nil {
-				return
-			}
-			var req protocol.Request
-			if err := json.Unmarshal(decompressed, &req); err != nil {
-				return
-			}
-			if !s.isAuthorized(&req, nil) {
-				errResp := protocol.NewErrorResponse(req.ID, protocol.CodeAuthRequired, "authentication required: invalid or missing token", nil, req.Seq, req.Epoch)
-				respJSON, _ := json.Marshal(errResp)
-				respFramed, _ := protocol.CompressPayload(respJSON)
-				_, _ = conn.Write(respFramed)
-				continue
-			}
-			resp := s.Dispatch(context.Background(), &req)
-			respJSON, _ := json.Marshal(resp)
-			respFramed, err := protocol.CompressPayload(respJSON)
-			if err != nil {
-				return
-			}
-			if _, err := conn.Write(respFramed); err != nil {
-				return
-			}
-			continue
-		}
-
-		// Binary framing: FormatZstd
-		if firstByte == protocol.FormatZstd {
-			header := make([]byte, 9)
-			if _, err := io.ReadFull(br, header); err != nil {
-				return
-			}
-			compressedLen := binary.BigEndian.Uint32(header[1:5])
-			uncompressedLen := binary.BigEndian.Uint32(header[5:9])
-			if uncompressedLen > protocol.MaxFramePayload || compressedLen > protocol.MaxFramePayload {
-				return
-			}
-
-			var buf bytes.Buffer
-			buf.Write(header)
-			if _, err := io.CopyN(&buf, br, int64(compressedLen)); err != nil {
-				return
-			}
-			framed := buf.Bytes()
-			decompressed, err := protocol.DecompressPayload(framed)
-			if err != nil {
-				return
-			}
-
-			var req protocol.Request
-			if err := json.Unmarshal(decompressed, &req); err != nil {
-				return
-			}
-			if !s.isAuthorized(&req, nil) {
-				errResp := protocol.NewErrorResponse(req.ID, protocol.CodeAuthRequired, "authentication required: invalid or missing token", nil, req.Seq, req.Epoch)
-				respJSON, _ := json.Marshal(errResp)
-				respFramed, _ := protocol.CompressPayload(respJSON)
-				_, _ = conn.Write(respFramed)
-				continue
-			}
-			resp := s.Dispatch(context.Background(), &req)
-			respJSON, _ := json.Marshal(resp)
-			respFramed, err := protocol.CompressPayload(respJSON)
-			if err != nil {
-				return
-			}
-			if _, err := conn.Write(respFramed); err != nil {
-				return
-			}
-			continue
-		}
-
 		// JSON-RPC stream mode: loop continuously without peeking to preserve read-ahead buffer
 		dec := json.NewDecoder(br)
 		for {
@@ -332,52 +241,6 @@ func isAuthorizedOrigin(origin string) bool {
 	return h == "localhost" || h == "127.0.0.1" || h == "::1" || strings.HasSuffix(h, ".localhost")
 }
 
-// ServeHTTP implements http.Handler for standard HTTP servers and testing.
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	origin := r.Header.Get("Origin")
-	if origin != "" && !isAuthorizedOrigin(origin) {
-		http.Error(w, "forbidden origin", http.StatusForbidden)
-		return
-	}
-
-	ct := r.Header.Get("Content-Type")
-	if !strings.HasPrefix(ct, "application/json") {
-		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
-		return
-	}
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "read error", http.StatusBadRequest)
-		return
-	}
-
-	var req protocol.Request
-	if err := json.Unmarshal(body, &req); err != nil {
-		errResp := protocol.NewErrorResponse(nil, protocol.CodeParseError, "parse error", nil, 0, "")
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(errResp)
-		return
-	}
-
-	if !s.isAuthorized(&req, r) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		errResp := protocol.NewErrorResponse(req.ID, protocol.CodeAuthRequired, "authentication required: invalid or missing bearer token", nil, req.Seq, req.Epoch)
-		_ = json.NewEncoder(w).Encode(errResp)
-		return
-	}
-
-	resp := s.Dispatch(r.Context(), &req)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
-}
-
 // Dispatch routes a protocol.Request to the appropriate driver method.
 func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.Response {
 	if req.JSONRPC != protocol.JSONRPCVersion {
@@ -386,163 +249,73 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 
 	switch req.Method {
 	case protocol.MethodOpen:
-		var p protocol.OpenParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		res, err := s.driver.OpenTab(ctx, p)
-		if err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, res, req.Seq, req.Epoch)
-		return resp
-
+		return dispatchParams(req, func(p protocol.OpenParams) (any, error) {
+			return s.driver.OpenTab(ctx, p)
+		})
 	case protocol.MethodClose:
-		var p protocol.CloseParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		if err := s.driver.CloseTab(ctx, p); err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
-		return resp
-
+		return dispatchParams(req, func(p protocol.CloseParams) (any, error) {
+			return protocol.ActionResult{OK: true}, s.driver.CloseTab(ctx, p)
+		})
 	case protocol.MethodSnapshot:
-		var p protocol.SnapshotParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		res, err := s.driver.Snapshot(ctx, p)
-		if err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, res, req.Seq, req.Epoch)
-		return resp
-
+		return dispatchParams(req, func(p protocol.SnapshotParams) (any, error) {
+			return s.driver.Snapshot(ctx, p)
+		})
 	case protocol.MethodClick:
-		var p protocol.ClickParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		if err := s.driver.Click(ctx, p); err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
-		return resp
-
+		return dispatchParams(req, func(p protocol.ClickParams) (any, error) {
+			return protocol.ActionResult{OK: true}, s.driver.Click(ctx, p)
+		})
 	case protocol.MethodDblClick:
-		var p protocol.ClickParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		if err := s.driver.DblClick(ctx, p); err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
-		return resp
-
+		return dispatchParams(req, func(p protocol.ClickParams) (any, error) {
+			return protocol.ActionResult{OK: true}, s.driver.DblClick(ctx, p)
+		})
 	case protocol.MethodFill:
-		var p protocol.FillParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		if err := s.driver.Fill(ctx, p); err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
-		return resp
-
+		return dispatchParams(req, func(p protocol.FillParams) (any, error) {
+			return protocol.ActionResult{OK: true}, s.driver.Fill(ctx, p)
+		})
 	case protocol.MethodType:
-		var p protocol.TypeParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		if err := s.driver.Type(ctx, p); err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
-		return resp
-
+		return dispatchParams(req, func(p protocol.TypeParams) (any, error) {
+			return protocol.ActionResult{OK: true}, s.driver.Type(ctx, p)
+		})
 	case protocol.MethodPress:
-		var p protocol.PressParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		if err := s.driver.Press(ctx, p); err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
-		return resp
-
+		return dispatchParams(req, func(p protocol.PressParams) (any, error) {
+			return protocol.ActionResult{OK: true}, s.driver.Press(ctx, p)
+		})
 	case protocol.MethodHover:
-		var p protocol.HoverParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		if err := s.driver.Hover(ctx, p); err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
-		return resp
-
+		return dispatchParams(req, func(p protocol.HoverParams) (any, error) {
+			return protocol.ActionResult{OK: true}, s.driver.Hover(ctx, p)
+		})
 	case protocol.MethodFocus:
-		var p protocol.FocusParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		if err := s.driver.Focus(ctx, p); err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
-		return resp
-
+		return dispatchParams(req, func(p protocol.FocusParams) (any, error) {
+			return protocol.ActionResult{OK: true}, s.driver.Focus(ctx, p)
+		})
 	case protocol.MethodEval:
-		var p protocol.EvalParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		res, err := s.driver.Eval(ctx, p)
-		if err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, res, req.Seq, req.Epoch)
-		return resp
-
+		return dispatchParams(req, func(p protocol.EvalParams) (any, error) {
+			return s.driver.Eval(ctx, p)
+		})
 	case protocol.MethodWait:
-		var p protocol.WaitParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		if err := s.driver.Wait(ctx, p); err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
-		return resp
-
+		return dispatchParams(req, func(p protocol.WaitParams) (any, error) {
+			return protocol.ActionResult{OK: true}, s.driver.Wait(ctx, p)
+		})
 	case protocol.MethodScroll:
-		var p protocol.ScrollParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		if err := s.driver.Scroll(ctx, p); err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
-		return resp
-
+		return dispatchParams(req, func(p protocol.ScrollParams) (any, error) {
+			return protocol.ActionResult{OK: true}, s.driver.Scroll(ctx, p)
+		})
 	case protocol.MethodScreenshot:
-		var p protocol.ScreenshotParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		res, err := s.driver.Screenshot(ctx, p)
-		if err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, res, req.Seq, req.Epoch)
-		return resp
-
+		return dispatchParams(req, func(p protocol.ScreenshotParams) (any, error) {
+			return s.driver.Screenshot(ctx, p)
+		})
+	case protocol.MethodTabSwitch:
+		return dispatchParams(req, func(p protocol.TabSwitchParams) (any, error) {
+			return protocol.ActionResult{OK: true}, s.driver.SwitchTab(ctx, p)
+		})
+	case protocol.MethodReviewStart:
+		return dispatchParams(req, func(p protocol.ReviewParams) (any, error) {
+			return protocol.ActionResult{OK: true}, s.driver.StartReview(ctx, p)
+		})
+	case protocol.MethodReviewClear:
+		return dispatchParams(req, func(p protocol.ReviewParams) (any, error) {
+			return protocol.ActionResult{OK: true}, s.driver.ClearReview(ctx, p)
+		})
 	case protocol.MethodStatus:
 		var p protocol.StatusParams
 		res, err := s.driver.Status(ctx, p)
@@ -559,77 +332,40 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		resp, _ := protocol.NewResponse(req.ID, res, req.Seq, req.Epoch)
 		return resp
 
-	case protocol.MethodTabSwitch:
-		var p protocol.TabSwitchParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		if err := s.driver.SwitchTab(ctx, p); err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
-		return resp
-
-	case protocol.MethodReviewStart:
-		var p protocol.ReviewParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		if err := s.driver.StartReview(ctx, p); err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
-		return resp
-
-	case protocol.MethodReviewList:
-		var p protocol.ReviewParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		notes, err := s.driver.GetReviewNotes(ctx, p)
-		if err != nil {
-			return mapDriverError(req, err)
-		}
-		var pageURL, viewport string
-		if len(notes) > 0 && notes[0] != nil && notes[0].Payload != nil {
-			pageURL = notes[0].Payload.Page.SanitizedURL
-			viewport = fmt.Sprintf("%dx%d", notes[0].Payload.Page.ViewportWidth, notes[0].Payload.Page.ViewportHeight)
-		}
-		resp, _ := protocol.NewResponse(req.ID, protocol.ReviewListResult{Notes: notes, PageURL: pageURL, Viewport: viewport}, req.Seq, req.Epoch)
-		return resp
-
-	case protocol.MethodReviewClear:
-		var p protocol.ReviewParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		if err := s.driver.ClearReview(ctx, p); err != nil {
-			return mapDriverError(req, err)
-		}
-		resp, _ := protocol.NewResponse(req.ID, protocol.ActionResult{OK: true}, req.Seq, req.Epoch)
-		return resp
-
-	case protocol.MethodReviewSend:
-		var p protocol.ReviewParams
-		if err := req.UnmarshalParams(&p); err != nil {
-			return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
-		}
-		notes, err := s.driver.GetReviewNotes(ctx, p)
-		if err != nil {
-			return mapDriverError(req, err)
-		}
-		var pageURL, viewport string
-		if len(notes) > 0 && notes[0] != nil && notes[0].Payload != nil {
-			pageURL = notes[0].Payload.Page.SanitizedURL
-			viewport = fmt.Sprintf("%dx%d", notes[0].Payload.Page.ViewportWidth, notes[0].Payload.Page.ViewportHeight)
-		}
-		md := protocol.FormatDesignFeedbackReport(notes, pageURL, viewport)
-		resp, _ := protocol.NewResponse(req.ID, protocol.ReviewSendResult{Markdown: md, Notes: notes, PageURL: pageURL}, req.Seq, req.Epoch)
-		return resp
+	case protocol.MethodReviewList, protocol.MethodReviewSend:
+		return dispatchParams(req, func(p protocol.ReviewParams) (any, error) {
+			notes, err := s.driver.GetReviewNotes(ctx, p)
+			if err != nil {
+				return nil, err
+			}
+			var pageURL, viewport string
+			if len(notes) > 0 && notes[0] != nil && notes[0].Payload != nil {
+				pageURL = notes[0].Payload.Page.SanitizedURL
+				viewport = fmt.Sprintf("%dx%d", notes[0].Payload.Page.ViewportWidth, notes[0].Payload.Page.ViewportHeight)
+			}
+			if req.Method == protocol.MethodReviewSend {
+				md := protocol.FormatDesignFeedbackReport(notes, pageURL, viewport)
+				return protocol.ReviewSendResult{Markdown: md, Notes: notes, PageURL: pageURL}, nil
+			}
+			return protocol.ReviewListResult{Notes: notes, PageURL: pageURL, Viewport: viewport}, nil
+		})
 
 	default:
 		return protocol.NewErrorResponse(req.ID, protocol.CodeMethodNotFound, "method not found: "+req.Method, nil, req.Seq, req.Epoch)
 	}
+}
+
+func dispatchParams[P any](req *protocol.Request, call func(P) (any, error)) *protocol.Response {
+	var params P
+	if err := req.UnmarshalParams(&params); err != nil {
+		return protocol.NewErrorResponse(req.ID, protocol.CodeInvalidParams, err.Error(), nil, req.Seq, req.Epoch)
+	}
+	result, err := call(params)
+	if err != nil {
+		return mapDriverError(req, err)
+	}
+	resp, _ := protocol.NewResponse(req.ID, result, req.Seq, req.Epoch)
+	return resp
 }
 
 func mapDriverError(req *protocol.Request, err error) *protocol.Response {

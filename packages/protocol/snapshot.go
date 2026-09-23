@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"strings"
 )
 
 // Rect represents a bounding rectangle in CSS pixels.
@@ -93,66 +92,4 @@ func ComputeTreeHash(nodes []*AXNode) string {
 	h.Write([]byte(")ROOTS"))
 
 	return hex.EncodeToString(h.Sum(nil))[:16]
-}
-
-// FormatCompactText formats an accessibility tree into agent-readable indented text.
-func FormatCompactText(nodes []*AXNode, indent int) string {
-	var sb strings.Builder
-	prefix := strings.Repeat("  ", indent)
-
-	for _, n := range nodes {
-		if n == nil {
-			continue
-		}
-		sb.WriteString(prefix)
-		if n.Ref != "" {
-			sb.WriteString(fmt.Sprintf("[%s] ", n.Ref))
-		}
-		sb.WriteString(escapeAXField(n.Role))
-		if n.Name != "" {
-			sb.WriteString(fmt.Sprintf(" %q", n.Name))
-		}
-		if n.Value != "" {
-			sb.WriteString(fmt.Sprintf(" value=%q", n.Value))
-		}
-		if n.Checked != "" {
-			sb.WriteString(fmt.Sprintf(" checked=%s", escapeAXField(n.Checked)))
-		}
-		if n.Disabled {
-			sb.WriteString(" (disabled)")
-		}
-		if n.Focused {
-			sb.WriteString(" (focused)")
-		}
-		if n.Selected {
-			sb.WriteString(" (selected)")
-		}
-		if n.Expanded {
-			sb.WriteString(" (expanded)")
-		}
-		sb.WriteString("\n")
-
-		if len(n.Children) > 0 {
-			sb.WriteString(FormatCompactText(n.Children, indent+1))
-		}
-	}
-	return sb.String()
-}
-
-// escapeAXField strips newlines, tabs, and control characters from page-controlled
-// fields so an attacker cannot forge tree rows in compact text representations.
-func escapeAXField(s string) string {
-	if strings.IndexFunc(s, func(r rune) bool { return r < 0x20 }) == -1 {
-		return s
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		if r == '\r' || r == '\n' || r == '\t' || r < 0x20 {
-			b.WriteByte(' ')
-		} else {
-			b.WriteRune(r)
-		}
-	}
-	return strings.Join(strings.Fields(b.String()), " ")
 }
