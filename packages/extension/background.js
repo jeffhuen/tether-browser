@@ -208,6 +208,24 @@ async function connectTether(host) {
   }
 }
 
+async function reconnectTether() {
+  await tetherReady;
+  if (!tetherEnabled) throw new Error("Tether is not connected.");
+  if (tetherConnecting || tetherDisconnecting) throw new Error("Tether connection is already in progress.");
+  const host = tetherHost;
+  if (!host) throw new Error("No remote host configured to reconnect.");
+  const revision = ++tetherRevision;
+  tetherConnecting = true;
+  try {
+    if (!nativePort) connectNativeHost();
+    const ssh = await connectSSH(host);
+    if (revision !== tetherRevision) throw new Error("Tether connection cancelled.");
+    return ssh;
+  } finally {
+    tetherConnecting = false;
+  }
+}
+
 function disconnectTether() {
   if (tetherDisconnecting) return tetherDisconnecting;
   ++tetherRevision;
@@ -1536,6 +1554,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         case "popup_tether_connect":
           sendResponse(await connectTether(msg.targetHost));
+          break;
+        case "popup_tether_reconnect":
+          sendResponse(await reconnectTether());
           break;
         case "popup_switch_tab": {
           await handleTabSwitch({ targetId: msg.tabId });

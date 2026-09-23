@@ -193,6 +193,31 @@ document.addEventListener("DOMContentLoaded", async () => {
   const connectHostInput = document.getElementById("connect-host-input");
   const connectHint = document.querySelector(".connect-hint");
   const btnDoConnect = document.getElementById("btn-do-connect");
+  const btnDoDisconnect = document.getElementById("btn-do-disconnect");
+  const CONSENT_KEY = "tether_proxy_consents";
+
+  async function hasProxyConsent(host, port) {
+    if (!host) return false;
+    try {
+      const data = await chrome.storage.local.get(CONSENT_KEY);
+      const consents = data[CONSENT_KEY] || [];
+      return consents.some((c) => c.host === host && (!port || !c.port || c.port === port));
+    } catch {
+      return false;
+    }
+  }
+
+  async function saveProxyConsent(host, port) {
+    if (!host) return;
+    try {
+      const data = await chrome.storage.local.get(CONSENT_KEY);
+      const consents = data[CONSENT_KEY] || [];
+      if (!consents.some((c) => c.host === host && c.port === port)) {
+        consents.push({ host, port, consentedAt: Date.now() });
+        await chrome.storage.local.set({ [CONSENT_KEY]: consents });
+      }
+    } catch {}
+  }
   const recentHostsWrapper = document.getElementById("recent-hosts-wrapper");
   const recentHostsList = document.getElementById("recent-hosts-list");
   const networkToggle = document.getElementById("network-toggle");
@@ -252,7 +277,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  networkToggle.addEventListener("change", () => {
+  networkToggle.addEventListener("change", async () => {
     networkToggle.checked = network.enabled;
     if (network.enabled) {
       networkConfirm.hidden = true;
@@ -262,11 +287,20 @@ document.addEventListener("DOMContentLoaded", async () => {
         document.getElementById("network-reload").hidden = false;
       }, "Could not turn off remote browsing.");
     } else {
-      confirmedSession = network.ssh.sessionId;
-      document.getElementById("network-confirm-host").textContent = network.ssh.host;
-      networkConfirm.hidden = false;
-      renderConnection();
-      networkEnable.focus();
+      confirmedSession = network.ssh?.sessionId || "";
+      const host = network.ssh?.host || "";
+      const port = network.ssh?.proxyPort || 0;
+      if (await hasProxyConsent(host, port)) {
+        void networkAction(async () => {
+          await sendMessage({ type: "popup_network_set", enabled: true, sessionId: confirmedSession });
+          document.getElementById("network-reload").hidden = false;
+        }, "Could not turn on remote browsing.");
+      } else {
+        document.getElementById("network-confirm-host").textContent = host;
+        networkConfirm.hidden = false;
+        renderConnection();
+        networkEnable.focus();
+      }
     }
   });
   document.getElementById("network-cancel").addEventListener("click", () => {
@@ -275,8 +309,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   networkEnable.addEventListener("click", () => {
     networkConfirm.hidden = true;
+    const host = network.ssh?.host || "";
+    const port = network.ssh?.proxyPort || 0;
     void networkAction(async () => {
       await sendMessage({ type: "popup_network_set", enabled: true, sessionId: confirmedSession });
+      await saveProxyConsent(host, port);
       document.getElementById("network-reload").hidden = false;
     }, "Could not turn on remote browsing.");
   });
@@ -315,12 +352,30 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     btnDoConnect.classList.remove("btn-connect-secondary", "btn-connect-danger");
-    btnDoConnect.textContent = tetherConnected ? "Disconnect Tether" : "Connect Tether";
-    btnDoConnect.disabled = networkBusy || (!tetherConnected && !connectHostInput.value.trim());
-    if (tetherConnected) btnDoConnect.classList.add(network.enabled ? "btn-connect-danger" : "btn-connect-secondary");
-    btnDoConnect.title = tetherConnected
-      ? "Close agent access and SSH, release Chrome debugger, and restore the previous proxy"
-      : "Connect Tether to this SSH host";
+    btnDoDisconnect.classList.remove("btn-connect-secondary", "btn-connect-danger");
+    if (!tetherConnected) {
+      btnDoConnect.textContent = "Connect Tether";
+      btnDoConnect.disabled = networkBusy || !connectHostInput.value.trim();
+      btnDoConnect.title = "Connect Tether to this SSH host";
+      btnDoDisconnect.hidden = true;
+      btnDoDisconnect.disabled = true;
+    } else if (needsAttention || hasSshError) {
+      btnDoConnect.textContent = "Reconnect";
+      btnDoConnect.disabled = networkBusy;
+      btnDoConnect.title = `Reconnect to ${ssh.host || network.host || "server"}`;
+      btnDoDisconnect.hidden = false;
+      btnDoDisconnect.disabled = networkBusy;
+      btnDoDisconnect.textContent = "Disconnect";
+      btnDoDisconnect.classList.add(network.enabled ? "btn-connect-danger" : "btn-connect-secondary");
+      btnDoDisconnect.title = "Close agent access and SSH, release Chrome debugger, and restore the previous proxy";
+    } else {
+      btnDoConnect.textContent = "Disconnect Tether";
+      btnDoConnect.disabled = networkBusy;
+      btnDoConnect.classList.add(network.enabled ? "btn-connect-danger" : "btn-connect-secondary");
+      btnDoConnect.title = "Close agent access and SSH, release Chrome debugger, and restore the previous proxy";
+      btnDoDisconnect.hidden = true;
+      btnDoDisconnect.disabled = true;
+    }
     recentHostsList.querySelectorAll("button").forEach((button) => { button.disabled = tetherConnected || networkBusy; });
 
     networkToggle.checked = network.enabled;
@@ -342,7 +397,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     } else if (remoteProblem) {
       networkError.textContent = "Remote browsing can't reach your server. New pages may not load. Turn Remote browsing off to browse normally.";
     } else if (needsAttention || hasSshError) {
-      networkError.textContent = "Tether lost its server connection. Disconnect Tether, then connect again.";
+      networkError.textContent = "Tether lost its server connection. Reconnect, or disconnect Tether.";
     } else {
       networkError.textContent = "";
     }
@@ -410,10 +465,31 @@ document.addEventListener("DOMContentLoaded", async () => {
     }, "Could not fully disconnect Tether.");
   }
 
-  async function handleConnectAction() {
-    if (tetherConnected) await doDisconnect();
-    else await doConnect(connectHostInput.value.trim());
+  async function doReconnect() {
+    await networkAction(async () => {
+      const ssh = await sendMessage({ type: "popup_tether_reconnect" });
+      network = { ...network, tetherEnabled: true, nativeConnected: true, ssh };
+    }, "Could not reconnect Tether.");
   }
+
+  async function handleConnectAction() {
+    if (!tetherConnected) {
+      await doConnect(connectHostInput.value.trim());
+    } else {
+      const ssh = network.ssh || {};
+      const needsAttention = tetherConnected && (!network.nativeConnected || (ssh.state === "disconnected" && network.nativeConnected));
+      const hasSshError = tetherConnected && Boolean(ssh.error) && ssh.state !== "connected";
+      if (needsAttention || hasSshError) {
+        await doReconnect();
+      } else {
+        await doDisconnect();
+      }
+    }
+  }
+
+  btnDoDisconnect.addEventListener("click", () => {
+    void doDisconnect();
+  });
 
   document.getElementById("connect-form").addEventListener("submit", (event) => {
     event.preventDefault();
