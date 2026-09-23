@@ -78,9 +78,9 @@ function applied(settings) {
     rules.bypassList?.length === 1 && rules.bypassList[0] === "<-loopback>");
 }
 
-export async function networkStatus() {
+export async function networkStatus(pollSSH = true) {
   await ready;
-  const [, settings] = await Promise.all([refreshSSH(), proxySetting("get", { incognito: false })]);
+  const [, settings] = await Promise.all([pollSSH ? refreshSSH() : null, proxySetting("get", { incognito: false })]);
   const enabled = Boolean(route || settings.levelOfControl === "controlled_by_this_extension");
   const matches = applied(settings);
   const connected = ssh.state === "connected" && ssh.host === route?.host && ssh.proxyPort === route?.port;

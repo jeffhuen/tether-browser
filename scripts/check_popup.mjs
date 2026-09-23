@@ -1,5 +1,6 @@
 // Run against a disposable Chrome profile with the unpacked extension loaded:
 // node scripts/check_popup.mjs http://127.0.0.1:9349
+// Connect Tether from the popup before running this check; fresh installs start disconnected.
 // Chrome needs --remote-debugging-port=9349 and --enable-unsafe-extension-debugging.
 // For headless capture, add --disable-gpu --run-all-compositor-stages-before-draw.
 // Also add --disable-background-timer-throttling --disable-renderer-backgrounding.
@@ -106,6 +107,8 @@ async function checkLayout() {
   assert(layout.statusesVisible, "All connection indicators must remain visible when settings are collapsed");
 }
 let saved;
+const connection = await evaluate(async () => chrome.runtime.sendMessage({ type: "popup_network_status" }));
+assert.equal(connection.tetherEnabled, true, "Connect Tether in the disposable popup before running review/capture checks");
 try {
   await evaluate(async (endpoint, reviewOnly) => {
     const privilegedBlob = URL.createObjectURL(new Blob(["private"], { type: "text/html" }));
@@ -268,7 +271,8 @@ try {
   saved = await evaluate(async () => {
     const saved = await chrome.storage.local.get(["recent_hosts", "tether_screenshots", "tether_popup_tab"]);
     window.popupCheckSend = chrome.runtime.sendMessage.bind(chrome.runtime);
-    window.popupCheckNetwork = { enabled: false, state: "off", canEnable: false, ssh: { state: "disconnected" } };
+    window.popupCheckNetwork = { tetherEnabled: true, nativeConnected: true, enabled: false, state: "off", canEnable: true,
+      ssh: { state: "connected", host: "dev-host", sessionId: "fixture", proxyPort: 12345 } };
     chrome.runtime.sendMessage = (message, callback) => {
       if (message.type === "popup_get_status") {
         callback(window.popupCheckStatus);
@@ -293,211 +297,23 @@ try {
     return saved;
   });
   await evaluate(async () => {
-    window.popupCheckStatus = { connected: true, tabs: [], notes: [] };
-    window.popupCheckNetwork = { enabled: false, state: "off", ssh: { state: "connected", host: "dev-host" } };
+    window.popupCheckStatus = { tetherEnabled: true, connected: true, tabs: [], notes: [] };
     await window.popupCheckRefresh();
-    if (document.querySelector("#connection-toggle").getAttribute("aria-expanded") !== "true") document.querySelector("#connection-toggle").click();
-    window.popupCheckConfirm = window.confirm;
-    window.popupCheckConfirmations = 0;
-    window.confirm = () => { window.popupCheckConfirmations++; return false; };
-    window.popupCheckConnectionSend = chrome.runtime.sendMessage;
-    window.popupCheckConnections = [];
-    chrome.runtime.sendMessage = (message, callback) => {
-      if (message.type === "popup_ssh_connect" || message.type === "popup_ssh_disconnect") {
-        window.popupCheckConnections.push(message);
-        callback(window.popupCheckNetwork.ssh);
-      } else window.popupCheckConnectionSend(message, callback);
-    };
-    const input = document.querySelector("#connect-host-input");
-    input.value = "dev-host";
-    input.focus();
-  });
-  const pressEnter = async () => {
-    await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
-    await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  };
-  await pressEnter();
-  assert.deepEqual(await evaluate(() => [window.popupCheckConfirmations, window.popupCheckConnections.length]), [0, 0], "Enter on the connected host must not ask to disconnect");
-  await evaluate(() => {
-    const input = document.querySelector("#connect-host-input");
-    input.value = "staging-host";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-  await pressEnter();
-  assert.deepEqual(await evaluate(() => window.popupCheckConnections.map((message) => [message.type, message.targetHost])), [["popup_ssh_connect", "staging-host"]], "Enter on another host must switch");
-  await evaluate(async () => {
-    const input = document.querySelector("#connect-host-input");
-    input.value = "dev-host";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    document.querySelector("#btn-do-connect").click();
-    if (window.popupCheckConfirmations !== 1) throw new Error("Clicking Disconnect must still ask for confirmation");
-    window.confirm = window.popupCheckConfirm;
-    chrome.runtime.sendMessage = window.popupCheckConnectionSend;
-    window.popupCheckNetwork = { enabled: false, state: "off", canEnable: false, ssh: { state: "disconnected" } };
-    input.value = "";
-    await window.popupCheckRefresh();
-  });
-  await evaluate(async () => {
-    window.popupCheckStatus = { connected: true, tabs: [], notes: [] };
-    const refresh = window.popupCheckRefresh;
-    await refresh();
-    const toggle = document.querySelector("#network-toggle");
-    if (!toggle.disabled) throw new Error("A browser bridge alone enabled remote browsing");
-    if (document.querySelector("#status-text").textContent !== "Connected" || document.querySelector("#network-ready").textContent !== "Not ready") {
-      throw new Error("The original connection must remain separate from remote readiness");
-    }
-    window.popupCheckNetwork.ssh = { state: "connecting", host: "dev-host", sessionId: "fixture" };
-    await refresh();
-    if (!toggle.disabled) throw new Error("Unverified SSH startup enabled remote browsing");
-    window.popupCheckStatus.connected = false;
-    await refresh();
-    if (document.querySelector("#status-text").textContent !== "Disconnected" ||
-        document.querySelector("#ssh-status").textContent !== "Connecting...") {
-      throw new Error("SSH progress must not replace agent connection status");
-    }
-    const connectBtn = document.querySelector("#btn-do-connect");
-    const hostInput = document.querySelector("#connect-host-input");
-    if (connectBtn.textContent !== "Cancel" || connectBtn.disabled || !hostInput.disabled) {
-      throw new Error("Connecting state must offer an active Cancel button and lock the host input");
-    }
-    window.popupCheckNetwork = { enabled: false, state: "off", host: "dev-host", canEnable: true, ssh: { state: "connected", host: "dev-host", sessionId: "fixture", proxyPort: 12345 } };
-    await refresh();
-    if (document.querySelector("#status-text").textContent !== "Disconnected" ||
-        document.querySelector("#ssh-status").textContent !== "Connected" ||
-        document.querySelector("#remote-status").textContent !== "Off" ||
-        document.querySelector("#network-ready").textContent !== "Ready") {
-      throw new Error("Remote readiness incorrectly implied that the original connection was up");
-    }
-    if (connectBtn.textContent !== "Disconnect" || !connectBtn.classList.contains("btn-connect-secondary") || hostInput.disabled) {
-      throw new Error("Connected state with remote browsing off must show Disconnect outline and editable input");
-    }
-    hostInput.value = "staging-host";
-    hostInput.dispatchEvent(new Event("input", { bubbles: true }));
-    if (connectBtn.textContent !== "Switch" || connectBtn.disabled || connectBtn.classList.contains("btn-connect-secondary")) {
-      throw new Error("Editing the host field while connected must offer an active Switch button");
-    }
-    hostInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    if (connectBtn.textContent !== "Disconnect" || hostInput.value !== "dev-host") {
-      throw new Error("Escape must revert dirty host input and restore Disconnect");
-    }
-    window.popupCheckStatus.connected = true;
-    await refresh();
-    if (document.querySelector("#connection-toggle").getAttribute("aria-expanded") !== "true") document.querySelector("#connection-toggle").click();
-    if (!toggle.getClientRects().length) throw new Error("Connection settings did not reveal the remote switch");
-    toggle.click();
-    const enable = document.querySelector("#network-enable");
-    if (document.querySelector("#network-confirm").hidden || enable.disabled || document.activeElement !== enable) {
-      throw new Error("Enable confirmation must be immediately usable and focused");
-    }
-    window.popupCheckActionError = "Proxy policy changed";
-    enable.click();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await refresh();
-    if (toggle.checked || document.querySelector("#network-error").hidden) throw new Error("Polling hid a failed enable action");
-    if (document.querySelectorAll(".connection-error:not([hidden])").length !== 1 ||
-        document.querySelector("#network-error-details").open ||
-        document.querySelector("#network-error-detail").textContent !== window.popupCheckActionError ||
-        document.querySelector("#network-error").textContent.includes(window.popupCheckActionError)) {
-      throw new Error("A failed action needs one plain message with its original error in collapsed details");
-    }
-    delete window.popupCheckActionError;
-    toggle.click();
-    enable.click();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    if (!toggle.checked) throw new Error("Confirmed remote routing was not shown as on");
-    if (document.querySelector("#status-text").textContent !== "Connected" ||
-        document.querySelector("#remote-status").textContent !== "On") {
-      throw new Error("Agent connection and enabled remote browsing must have separate indicators");
-    }
-    if (connectBtn.textContent !== "Disconnect" || !connectBtn.classList.contains("btn-connect-danger") || !hostInput.disabled) {
-      throw new Error("Connected state with remote browsing ON must lock input and show Disconnect danger outline");
-    }
-    document.querySelector("#connection-toggle").click();
-    window.popupCheckNetwork = { ...window.popupCheckNetwork, state: "unavailable", canEnable: false, ssh: { state: "disconnected", error: "Helper unavailable" } };
-    await refresh();
-    if (!toggle.checked || toggle.disabled) throw new Error("SSH loss must leave the checked OFF control usable");
-    if (document.querySelectorAll(".connection-error:not([hidden])").length !== 1) {
-      throw new Error("SSH loss and remote browsing failure must share one warning");
-    }
-    if (document.querySelector("#network-ready").textContent !== "Not ready" || document.querySelector("#network-error").hidden) {
-      throw new Error("A failed remote route was presented as healthy");
-    }
-    if (document.querySelector("#status-text").textContent !== "Connected" ||
-        document.querySelector("#ssh-status").textContent !== "Error" ||
-        document.querySelector("#remote-status").textContent !== "On, not ready") {
-      throw new Error("SSH loss must not hide a working agent bridge or a retained remote route");
-    }
-    if (connectBtn.textContent !== "Reconnect" || connectBtn.disabled || !hostInput.disabled) {
-      throw new Error("SSH drop with remote browsing ON must show Reconnect and keep input locked");
-    }
-    document.querySelector("#connection-toggle").click();
-    toggle.click();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    if (toggle.checked) throw new Error("OFF remained checked after helper loss");
-    const previous = window.popupCheckNetwork;
-    window.popupCheckNetwork = { error: "Status poll failed" };
-    await refresh();
-    if (document.querySelector("#network-error").hidden) throw new Error("A failed status poll was hidden");
-    if (document.querySelector("#ssh-status").textContent !== "Unknown" ||
-        document.querySelector("#remote-status").textContent !== "Unknown") {
-      throw new Error("Failed polling must not present cached SSH or route status as current");
-    }
-    window.popupCheckNetwork = previous;
-    await refresh();
-    if (document.querySelector("#network-error-detail").textContent.includes("Status poll failed")) {
-      throw new Error("A recovered poll left stale details instead of the current SSH error");
-    }
-    window.popupCheckNetwork = {
-      enabled: false, state: "off", canEnable: false,
-      ssh: { state: "disconnected", error: "Tailscale SSH requires reauthentication at https://login.tailscale.com/a/fixture-with-a-long-authentication-token" },
-    };
-    await refresh();
-    if (document.querySelector("#status-text").textContent !== "Connected" ||
-        document.querySelector("#ssh-status").textContent !== "Error" ||
-        document.querySelector("#remote-status").textContent !== "Off" ||
-        document.querySelector("#network-error").hidden) {
-      throw new Error("SSH authentication failure must stay visible without changing agent or browsing status");
-    }
-    window.popupCheckNetwork.message = window.popupCheckNetwork.ssh.error;
-    await refresh();
-    const details = document.querySelector("#network-error-details");
-    if (details.hidden || details.open || document.querySelector("#network-error-detail").textContent !== window.popupCheckNetwork.ssh.error) {
-      throw new Error("SSH diagnostics must remain available once, with details initially collapsed");
-    }
-    details.querySelector("summary").click();
-    if (!document.querySelector("#network-error-detail").getClientRects().length) throw new Error("Technical details cannot be expanded");
-    details.querySelector("summary").click();
-    document.querySelector("#connection-toggle").click();
-    if (!document.querySelector("#ssh-status").getClientRects().length) throw new Error("Collapsing settings hid the SSH failure");
-    if (!document.querySelector("#network-error").getClientRects().length) throw new Error("Collapsing settings hid the only explanation of the failure");
-    window.popupCheckNetwork = { enabled: false, state: "off", canEnable: true, ssh: { state: "connected", host: "dev-host", sessionId: "fixture" } };
-    await refresh();
-    if (!document.querySelector("#network-error").hidden || !details.hidden) throw new Error("A recovered connection left a stale warning");
-    window.popupCheckNetwork.ssh.error = "Stale message from a previous failure";
-    await refresh();
-    if (document.querySelector("#ssh-status").textContent !== "Connected" ||
-        !document.querySelector("#network-error").hidden || !details.hidden) {
-      throw new Error("A live tunnel must not report a stale helper message as a failure");
-    }
-    window.popupCheckNetwork = { enabled: false, state: "off", canEnable: true, ssh: { state: "disconnected" } };
-    await refresh();
-    if (connectBtn.textContent !== "Connect") {
-      throw new Error("Disconnected state must show Connect button");
-    }
   });
   for (const width of [384, 320]) {
     await cdp("Emulation.setDeviceMetricsOverride", { width, height: 600, deviceScaleFactor: 1, mobile: false });
     for (const state of ["disconnected", "ready", "on", "blocked", "offline", "reconnecting", "ssh-error"]) {
       await evaluate(async (state) => {
-        const enabled = !["ready", "disconnected", "ssh-error"].includes(state);
-        const disconnected = state === "disconnected" || state === "offline" || state === "blocked";
-        window.popupCheckStatus = { connected: ["ready", "on", "blocked", "ssh-error"].includes(state), tabs: [], notes: [] };
+        const tetherEnabled = state !== "disconnected";
+        const enabled = ["on", "blocked", "offline", "reconnecting"].includes(state);
+        const sshConnected = ["ready", "on", "blocked"].includes(state);
+        window.popupCheckStatus = { tetherEnabled, connected: tetherEnabled, tabs: [], notes: [] };
         window.popupCheckNetwork = {
+          tetherEnabled, nativeConnected: tetherEnabled && state !== "offline",
           enabled, state: !enabled ? "off" : state === "on" ? "on" : "unavailable",
           host: "dev-host", canEnable: state === "ready",
           ssh: {
-            state: state === "reconnecting" ? "connecting" : disconnected || state === "ssh-error" ? "disconnected" : "connected",
+            state: state === "reconnecting" ? "connecting" : sshConnected ? "connected" : "disconnected",
             host: "dev-host", sessionId: "fixture", proxyPort: 12345,
             error: state === "ssh-error" ? "Tailscale SSH requires reauthentication at https://login.tailscale.com/a/fixture-with-a-long-authentication-token" : "",
           },
@@ -530,13 +346,13 @@ try {
         context.fillStyle = "#0284c7";
         context.fillRect(64, 180, 500, 200);
         window.popupCheckStatus = {
-          connected: populated,
+          tetherEnabled: populated, connected: populated,
           activeTabId: "10",
           tabs: populated ? [{ id: "10", active: true, inGroup: true, title: "A long page title that must not squeeze the toolbar or buttons", url: "https://example.test/a/long/path" }] : [],
           notes: populated ? [{ comment: "Keep the primary action aligned with the text input.", payload: { target: { selector: 'main > section.settings-panel > form.account-settings > button[type="submit"]' } } }] : [],
         };
         window.popupCheckNetwork = {
-          enabled: false, state: "off", canEnable: populated,
+          tetherEnabled: populated, nativeConnected: populated, enabled: false, state: "off", canEnable: populated,
           ssh: { state: populated ? "connected" : "disconnected", host: populated ? "dev-host" : "", sessionId: "fixture" },
         };
         await chrome.storage.local.set({

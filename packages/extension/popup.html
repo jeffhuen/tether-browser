@@ -33,16 +33,13 @@
         </button>
       </div>
     </header>
+    <main class="popup-main">
 
-    <section class="connection" aria-label="Connections">
+    <section class="connection" aria-label="Tether connection">
       <button type="button" id="connection-toggle" class="connection-summary" aria-controls="connect-section" aria-expanded="false" title="Connection settings">
         <span class="connection-item">
-          <span class="connection-label">Agent bridge</span>
+          <span class="connection-label">Tether</span>
           <span id="status-text" class="connection-state">Checking...</span>
-        </span>
-        <span class="connection-item">
-          <span class="connection-label">SSH tunnel</span>
-          <span id="ssh-status" class="connection-state">Checking...</span>
         </span>
         <span class="connection-item">
           <span class="connection-label">Remote browsing</span>
@@ -63,13 +60,13 @@
       <div id="connect-section" class="section" style="display:none;">
         <div class="connect-card">
           <div class="connect-header">
-            <h2 class="connect-title">Connect to Remote Server</h2>
+            <h2 class="connect-title">Tether connection</h2>
             <span class="connect-hint">SSH host or alias</span>
           </div>
           <form id="connect-form" class="connect-form">
             <div class="connect-input-row">
               <input type="text" id="connect-host-input" class="connect-input" aria-label="Remote SSH host" placeholder="user@remote-host" autocomplete="off" spellcheck="false">
-              <button type="submit" id="btn-do-connect" class="btn-connect">Connect</button>
+              <button type="submit" id="btn-do-connect" class="btn-connect">Connect Tether</button>
             </div>
           </form>
           <div id="recent-hosts-wrapper" class="recent-hosts-wrapper" style="display:none;">
@@ -95,7 +92,7 @@
         <details class="network-details">
           <summary>How it works</summary>
           <p class="network-help">Web pages and WebSocket connections use your server's network. Other traffic, such as WebRTC calls, may use your usual connection. This is not a VPN.</p>
-          <p class="network-help">If your server disconnects, Remote browsing stays on and new pages may stop loading. Reconnect, or turn it off to browse normally. If you disable Tether, Chrome may use your usual connection instead.</p>
+          <p class="network-help">If the server disconnects unexpectedly, Remote browsing stays on so traffic cannot silently return to your usual network. Turn it off to browse normally. Disconnect Tether to close the agent bridge and restore your previous proxy settings.</p>
         <div id="network-reload" class="section" hidden>
           <p class="network-help">After switching networks, some open pages may still use the old connection. Reload your Tether tabs and reopen any other affected tabs.</p>
           <button id="network-reload-tabs" class="btn-pill" type="button">Reload Tether tabs</button>
@@ -265,7 +262,7 @@
           </svg>
         </button>
       </div>
-      <div id="tabs-list" class="tabs-container">
+      <div id="tabs-list" class="tabs-container" role="region" aria-label="Tethered tabs">
         <div class="loading-state">Loading tabs...</div>
       </div>
     </section>
@@ -284,6 +281,7 @@
         </button>
       </form>
     </section>
+    </main>
 
     <!-- Credits Footer -->
     <footer class="credits-footer">
