@@ -89,7 +89,7 @@ tether type @e8 " filter"
 ```
 
 ### `tether press <key>`
-Sends a discrete keyboard event. Supports `Enter`, `Tab`, `Escape`, `Backspace`, `ArrowDown`, `ArrowUp`.
+Sends a discrete keyboard event. Supports `Enter`, `Tab`, `Escape`, `Backspace`, `Delete`, `Home`, `End`, and arrow keys.
 
 ```bash
 tether press Enter
@@ -105,7 +105,7 @@ tether hover @e3
 ```
 
 ### `tether focus <@ref or selector>`
-Focuses an element.
+Focuses an element without clicking it.
 
 ```bash
 tether focus @e8
@@ -169,7 +169,7 @@ tether screenshot --full /tmp/full-page.png
 ## 6. Waiting
 
 ### `tether wait <selector or duration>`
-Waits until a selector matches or a duration passes. Durations accept integers in milliseconds (`1500`), or unit suffixes (`1.5s`, `500ms`).
+Waits until a selector or `@ref` matches, or until a duration passes. Durations accept integers in milliseconds (`1500`), or unit suffixes (`1.5s`, `500ms`). A selector wait stops after 25 seconds unless you pass `--timeout <ms>`.
 
 ```bash
 # Wait 1.5 seconds

@@ -54,7 +54,7 @@ tether snapshot -i
 | Double click | `tether dblclick <@ref or selector>` |
 | Clear and fill text | `tether fill <@ref or selector> "text"` |
 | Append text | `tether type <@ref or selector> "text"` |
-| Press key | `tether press Enter` (supports `Tab`, `Escape`, `Backspace`, arrow keys) |
+| Press key | `tether press Enter` (supports `Tab`, `Escape`, `Backspace`, `Delete`, `Home`, `End`, arrow keys) |
 | Hover mouse | `tether hover <@ref or selector>` |
 | Focus input | `tether focus <@ref or selector>` |
 | Run JavaScript | `tether eval "document.title"` |
