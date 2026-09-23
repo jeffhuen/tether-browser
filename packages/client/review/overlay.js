@@ -76,9 +76,7 @@
     }
   }
 
-  function extractSanitizedText(elem) {
-    if (!elem) return '';
-    try {
+  function cloneAndRedact(elem) {
       const clone = elem.cloneNode(true);
       const allInputs = clone.querySelectorAll ? Array.from(clone.querySelectorAll('input, textarea')) : [];
       if (clone.tagName && (clone.tagName.toLowerCase() === 'input' || clone.tagName.toLowerCase() === 'textarea')) {
@@ -89,7 +87,7 @@
         const id = input.getAttribute('id') || '';
         const rawType = (input.getAttribute('type') || '').toLowerCase();
         const tag = input.tagName ? input.tagName.toLowerCase() : '';
-        const isSecret = rawType === 'password' ||
+        const isSecret = rawType === 'password' || input.type === 'password' ||
           containsSecret(rawType) ||
           containsSecret(name) ||
           containsSecret(id) ||
@@ -119,8 +117,14 @@
         }
       });
 
-      const text = clone.innerText || clone.textContent || '';
-      return sanitizeText(text, 120);
+      return clone;
+  }
+
+  function extractSanitizedText(elem) {
+    if (!elem) return '';
+    try {
+      const clone = cloneAndRedact(elem);
+      return sanitizeText(clone.innerText || clone.textContent || '', 120);
     } catch (e) {
       return '[redacted]';
     }
@@ -331,45 +335,7 @@
 
   function getHTMLSnippet(el) {
     try {
-      const clone = el.cloneNode(true);
-      const allInputs = clone.querySelectorAll ? Array.from(clone.querySelectorAll('input, textarea')) : [];
-      if (clone.tagName && (clone.tagName.toLowerCase() === 'input' || clone.tagName.toLowerCase() === 'textarea')) {
-        allInputs.push(clone);
-      }
-      allInputs.forEach(input => {
-        const name = input.getAttribute('name') || '';
-        const id = input.getAttribute('id') || '';
-        const rawType = input.getAttribute('type') || '';
-        const tag = input.tagName ? input.tagName.toLowerCase() : '';
-        const isSecret = input.type === 'password' ||
-          containsSecret(rawType) ||
-          containsSecret(name) ||
-          containsSecret(id) ||
-          containsSecret(input.value) ||
-          (tag === 'textarea' && containsSecret(input.textContent));
-        if (isSecret) {
-          if (input.type === 'file' || rawType.toLowerCase() === 'file') {
-            input.value = '';
-          } else {
-            input.value = '[redacted]';
-            input.setAttribute('value', '[redacted]');
-          }
-          if (tag === 'textarea') {
-            input.textContent = '[redacted]';
-          }
-        }
-      });
-
-      const allEls = clone.querySelectorAll ? [clone, ...clone.querySelectorAll('*')] : [clone];
-      allEls.forEach(elem => {
-        if (!elem.attributes) return;
-        for (let i = 0; i < elem.attributes.length; i++) {
-          const attr = elem.attributes[i];
-          if (containsSecret(attr.name) || containsSecret(attr.value)) {
-            elem.setAttribute(attr.name, '[redacted]');
-          }
-        }
-      });
+      const clone = cloneAndRedact(el);
 
       let html = clone.outerHTML || '';
       if (html.length > 2048) {
@@ -380,13 +346,27 @@
       return '';
     }
   }
+  function sanitizeMarkdownLine(value) {
+    return String(value).replace(/[\r\n\t]/g, ' ').trim().replace(/ {2,}/g, ' ');
+  }
+
+  function sanitizeComment(comment) {
+    return comment.trim().split('\n').map(line => line.trim().replace(/^#/, '\\#')).join('\n');
+  }
+
+  function safeHTMLFence(snippet) {
+    let length = 3;
+    for (const run of snippet.matchAll(/`+/g)) length = Math.max(length, run[0].length + 1);
+    return '`'.repeat(length);
+  }
+
   function formatDesignFeedbackReport(notes) {
     if (!notes || notes.length === 0) return '';
     const first = notes[0];
     const page = first.payload?.page || {};
-    const title = page.title || document.title || 'Page Review';
-    const url = page.sanitizedUrl || window.location.href;
-    const vp = page.viewportWidth ? (page.viewportWidth + 'x' + page.viewportHeight) : (window.innerWidth + 'x' + window.innerHeight);
+    const title = sanitizeMarkdownLine(page.title || document.title || 'Page Review');
+    const url = sanitizeMarkdownLine(page.sanitizedUrl || window.location.href);
+    const vp = sanitizeMarkdownLine(page.viewportWidth ? (page.viewportWidth + 'x' + page.viewportHeight) : (window.innerWidth + 'x' + window.innerHeight));
 
     const lines = [
       '## Design Feedback: ' + title,
@@ -402,64 +382,65 @@
       const fw = t.framework || {};
       const rect = t.rectViewport || {};
 
-      const pinIndex = n.index || (idx + 1);
-      const componentName = fw.component || t.tagName || 'element';
-      const label = t.textSnippet ? t.textSnippet.slice(0, 50) : (t.accessibleName || t.selector || '');
+      const pinIndex = sanitizeMarkdownLine(n.index || (idx + 1));
+      const componentName = sanitizeMarkdownLine(fw.component || t.tagName || 'element');
+      const label = sanitizeMarkdownLine(t.textSnippet ? t.textSnippet.slice(0, 50) : (t.accessibleName || t.selector || ''));
       lines.push('### ' + pinIndex + '. ' + componentName + (label ? (' - "' + label + '"') : ''));
 
       if (n.intent) {
-        lines.push('**Intent:** ' + n.intent);
+        lines.push('**Intent:** ' + sanitizeMarkdownLine(n.intent));
       }
-      lines.push('**Selector:** `' + (t.selector || 'element') + '`');
+      lines.push('**Selector:** `' + sanitizeMarkdownLine(t.selector || 'element') + '`');
       if (t.elementPath) {
-        lines.push('**Location:** `' + t.elementPath + '`');
+        lines.push('**Location:** `' + sanitizeMarkdownLine(t.elementPath) + '`');
       }
       if (fw.name && fw.name !== 'Static') {
-        let fwLine = fw.name;
-        if (fw.component) fwLine += ' (' + fw.component + ')';
+        let fwLine = sanitizeMarkdownLine(fw.name);
+        if (fw.component) fwLine += ' (' + sanitizeMarkdownLine(fw.component) + ')';
         lines.push('**Framework:** ' + fwLine);
       }
       if (fw.sourceLocation) {
-        lines.push('**Source:** `' + fw.sourceLocation + '` (provenance: ' + (fw.provenance || 'inferred') + ')');
+        lines.push('**Source:** `' + sanitizeMarkdownLine(fw.sourceLocation) + '` (provenance: ' + sanitizeMarkdownLine(fw.provenance || 'inferred') + ')');
       }
       if (rect && typeof rect.width === 'number') {
         lines.push('**Bounds:** viewport x=' + Math.round(rect.x) + ', y=' + Math.round(rect.y) + ', ' + Math.round(rect.width) + 'x' + Math.round(rect.height));
       }
       if (t.cssClasses) {
-        lines.push('**Classes:** `' + t.cssClasses + '`');
+        lines.push('**Classes:** `' + sanitizeMarkdownLine(t.cssClasses) + '`');
       }
       if (t.selectedText) {
-        lines.push('**Selected text:** "' + t.selectedText + '"');
+        lines.push('**Selected text:** "' + sanitizeMarkdownLine(t.selectedText) + '"');
       } else if (t.textSnippet) {
-        lines.push('**Text:** "' + t.textSnippet + '"');
+        lines.push('**Text:** "' + sanitizeMarkdownLine(t.textSnippet) + '"');
       }
       if (p.nearbyText && p.nearbyText.length > 0) {
         lines.push('**Nearby text:**');
         p.nearbyText.slice(0, 4).forEach(txt => {
-          if (txt && txt.trim()) lines.push('- "' + txt.trim() + '"');
+          if (txt && txt.trim()) lines.push('- "' + sanitizeMarkdownLine(txt) + '"');
         });
       }
       if (p.nearbyElements && p.nearbyElements.length > 0) {
         lines.push('**Nearby elements:**');
         p.nearbyElements.slice(0, 4).forEach(el => {
-          if (el && el.trim()) lines.push('- `' + el.trim() + '`');
+          if (el && el.trim()) lines.push('- `' + sanitizeMarkdownLine(el) + '`');
         });
       }
       if (t.computedStyles && Object.keys(t.computedStyles).length > 0) {
         lines.push('**Computed styles:**');
         for (const [k, v] of Object.entries(t.computedStyles)) {
           if (v && v !== 'auto' && v !== 'normal' && v !== 'static' && v !== 'rgba(0, 0, 0, 0)') {
-            lines.push('- ' + k + ': ' + v);
+            lines.push('- ' + sanitizeMarkdownLine(k) + ': ' + sanitizeMarkdownLine(v));
           }
         }
       }
       if (t.htmlSnippet) {
         lines.push('**HTML:**');
-        lines.push('```html');
+        const fence = safeHTMLFence(t.htmlSnippet);
+        lines.push(fence + 'html');
         lines.push(t.htmlSnippet.trim());
-        lines.push('```');
+        lines.push(fence);
       }
-      lines.push('**Feedback:** ' + (n.comment || 'No comment'));
+      lines.push('**Feedback:** ' + sanitizeComment(n.comment || 'No comment'));
       lines.push('');
     });
 
@@ -1104,11 +1085,6 @@
         list.appendChild(row);
       });
     }
-    formatReport() {
-      return formatDesignFeedbackReport(this.notes);
-    }
-
-
     buildSummaryText() {
       return formatDesignFeedbackReport(this.notes);
     }

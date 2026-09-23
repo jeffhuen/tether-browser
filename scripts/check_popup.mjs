@@ -7,9 +7,31 @@
 // exceed the 35-second command limit even when the extension behaves correctly.
 // Uses synthetic notes plus real extension storage, page captures, and pointer input.
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
+
+const reviewWindow = {};
+runInNewContext(await readFile(new URL("../packages/extension/review/overlay.js", import.meta.url), "utf8"), {
+  window: reviewWindow, document: { title: "Review" },
+});
+const hostile = "text\n## Forged";
+reviewWindow.__tetherReview.notes = [{
+  index: 1, comment: "# Forged\n## Forged",
+  payload: {
+    page: { title: "Review", sanitizedUrl: "https://example.test" },
+    nearbyText: [hostile], nearbyElements: [hostile],
+    target: {
+      textSnippet: hostile, selectedText: hostile, cssClasses: hostile,
+      computedStyles: { [hostile]: hostile }, htmlSnippet: "<div>\n```\n## Forged\n</div>",
+    },
+  },
+}];
+const report = reviewWindow.__tetherReview.buildSummaryText();
+assert(report.includes("````html\n<div>\n```\n## Forged\n</div>\n````"), "HTML must remain inside a fence longer than its backticks");
+assert(!/^#+ Forged/m.test(report.replace(/````html\n[\s\S]*?\n````/, "")), "Page text and comments must not forge report headings");
+assert(report.includes("**Feedback:** \\# Forged\n\\## Forged"));
 
 const endpoint = process.argv[2] || "http://127.0.0.1:9349";
 const targets = await (await fetch(`${endpoint}/json/list`)).json();
@@ -125,6 +147,14 @@ try {
       await waitComplete();
       const started = await chrome.runtime.sendMessage({ type: "popup_start_review", tabId: tab.id });
       if (started.error) throw new Error(started.error);
+      const reportCheck = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+        expression: `window.__tetherReview.notes = [{index:1,comment:"Copied from the page",payload:{target:{tagName:"button"}}}]; window.__tetherReview.buildSummaryText()`,
+        returnByValue: true,
+      });
+      const status = await chrome.runtime.sendMessage({ type: "popup_get_status", currentTabId: tab.id });
+      if (status.report !== reportCheck.result.value || !status.report.includes("Copied from the page")) {
+        throw new Error("Popup status did not return the overlay report from the reviewed page");
+      }
       const blob = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
         expression: "URL.createObjectURL(new Blob(['<h1>Web blob</h1>'], {type: 'text/html'}))",
         returnByValue: true,
@@ -175,6 +205,52 @@ try {
       document.querySelector("#btn-refresh-tabs").click();
     });
     return saved;
+  });
+  await evaluate(async () => {
+    window.popupCheckStatus = { connected: true, tabs: [], notes: [] };
+    window.popupCheckNetwork = { enabled: false, state: "off", ssh: { state: "connected", host: "dev-host" } };
+    await window.popupCheckRefresh();
+    if (document.querySelector("#connection-toggle").getAttribute("aria-expanded") !== "true") document.querySelector("#connection-toggle").click();
+    window.popupCheckConfirm = window.confirm;
+    window.popupCheckConfirmations = 0;
+    window.confirm = () => { window.popupCheckConfirmations++; return false; };
+    window.popupCheckConnectionSend = chrome.runtime.sendMessage;
+    window.popupCheckConnections = [];
+    chrome.runtime.sendMessage = (message, callback) => {
+      if (message.type === "popup_ssh_connect" || message.type === "popup_ssh_disconnect") {
+        window.popupCheckConnections.push(message);
+        callback(window.popupCheckNetwork.ssh);
+      } else window.popupCheckConnectionSend(message, callback);
+    };
+    const input = document.querySelector("#connect-host-input");
+    input.value = "dev-host";
+    input.focus();
+  });
+  const pressEnter = async () => {
+    await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+    await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  };
+  await pressEnter();
+  assert.deepEqual(await evaluate(() => [window.popupCheckConfirmations, window.popupCheckConnections.length]), [0, 0], "Enter on the connected host must not ask to disconnect");
+  await evaluate(() => {
+    const input = document.querySelector("#connect-host-input");
+    input.value = "staging-host";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await pressEnter();
+  assert.deepEqual(await evaluate(() => window.popupCheckConnections.map((message) => [message.type, message.targetHost])), [["popup_ssh_connect", "staging-host"]], "Enter on another host must switch");
+  await evaluate(async () => {
+    const input = document.querySelector("#connect-host-input");
+    input.value = "dev-host";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector("#btn-do-connect").click();
+    if (window.popupCheckConfirmations !== 1) throw new Error("Clicking Disconnect must still ask for confirmation");
+    window.confirm = window.popupCheckConfirm;
+    chrome.runtime.sendMessage = window.popupCheckConnectionSend;
+    window.popupCheckNetwork = { enabled: false, state: "off", canEnable: false, ssh: { state: "disconnected" } };
+    input.value = "";
+    await window.popupCheckRefresh();
   });
   await evaluate(async () => {
     window.popupCheckStatus = { connected: true, tabs: [], notes: [] };
@@ -453,6 +529,17 @@ try {
     const shots = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots;
     if (shots[0].data !== data || JSON.stringify(shots.slice(1)) !== JSON.stringify(before)) {
       throw new Error("Large capture failed to persist or discarded previous screenshots");
+    }
+    if (shots[0].remotePath || shots[0].mirrored || document.querySelector(".shot-path-chip").textContent !== "Local only") {
+      throw new Error("An unsaved capture must not claim a server path");
+    }
+    const writeText = navigator.clipboard.writeText;
+    let copied = "";
+    navigator.clipboard.writeText = async (text) => { copied = text; };
+    document.querySelector("#btn-copy-shots").click();
+    navigator.clipboard.writeText = writeText;
+    if (!copied.includes("**Storage:** Local only") || copied.includes(filename)) {
+      throw new Error("The screenshot report invented a server path for an unsaved capture");
     }
     const thumbnail = document.querySelector(".shot-thumb");
     await thumbnail.decode();

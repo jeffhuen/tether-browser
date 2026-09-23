@@ -23,7 +23,6 @@ const elementRefsByTab = new Map();
 // Tab snapshot generation and fingerprint cache: tabId -> { generation: number, lastHash: string }
 const tabSnapshotStates = new Map();
 const NO_ENABLE_DOMAINS = new Set(["Input"]);
-let activeNotesCache = [];
 let isDaemonConnected = false;
 const pendingNative = new Map();
 let nativeReqSeq = 0;
@@ -663,9 +662,6 @@ async function handleClick(params = {}, clickCount = 1) {
   return { tabId, clicked: { x, y } };
 }
 
-async function handleDblClick(params = {}) {
-  return await handleClick(params, 2);
-}
 
 async function handleFill(params = {}) {
   const tabId = resolveTargetTabId(params);
@@ -767,7 +763,17 @@ async function handleFocus(params = {}) {
   const sel = params.selector || params.ref;
   if (!sel) throw new Error("Focus requires a valid @ref or selector");
 
-  await handleClick({ targetId: tabId, selector: sel });
+  await ensureDomain(tabId, "DOM");
+  if (sel.startsWith("@")) {
+    const item = elementRefsByTab.get(tabId)?.get(sel);
+    if (!item?.backendDOMNodeId) throw new Error(`Element reference ${sel} not found; run snapshot first`);
+    await cdp(tabId, "DOM.focus", { backendNodeId: item.backendDOMNodeId });
+  } else {
+    const doc = await cdp(tabId, "DOM.getDocument");
+    const node = await cdp(tabId, "DOM.querySelector", { nodeId: doc.root.nodeId, selector: sel });
+    if (!node.nodeId) throw new Error(`Element with selector "${sel}" not found`);
+    await cdp(tabId, "DOM.focus", { nodeId: node.nodeId });
+  }
   return { tabId, focused: sel };
 }
 
@@ -810,6 +816,9 @@ async function handlePress(params = {}) {
     Tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
     Escape: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
     Backspace: { key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
+    Delete: { key: "Delete", code: "Delete", windowsVirtualKeyCode: 46 },
+    Home: { key: "Home", code: "Home", windowsVirtualKeyCode: 36 },
+    End: { key: "End", code: "End", windowsVirtualKeyCode: 35 },
     ArrowDown: { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 },
     ArrowUp: { key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 },
     ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", windowsVirtualKeyCode: 37 },
@@ -919,17 +928,34 @@ async function handleWait(params = {}) {
   }
 
   if (params.selector) {
-    const timeoutMs = params.timeoutMs || 30000;
+    const timeoutMs = params.timeoutMs || 25000;
     const start = Date.now();
     await ensureDomain(tabId, "DOM");
     while (Date.now() - start < timeoutMs) {
       try {
-        const doc = await cdp(tabId, "DOM.getDocument");
-        const res = await cdp(tabId, "DOM.querySelector", {
-          nodeId: doc.root.nodeId,
-          selector: params.selector,
-        });
-        if (res && res.nodeId && res.nodeId > 0) {
+        let matched = false;
+        if (params.selector.startsWith("@")) {
+          const item = elementRefsByTab.get(tabId)?.get(params.selector);
+          if (item?.backendDOMNodeId) {
+            const { object } = await cdp(tabId, "DOM.resolveNode", { backendNodeId: item.backendDOMNodeId });
+            try {
+              const res = await cdp(tabId, "Runtime.callFunctionOn", {
+                objectId: object.objectId, functionDeclaration: "function() { return this.isConnected; }", returnByValue: true,
+              });
+              matched = res.result?.value === true;
+            } finally {
+              await cdp(tabId, "Runtime.releaseObject", { objectId: object.objectId });
+            }
+          }
+        } else {
+          const doc = await cdp(tabId, "DOM.getDocument");
+          const res = await cdp(tabId, "DOM.querySelector", {
+            nodeId: doc.root.nodeId,
+            selector: params.selector,
+          });
+          matched = res.nodeId > 0;
+        }
+        if (matched) {
           return { tabId, matched: params.selector, elapsedMs: Date.now() - start };
         }
       } catch (err) {
@@ -944,7 +970,7 @@ async function handleWait(params = {}) {
 }
 
 async function handleClose(params = {}) {
-  if (params.all) {
+  if (params.closeAll) {
     const tabs = await getLiveTabs();
     for (const t of tabs) {
       try {
@@ -1122,7 +1148,6 @@ async function handleReviewList(params = {}) {
   let notes = [];
   try {
     notes = JSON.parse(res.result?.value || "[]");
-    activeNotesCache = notes;
   } catch {}
 
   return {
@@ -1141,10 +1166,32 @@ async function handleReviewClear(params = {}) {
     expression: "window.__tetherReview ? (window.__tetherReview.clear ? window.__tetherReview.clear() : (window.__tetherReview.clearNotes ? window.__tetherReview.clearNotes() : false)) : false",
   });
 
-  activeNotesCache = [];
   return { ok: true };
 }
 // --- Request Router ---
+
+const nativeHandlers = {
+  "browser.open": handleOpen,
+  "browser.snapshot": handleSnapshot,
+  "browser.click": handleClick,
+  "browser.dblclick": (params) => handleClick(params, 2),
+  "browser.fill": handleFill,
+  "browser.type": handleType,
+  "browser.press": handlePress,
+  "browser.hover": handleHover,
+  "browser.focus": handleFocus,
+  "browser.wait": handleWait,
+  "browser.scroll": handleScroll,
+  "browser.close": handleClose,
+  "browser.eval": handleEval,
+  "browser.screenshot": handleScreenshot,
+  "browser.status": handleStatus,
+  "browser.tab.list": handleTabList,
+  "browser.tab.switch": handleTabSwitch,
+  "browser.review.start": handleReviewStart,
+  "browser.review.list": handleReviewList,
+  "browser.review.clear": handleReviewClear,
+};
 
 async function handleNativeMessage(msg) {
   if (!msg) return;
@@ -1169,73 +1216,11 @@ async function handleNativeMessage(msg) {
   if (!msg.id) return;
   const { id, method, params = {} } = msg;
   try {
-    let result;
-    switch (method) {
-      case "browser.open":
-        result = await handleOpen(params);
-        break;
-      case "browser.snapshot":
-        result = await handleSnapshot(params);
-        break;
-      case "browser.click":
-        result = await handleClick(params);
-        break;
-      case "browser.dblclick":
-        result = await handleDblClick(params);
-        break;
-      case "browser.fill":
-        result = await handleFill(params);
-        break;
-      case "browser.type":
-        result = await handleType(params);
-        break;
-      case "browser.press":
-        result = await handlePress(params);
-        break;
-      case "browser.hover":
-        result = await handleHover(params);
-        break;
-      case "browser.focus":
-        result = await handleFocus(params);
-        break;
-      case "browser.wait":
-        result = await handleWait(params);
-        break;
-      case "browser.scroll":
-        result = await handleScroll(params);
-        break;
-      case "browser.close":
-        result = await handleClose(params);
-        break;
-      case "browser.eval":
-        result = await handleEval(params);
-        break;
-      case "browser.screenshot":
-        result = await handleScreenshot(params);
-        break;
-      case "browser.status":
-        result = await handleStatus();
-        break;
-      case "browser.tab.list":
-        result = await handleTabList();
-        break;
-      case "browser.tab.switch":
-        result = await handleTabSwitch(params);
-        break;
-      case "browser.review.start":
-        result = await handleReviewStart(params);
-        break;
-      case "browser.review.list":
-        result = await handleReviewList(params);
-        break;
-      case "browser.review.clear":
-        result = await handleReviewClear(params);
-        break;
-      default:
-        sendError(id, -32601, `Method ${method} not found in extension dispatcher`);
-        return;
+    if (!Object.hasOwn(nativeHandlers, method)) {
+      sendError(id, -32601, `Method ${method} not found in extension dispatcher`);
+      return;
     }
-    sendResponse(id, result);
+    sendResponse(id, await nativeHandlers[method](params));
   } catch (err) {
     sendError(id, -32000, err.message || String(err));
   }
@@ -1279,12 +1264,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
 
           let notes = [];
+          let report = "";
           if (targetTabId) {
             try {
-              const res = await handleReviewList({ tabId: targetTabId });
-              notes = res.notes || [];
+              await ensureDomain(targetTabId, "Runtime");
+              const res = await cdp(targetTabId, "Runtime.evaluate", {
+                expression: "window.__tetherReview ? {notes: window.__tetherReview.getNotes(), report: window.__tetherReview.buildSummaryText()} : {notes: [], report: ''}",
+                returnByValue: true,
+              });
+              notes = res.result?.value?.notes || [];
+              report = res.result?.value?.report || "";
             } catch (err) {
-              notes = activeNotesCache || [];
+              // Do not pair another tab's cached notes with an unavailable report.
             }
           }
 
@@ -1293,6 +1284,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             activeTabId: targetTabId || activeTabId,
             tabs: tabList.tabs,
             notes,
+            report,
           });
           break;
         }
@@ -1410,18 +1402,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 const storageData = await chrome.storage.local.get(["tether_screenshots"]);
                 const existing = storageData.tether_screenshots || [];
                 const newEntry = {
-                  id: `shot-${Date.now()}`,
                   filename,
                   data: shotRes.data,
                   label: "Area Crop",
                   title: cropData.title || "Area Crop",
                   url: cropData.url || "",
                   dimensions: `${shotRes.width}×${shotRes.height} px`,
-                  remotePath: saveResult?.remotePath || `/tmp/tether-screenshots/${filename}`,
-                  localPath: saveResult?.localPath || "",
+                  remotePath: saveResult?.mirrored ? saveResult.remotePath : "",
                   mirrored: saveResult?.mirrored || false,
                   comment: "",
-                  createdAt: new Date().toISOString(),
                 };
                 await chrome.storage.local.set({ tether_screenshots: [newEntry, ...existing] });
                 saved = true;

@@ -26,7 +26,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   const lightboxImg = document.getElementById("lightbox-img");
   const lightboxTitle = document.getElementById("lightbox-title");
   const btnRefreshTabs = document.getElementById("btn-refresh-tabs");
-  const notesCount = document.getElementById("notes-count");
   const notesList = document.getElementById("notes-list");
   const tabsList = document.getElementById("tabs-list");
   const navForm = document.getElementById("nav-form");
@@ -35,52 +34,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const extVersionEl = document.getElementById("ext-version");
   const btnReloadExt = document.getElementById("btn-reload-ext");
 
-  // Set dynamic version from manifest
-  let localVersion = "0.1.21";
-  try {
-    const manifest = chrome.runtime.getManifest();
-    if (manifest.version) {
-      localVersion = manifest.version;
-      if (extVersionEl) extVersionEl.textContent = "v" + localVersion;
-    }
-  } catch {}
-
-  // Check updates and reload extension directly from disk
-  if (btnReloadExt) {
-    btnReloadExt.addEventListener("click", async () => {
-      btnReloadExt.style.transform = "rotate(360deg)";
-      btnReloadExt.style.transition = "transform 0.4s ease";
-
-      showToast("Checking updates...", 1500);
-
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2000);
-        const res = await fetch("https://raw.githubusercontent.com/jeffhuen/tether-browser/main/packages/extension/manifest.json", {
-          signal: controller.signal,
-          cache: "no-store",
-        });
-        clearTimeout(timeoutId);
-        if (res.ok) {
-          const remoteManifest = await res.json();
-          if (remoteManifest.version && remoteManifest.version > localVersion) {
-            showToast(`Update available: v${remoteManifest.version} (run git pull)`, 3000);
-            setTimeout(() => chrome.runtime.reload(), 1500);
-            return;
-          } else {
-            showToast(`✓ Up to date (v${localVersion})`, 2000);
-            setTimeout(() => chrome.runtime.reload(), 800);
-            return;
-          }
-        }
-      } catch (e) {
-        // Offline or check failed: reload directly
-      }
-
-      showToast(`✓ Reloaded from disk (v${localVersion})`, 1500);
-      setTimeout(() => chrome.runtime.reload(), 400);
-    });
-  }
+  extVersionEl.textContent = "v" + chrome.runtime.getManifest().version;
+  btnReloadExt.addEventListener("click", () => chrome.runtime.reload());
 
   function showToast(text, duration = 2000) {
     let toast = document.getElementById("update-toast");
@@ -100,6 +55,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   let currentNotes = [];
+  let currentReport = "";
   let currentShots = [];
 
   async function loadScreenshots() {
@@ -117,10 +73,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function updateShotsUI(shots) {
-    if (shotsBadge) shotsBadge.textContent = shots.length;
+    shotsBadge.textContent = shots.length;
     btnCopyShots.disabled = shots.length === 0;
     btnClearShots.disabled = shots.length === 0;
-    if (!shotsList) return;
     if (!shots || shots.length === 0) {
       shotsList.innerHTML = '<div class="empty-state">No screenshots captured yet. Click <b>Crop Area</b> or <b>Viewport</b> above.</div>';
       return;
@@ -129,15 +84,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     shots.forEach((shot, idx) => {
       const card = document.createElement("div");
       card.className = "shot-card";
-      const remotePath = shot.remotePath || `/tmp/tether-screenshots/${shot.filename}`;
+      const label = shot.label || shot.title || "Screenshot";
+      const remotePath = shot.mirrored && shot.remotePath ? shot.remotePath : "Local only";
       card.innerHTML = `
         <div class="shot-top-row">
           <button type="button" class="shot-thumb-wrapper" aria-label="Enlarge screenshot" title="Click to enlarge">
-            <img class="shot-thumb" src="data:image/png;base64,${shot.data}" alt="${escapeHTML(shot.label || shot.title || "Screenshot")}">
+            <img class="shot-thumb" src="data:image/png;base64,${shot.data}" alt="${escapeHTML(label)}">
           </button>
           <div class="shot-details">
             <div class="shot-header">
-              <span class="shot-title">${escapeHTML(shot.label || shot.title || "Screenshot")}</span>
+              <span class="shot-title">${escapeHTML(label)}</span>
               <button type="button" class="btn-del-shot" aria-label="Delete screenshot" title="Delete screenshot">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <polyline points="3 6 5 6 21 6"/>
@@ -153,7 +109,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       `;
       const thumb = card.querySelector(".shot-thumb-wrapper");
       thumb.addEventListener("click", () => {
-        openLightbox(shot.data, shot.label || shot.title || "Screenshot", shot.dimensions);
+        openLightbox(shot.data, label, shot.dimensions);
       });
       const delBtn = card.querySelector(".btn-del-shot");
       delBtn.addEventListener("click", async () => {
@@ -171,23 +127,16 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function openLightbox(base64Data, title, meta) {
-    if (!lightboxModal || !lightboxImg) return;
     lightboxImg.src = `data:image/png;base64,${base64Data}`;
     lightboxImg.alt = title;
-    if (lightboxTitle) lightboxTitle.textContent = meta ? `${title} (${meta})` : title;
+    lightboxTitle.textContent = meta ? `${title} (${meta})` : title;
     lightboxModal.showModal();
   }
 
-  if (lightboxClose) {
-    lightboxClose.addEventListener("click", () => {
-      lightboxModal.close();
-    });
-  }
-  if (lightboxModal) {
-    lightboxModal.addEventListener("click", (e) => {
-      if (e.target === lightboxModal) lightboxModal.close();
-    });
-  }
+  lightboxClose.addEventListener("click", () => lightboxModal.close());
+  lightboxModal.addEventListener("click", (e) => {
+    if (e.target === lightboxModal) lightboxModal.close();
+  });
 
   const workspaceTabs = [tabBtnNotes, tabBtnShots];
   let selectedTab = null;
@@ -224,15 +173,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   async function refresh() {
     void refreshNetwork();
     try {
-      let currentTabId = null;
-      let currentTab = null;
-      try {
-        const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (active) {
-          currentTab = active;
-          currentTabId = active.id;
-        }
-      } catch {}
+      const currentTab = await getActiveTab();
+      const currentTabId = currentTab?.id || null;
 
       const status = await sendMessage({ type: "popup_get_status", currentTabId });
       const tabs = status.tabs || [];
@@ -240,6 +182,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                         (currentTab ? { id: String(currentTab.id), title: currentTab.title, url: currentTab.url } : null);
       updateStatusUI(status);
       updateTabsUI(tabs, status.activeTabId);
+      currentReport = status.report || "";
       updateNotesUI(status.notes || [], activeTab);
     } catch (err) {
       console.warn("Failed to load status:", err);
@@ -248,7 +191,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   const connectSection = document.getElementById("connect-section");
-  const connectForm = document.getElementById("connect-form");
   const connectHostInput = document.getElementById("connect-host-input");
   const btnDoConnect = document.getElementById("btn-do-connect");
   const recentHostsWrapper = document.getElementById("recent-hosts-wrapper");
@@ -374,7 +316,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       connectHostInput.value = ssh.host;
     }
 
-    const currentInput = connectHostInput ? connectHostInput.value.trim() : "";
+    const currentInput = connectHostInput.value.trim();
     const isSameHost = Boolean(ssh.host && currentInput.toLowerCase() === ssh.host.toLowerCase());
 
     btnDoConnect.classList.remove("btn-connect-secondary", "btn-connect-danger");
@@ -446,11 +388,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       const data = await chrome.storage.local.get(["recent_hosts"]);
       const hosts = data.recent_hosts || [];
       if (hosts.length === 0) {
-        if (recentHostsWrapper) recentHostsWrapper.style.display = "none";
+        recentHostsWrapper.style.display = "none";
         return;
       }
-      if (recentHostsWrapper) recentHostsWrapper.style.display = "flex";
-      if (recentHostsList) {
+      recentHostsWrapper.style.display = "flex";
         recentHostsList.innerHTML = "";
         hosts.forEach((h) => {
           const chip = document.createElement("button");
@@ -460,12 +401,11 @@ document.addEventListener("DOMContentLoaded", async () => {
           chip.disabled = network.enabled || network.ssh?.state === "connecting" || networkBusy;
           chip.title = `Connect to ${h}`;
           chip.addEventListener("click", () => {
-            if (connectHostInput) connectHostInput.value = h;
+            connectHostInput.value = h;
             doConnect(h);
           });
           recentHostsList.appendChild(chip);
         });
-      }
     } catch {}
   }
 
@@ -501,21 +441,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  async function handleConnectAction({ fromEnter = false } = {}) {
+  async function handleConnectAction() {
     const ssh = network.ssh || {};
     const connecting = ssh.state === "connecting";
     const connected = ssh.state === "connected";
-    const inputVal = connectHostInput ? connectHostInput.value.trim() : "";
+    const inputVal = connectHostInput.value.trim();
     const isSameHost = Boolean(ssh.host && inputVal.toLowerCase() === ssh.host.toLowerCase());
 
-    if (connecting) {
-      if (fromEnter) return;
-      await doDisconnect();
-      return;
-    }
-
-    if (connected && (isSameHost || network.enabled)) {
-      if (fromEnter) return;
+    if (connecting || (connected && (isSameHost || network.enabled))) {
       await doDisconnect();
       return;
     }
@@ -526,45 +459,35 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  if (connectForm) {
-    connectForm.addEventListener("submit", (e) => {
-      e.preventDefault();
-      handleConnectAction({ fromEnter: true });
-    });
-  }
+  btnDoConnect.addEventListener("click", (e) => {
+    e.preventDefault();
+    handleConnectAction();
+  });
 
-  if (btnDoConnect) {
-    btnDoConnect.addEventListener("click", (e) => {
+  connectHostInput.addEventListener("input", renderConnection);
+  connectHostInput.addEventListener("keydown", (e) => {
+    const ssh = network.ssh || {};
+    if (e.key === "Enter") {
       e.preventDefault();
-      handleConnectAction({ fromEnter: false });
-    });
-  }
-
-  if (connectHostInput) {
-    connectHostInput.addEventListener("input", () => {
+      const host = connectHostInput.value.trim();
+      if (!networkBusy && !network.enabled && ssh.state !== "connecting" &&
+          !(ssh.state === "connected" && host.toLowerCase() === ssh.host?.toLowerCase())) {
+        void doConnect(host);
+      }
+    } else if (e.key === "Escape" && ssh.state === "connected" && ssh.host) {
+      e.preventDefault();
+      connectHostInput.value = ssh.host;
       renderConnection();
-    });
-    connectHostInput.addEventListener("keydown", (e) => {
-      const ssh = network.ssh || {};
-      if (e.key === "Escape" && ssh.state === "connected" && ssh.host) {
-        e.preventDefault();
-        connectHostInput.value = ssh.host;
-        renderConnection();
-      }
-    });
-  }
+    }
+  });
 
-  if (connectionToggle) {
-    connectionToggle.addEventListener("click", () => {
-      if (connectSection) {
-        const isShown = connectSection.style.display !== "none";
-        connectionPanelOpen = !isShown;
-        connectSection.style.display = isShown ? "none" : "block";
-        connectionToggle.setAttribute("aria-expanded", String(!isShown));
-        if (!isShown) loadRecentHosts();
-      }
-    });
-  }
+  connectionToggle.addEventListener("click", () => {
+    const isShown = connectSection.style.display !== "none";
+    connectionPanelOpen = !isShown;
+    connectSection.style.display = isShown ? "none" : "block";
+    connectionToggle.setAttribute("aria-expanded", String(!isShown));
+    if (!isShown) loadRecentHosts();
+  });
 
   function updateStatusUI(status) {
     bridgeConnected = Boolean(status?.connected);
@@ -626,12 +549,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function updateNotesUI(notes, activeTab) {
     currentNotes = notes || [];
-    btnCopyNotes.disabled = currentNotes.length === 0;
+    btnCopyNotes.disabled = !currentReport;
     btnClearNotes.disabled = currentNotes.length === 0;
-    const notesBadge = document.getElementById("notes-badge") || document.getElementById("notes-count");
-    if (notesBadge) notesBadge.textContent = currentNotes.length;
-
-    if (activeTabTitleEl) {
+    document.getElementById("notes-badge").textContent = currentNotes.length;
       if (activeTab && activeTab.title) {
         const cleanTitle = activeTab.title.replace(/^\[Tether\]\s*/, "");
         activeTabTitleEl.textContent = cleanTitle;
@@ -639,7 +559,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       } else {
         activeTabTitleEl.textContent = "Active Tab";
       }
-    }
 
     const serializedNotes = JSON.stringify(
       currentNotes.map((n) => ({
@@ -675,11 +594,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   btnInspect.addEventListener("click", async () => {
     btnInspect.disabled = true;
     try {
-      let currentTabId = null;
-      try {
-        const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (active) currentTabId = active.id;
-      } catch {}
+      const currentTabId = (await getActiveTab())?.id || null;
       await sendMessage({ type: "popup_start_review", tabId: currentTabId });
       // Close popup so user can click elements immediately
       window.close();
@@ -690,114 +605,46 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   // 3. Action: Take Screenshot
-  if (btnCaptureViewport) {
-    btnCaptureViewport.addEventListener("click", async () => {
-      btnCaptureViewport.disabled = true;
-      showToast("Capturing viewport...", 2000);
+  for (const [button, label, fullPage] of [[btnCaptureViewport, "Viewport", false], [btnCaptureFull, "Full Page", true]]) {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      showToast(`Capturing ${label.toLowerCase()}...`, 2000);
       try {
-        let currentTabId = null;
-        let tabInfo = null;
-        try {
-          const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
-          if (active) {
-            currentTabId = active.id;
-            tabInfo = active;
-          }
-        } catch {}
-        const res = await sendMessage({
-          type: "popup_capture_screenshot",
-          tabId: currentTabId,
-        });
-        if (res && res.data) {
-          const newShot = {
-            id: `shot-${Date.now()}`,
+        const tab = await getActiveTab();
+        const res = await sendMessage({ type: "popup_capture_screenshot", tabId: tab?.id || null, fullPage });
+        if (res?.data) {
+          await saveScreenshots([{
             filename: res.filename,
             data: res.data,
-            label: "Viewport",
-            title: tabInfo?.title || "Page Viewport",
-            url: tabInfo?.url || "",
-            dimensions: res.width && res.height ? `${res.width}×${res.height}` : "Viewport",
-            remotePath: res.saveResult?.remotePath || `/tmp/tether-screenshots/${res.filename}`,
-            localPath: res.saveResult?.localPath || "",
+            label,
+            title: tab?.title || label,
+            url: tab?.url || "",
+            dimensions: res.width && res.height ? `${res.width}×${res.height}` : label,
+            remotePath: res.saveResult?.mirrored ? res.saveResult.remotePath : "",
             mirrored: res.saveResult?.mirrored || false,
             comment: "",
-            createdAt: new Date().toISOString(),
-          };
-          const updated = [newShot, ...currentShots];
-          await saveScreenshots(updated);
-          showToast("✓ Viewport screenshot captured!", 2000);
+          }, ...currentShots]);
+          showToast(`${label} screenshot captured!`, 2000);
         }
       } catch (err) {
         showToast("Capture failed: " + err.message, 3000);
       } finally {
-        btnCaptureViewport.disabled = false;
+        button.disabled = false;
       }
     });
   }
 
-  if (btnCaptureFull) {
-    btnCaptureFull.addEventListener("click", async () => {
-      btnCaptureFull.disabled = true;
-      showToast("Capturing full page...", 3000);
-      try {
-        let currentTabId = null;
-        let tabInfo = null;
-        try {
-          const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
-          if (active) {
-            currentTabId = active.id;
-            tabInfo = active;
-          }
-        } catch {}
-        const res = await sendMessage({
-          type: "popup_capture_screenshot",
-          tabId: currentTabId,
-          fullPage: true,
-        });
-        if (res && res.data) {
-          const newShot = {
-            id: `shot-${Date.now()}`,
-            filename: res.filename,
-            data: res.data,
-            label: "Full Page",
-            title: tabInfo?.title || "Full Page",
-            url: tabInfo?.url || "",
-            dimensions: res.width && res.height ? `${res.width}×${res.height}` : "Full Page",
-            remotePath: res.saveResult?.remotePath || `/tmp/tether-screenshots/${res.filename}`,
-            localPath: res.saveResult?.localPath || "",
-            mirrored: res.saveResult?.mirrored || false,
-            comment: "",
-            createdAt: new Date().toISOString(),
-          };
-          const updated = [newShot, ...currentShots];
-          await saveScreenshots(updated);
-          showToast("✓ Full-page screenshot captured!", 2000);
-        }
-      } catch (err) {
-        showToast("Full capture failed: " + err.message, 3000);
-      } finally {
-        btnCaptureFull.disabled = false;
-      }
-    });
-  }
-
-  if (btnCaptureArea) {
-    btnCaptureArea.addEventListener("click", async () => {
-      btnCaptureArea.disabled = true;
-      try {
-        let currentTabId = null;
-        try {
-          const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
-          if (active) currentTabId = active.id;
-        } catch {}
-        await sendMessage({ type: "popup_start_crop", tabId: currentTabId });
-        window.close();
-      } catch (err) {
-        showToast("Failed to start area crop: " + err.message, 3000);
-        btnCaptureArea.disabled = false;
-      }
-    });
-  }
+  btnCaptureArea.addEventListener("click", async () => {
+    btnCaptureArea.disabled = true;
+    try {
+      const currentTabId = (await getActiveTab())?.id || null;
+      await sendMessage({ type: "popup_start_crop", tabId: currentTabId });
+      window.close();
+    } catch (err) {
+      showToast("Failed to start area crop: " + err.message, 3000);
+      btnCaptureArea.disabled = false;
+    }
+  });
 
   function formatScreenshotsReport(shots) {
     if (!shots || shots.length === 0) return "";
@@ -808,7 +655,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     ];
     shots.forEach((s, idx) => {
       lines.push(`### ${idx + 1}. ${s.label || s.title || "Screenshot"}`);
-      lines.push(`- **Server Path:** \`${s.remotePath || `/tmp/tether-screenshots/${s.filename}`}\``);
+      lines.push(s.mirrored && s.remotePath ? `- **Server Path:** \`${s.remotePath}\`` : "- **Storage:** Local only");
       if (s.url) lines.push(`- **URL:** ${s.url}`);
       if (s.dimensions) lines.push(`- **Dimensions:** ${s.dimensions}`);
       if (s.comment) lines.push(`- **Feedback:** ${s.comment}`);
@@ -817,7 +664,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     return lines.join("\n");
   }
 
-  if (btnCopyShots) {
     btnCopyShots.addEventListener("click", () => {
       if (!currentShots || currentShots.length === 0) {
         alert("No screenshots to copy. Capture a screenshot first.");
@@ -828,9 +674,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         showToast("✓ Copied screenshots report for agent!", 2000);
       });
     });
-  }
 
-  if (btnClearShots) {
     btnClearShots.addEventListener("click", async () => {
       if (confirm("Delete all screenshots both locally on your Mac and remotely on the server?")) {
         await sendMessage({ type: "popup_clear_screenshots" });
@@ -838,7 +682,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         showToast("✓ Cleared all screenshots", 2000);
       }
     });
-  }
 
   // 4. Action: Copy Notes for AI Agent
   btnCopyNotes.addEventListener("click", () => {
@@ -847,8 +690,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
 
-    const md = formatDesignFeedbackReport(currentNotes);
-    navigator.clipboard.writeText(md).then(() => {
+    navigator.clipboard.writeText(currentReport).then(() => {
       const copyText = document.getElementById("copy-text");
       copyText.textContent = "Copied!";
       setTimeout(() => { copyText.textContent = "Copy"; }, 1500);
@@ -858,13 +700,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   // 5. Action: Clear Notes
   btnClearNotes.addEventListener("click", async () => {
     if (confirm("Clear all review notes on this page?")) {
-      let currentTabId = null;
-      try {
-        const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (active) currentTabId = active.id;
-      } catch {}
+      const currentTabId = (await getActiveTab())?.id || null;
       await sendMessage({ type: "popup_clear_notes", tabId: currentTabId });
       currentNotes = [];
+      currentReport = "";
       updateNotesUI([]);
       refresh();
     }
@@ -889,7 +728,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   const btnNavNew = document.getElementById("btn-nav-new");
-  if (btnNavNew) {
     btnNavNew.addEventListener("click", async () => {
       let url = navInput.value.trim();
       if (url && !url.startsWith("http://") && !url.startsWith("https://")) {
@@ -899,8 +737,15 @@ document.addEventListener("DOMContentLoaded", async () => {
       await sendMessage({ type: "popup_navigate", url, newTab: true });
       refresh();
     });
-  }
   // Helpers
+  async function getActiveTab() {
+    try {
+      return (await chrome.tabs.query({ active: true, currentWindow: true }))[0] || null;
+    } catch {
+      return null;
+    }
+  }
+
   function sendMessage(msg) {
     return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(msg, (response) => {
@@ -936,88 +781,3 @@ document.addEventListener("DOMContentLoaded", async () => {
   const pollInterval = setInterval(refresh, 2000);
   window.addEventListener("unload", () => clearInterval(pollInterval));
 });
-  function formatDesignFeedbackReport(notes) {
-    if (!notes || notes.length === 0) return '';
-    const first = notes[0];
-    const page = first.payload?.page || {};
-    const title = page.title || document.title || 'Page Review';
-    const url = page.sanitizedUrl || window.location.href;
-    const vp = page.viewportWidth ? (page.viewportWidth + 'x' + page.viewportHeight) : (window.innerWidth + 'x' + window.innerHeight);
-
-    const lines = [
-      '## Design Feedback: ' + title,
-      '',
-      '**URL:** ' + url,
-      '**Viewport:** ' + vp,
-      ''
-    ];
-
-    notes.forEach((n, idx) => {
-      const p = n.payload || {};
-      const t = p.target || {};
-      const fw = t.framework || {};
-      const rect = t.rectViewport || {};
-
-      const pinIndex = n.index || (idx + 1);
-      const componentName = fw.component || t.tagName || 'element';
-      const label = t.textSnippet ? t.textSnippet.slice(0, 50) : (t.accessibleName || t.selector || '');
-      lines.push('### ' + pinIndex + '. ' + componentName + (label ? (' - "' + label + '"') : ''));
-
-      if (n.intent) {
-        lines.push('**Intent:** ' + n.intent);
-      }
-      lines.push('**Selector:** `' + (t.selector || 'element') + '`');
-      if (t.elementPath) {
-        lines.push('**Location:** `' + t.elementPath + '`');
-      }
-      if (fw.name && fw.name !== 'Static') {
-        let fwLine = fw.name;
-        if (fw.component) fwLine += ' (' + fw.component + ')';
-        lines.push('**Framework:** ' + fwLine);
-      }
-      if (fw.sourceLocation) {
-        lines.push('**Source:** `' + fw.sourceLocation + '` (provenance: ' + (fw.provenance || 'inferred') + ')');
-      }
-      if (rect && typeof rect.width === 'number') {
-        lines.push('**Bounds:** viewport x=' + Math.round(rect.x) + ', y=' + Math.round(rect.y) + ', ' + Math.round(rect.width) + 'x' + Math.round(rect.height));
-      }
-      if (t.cssClasses) {
-        lines.push('**Classes:** `' + t.cssClasses + '`');
-      }
-      if (t.selectedText) {
-        lines.push('**Selected text:** "' + t.selectedText + '"');
-      } else if (t.textSnippet) {
-        lines.push('**Text:** "' + t.textSnippet + '"');
-      }
-      if (p.nearbyText && p.nearbyText.length > 0) {
-        lines.push('**Nearby text:**');
-        p.nearbyText.slice(0, 4).forEach(txt => {
-          if (txt && txt.trim()) lines.push('- "' + txt.trim() + '"');
-        });
-      }
-      if (p.nearbyElements && p.nearbyElements.length > 0) {
-        lines.push('**Nearby elements:**');
-        p.nearbyElements.slice(0, 4).forEach(el => {
-          if (el && el.trim()) lines.push('- `' + el.trim() + '`');
-        });
-      }
-      if (t.computedStyles && Object.keys(t.computedStyles).length > 0) {
-        lines.push('**Computed styles:**');
-        for (const [k, v] of Object.entries(t.computedStyles)) {
-          if (v && v !== 'auto' && v !== 'normal' && v !== 'static' && v !== 'rgba(0, 0, 0, 0)') {
-            lines.push('- ' + k + ': ' + v);
-          }
-        }
-      }
-      if (t.htmlSnippet) {
-        lines.push('**HTML:**');
-        lines.push('```html');
-        lines.push(t.htmlSnippet.trim());
-        lines.push('```');
-      }
-      lines.push('**Feedback:** ' + (n.comment || 'No comment'));
-      lines.push('');
-    });
-
-    return lines.join('\n').trim();
-  }
