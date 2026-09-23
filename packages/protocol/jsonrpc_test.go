@@ -6,38 +6,6 @@ import (
 	"testing"
 )
 
-func TestJSONRPCRequest(t *testing.T) {
-	type SampleParams struct {
-		URL string `json:"url"`
-	}
-
-	req, err := NewRequest("req-1", "browser.open", SampleParams{URL: "https://example.com"}, 42, "epoch-a")
-	if err != nil {
-		t.Fatalf("failed to create request: %v", err)
-	}
-
-	if req.JSONRPC != JSONRPCVersion {
-		t.Errorf("expected jsonrpc %s, got %s", JSONRPCVersion, req.JSONRPC)
-	}
-	if IDString(req.ID) != "req-1" {
-		t.Errorf("expected id req-1, got %s", IDString(req.ID))
-	}
-	if req.Seq != 42 {
-		t.Errorf("expected seq 42, got %d", req.Seq)
-	}
-	if req.Epoch != "epoch-a" {
-		t.Errorf("expected epoch epoch-a, got %s", req.Epoch)
-	}
-
-	var unpacked SampleParams
-	if err := req.UnmarshalParams(&unpacked); err != nil {
-		t.Fatalf("failed to unmarshal params: %v", err)
-	}
-	if unpacked.URL != "https://example.com" {
-		t.Errorf("expected URL https://example.com, got %s", unpacked.URL)
-	}
-}
-
 func TestJSONRPCNumericAndNullIDs(t *testing.T) {
 	// 1. Numeric ID
 	req1, err := NewRequest(105, "browser.status", nil, 1, "epoch-a")

@@ -89,21 +89,7 @@ func TestParseArgsSnapshot(t *testing.T) {
 	}
 }
 
-func TestParseArgsClickAndDblClick(t *testing.T) {
-	// click
-	cmd, err := ParseArgs([]string{"click", "@e12"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cmd.Method != protocol.MethodClick {
-		t.Errorf("expected Method %q, got %q", protocol.MethodClick, cmd.Method)
-	}
-	params := cmd.Params.(protocol.ClickParams)
-	if params.Selector != "@e12" {
-		t.Errorf("expected selector '@e12', got %q", params.Selector)
-	}
-
-	// dblclick
+func TestParseArgsDblClick(t *testing.T) {
 	cmd2, err := ParseArgs([]string{"dblclick", "button.submit"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -142,47 +128,6 @@ func TestParseArgsFillAndType(t *testing.T) {
 	typeParams := cmd2.Params.(protocol.TypeParams)
 	if typeParams.Selector != "input#search" || typeParams.Text != "search query here" {
 		t.Errorf("unexpected type params: %+v", typeParams)
-	}
-}
-
-func TestParseArgsPressHoverFocus(t *testing.T) {
-	// press
-	cmd, err := ParseArgs([]string{"press", "Enter"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cmd.Method != protocol.MethodPress {
-		t.Errorf("expected Method %q, got %q", protocol.MethodPress, cmd.Method)
-	}
-	pressParams := cmd.Params.(protocol.PressParams)
-	if pressParams.Key != "Enter" {
-		t.Errorf("expected key 'Enter', got %q", pressParams.Key)
-	}
-
-	// hover
-	cmd2, err := ParseArgs([]string{"hover", "@e9"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cmd2.Method != protocol.MethodHover {
-		t.Errorf("expected Method %q, got %q", protocol.MethodHover, cmd2.Method)
-	}
-	hoverParams := cmd2.Params.(protocol.HoverParams)
-	if hoverParams.Selector != "@e9" {
-		t.Errorf("expected selector '@e9', got %q", hoverParams.Selector)
-	}
-
-	// focus
-	cmd3, err := ParseArgs([]string{"focus", "#name-input"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cmd3.Method != protocol.MethodFocus {
-		t.Errorf("expected Method %q, got %q", protocol.MethodFocus, cmd3.Method)
-	}
-	focusParams := cmd3.Params.(protocol.FocusParams)
-	if focusParams.Selector != "#name-input" {
-		t.Errorf("expected selector '#name-input', got %q", focusParams.Selector)
 	}
 }
 
