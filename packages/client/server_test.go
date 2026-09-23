@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -22,6 +23,31 @@ func (m *mockDriver) Status(ctx context.Context, p protocol.StatusParams) (*prot
 		Version:     "1.0.0",
 	}, nil
 }
+
+func (m *mockDriver) GetReviewNotes(ctx context.Context, p protocol.ReviewParams) ([]*protocol.ReviewNote, error) {
+	return []*protocol.ReviewNote{{
+		Index:   1,
+		Comment: "Fix button padding",
+		Payload: &protocol.ReviewPayload{Target: protocol.TargetInfo{TagName: "button", Selector: "button.submit"}},
+	}}, nil
+}
+
+func TestServerDispatchReviewSend(t *testing.T) {
+	server := NewServer(&mockDriver{})
+	req, _ := protocol.NewRequest("review", protocol.MethodReviewSend, protocol.ReviewParams{}, 1, "")
+	resp := server.Dispatch(context.Background(), req)
+	if resp.Error != nil {
+		t.Fatal(resp.Error)
+	}
+	var result protocol.ReviewSendResult
+	if err := resp.UnmarshalResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Markdown, "Fix button padding") {
+		t.Fatalf("review send omitted the feedback comment: %s", result.Markdown)
+	}
+}
+
 func TestServerHTTPSecurity(t *testing.T) {
 	server := NewServer(&mockDriver{})
 	server.SetAuthToken("test-bearer-secret")
