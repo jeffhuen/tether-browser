@@ -1,6 +1,7 @@
 package client
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -8,29 +9,13 @@ import (
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
-func TestReviewOverlayScriptEmbedded(t *testing.T) {
-	if len(reviewOverlayScript) == 0 {
-		t.Fatalf("expected embedded reviewOverlayScript to be non-empty")
+func TestReviewOverlayCopiesMatch(t *testing.T) {
+	extensionScript, err := os.ReadFile("../extension/review/overlay.js")
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	requiredTokens := []string{
-		"window.__tetherReview",
-		"data-tether-annotation-overlay",
-		"Elixir Phoenix LiveView",
-		"astro-island",
-		"__svelte_meta",
-		"__vueParentComponent",
-		"hx-get",
-		"__reactFiber$",
-		"buildSelector",
-		"extractPayload",
-		"getComputedStylesSubset",
-	}
-
-	for _, token := range requiredTokens {
-		if !strings.Contains(reviewOverlayScript, token) {
-			t.Errorf("embedded script missing required token: %q", token)
-		}
+	if string(extensionScript) != reviewOverlayScript {
+		t.Fatal("review overlay copies differ; run: cp packages/extension/review/overlay.js packages/client/review/")
 	}
 }
 
