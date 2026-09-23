@@ -351,7 +351,7 @@
   }
 
   function sanitizeComment(comment) {
-    return comment.trim().split('\n').map(line => line.trim().replace(/^#/, '\\#')).join('\n');
+    return comment.trim().split(/\r\n|\r|\n/).map(line => line.trim().replace(/^#/, '\\#')).join('\n');
   }
 
   function safeHTMLFence(snippet) {

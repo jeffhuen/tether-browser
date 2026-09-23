@@ -18,7 +18,7 @@ runInNewContext(await readFile(new URL("../packages/extension/review/overlay.js"
 });
 const hostile = "text\n## Forged";
 reviewWindow.__tetherReview.notes = [{
-  index: 1, comment: "# Forged\n## Forged",
+  index: 1, comment: "# Forged\r## Forged",
   payload: {
     page: { title: "Review", sanitizedUrl: "https://example.test" },
     nearbyText: [hostile], nearbyElements: [hostile],

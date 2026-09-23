@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added semantic heading hierarchy with `<h1>` for title and `<h2>` for all major sections (WCAG 1.3.1 Level A, WCAG 3 Friction).
 - `tether review list` and `tether review send` return pinned notes when Chrome runs through the extension. Before, they always returned no notes.
 - `tether close --all` closes every Tether tab through the extension. Before, it closed only the active tab.
-- The popup's **Copy** button copies the report built in the reviewed page. Page text and comments can no longer close the HTML code fence or add headings to the report.
+- The popup's **Copy** button copies the report built in the reviewed page. Page text and comments can no longer close the HTML code fence or add headings to the report. `tether review send` also sanitizes the page URL, viewport, element tag, and carriage returns in comments.
 - Text and HTML snippets in review notes use one redaction path, so both redact passwords and secret attributes the same way.
 - `tether tabs --json` prints JSON when no tabs are open.
 - Extension results that fail to decode now return an error instead of an empty result.

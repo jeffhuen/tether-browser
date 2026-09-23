@@ -97,6 +97,7 @@ func sanitizeMarkdownLine(s string) string {
 }
 
 func sanitizeComment(comment string) string {
+	comment = strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(comment)
 	lines := strings.Split(strings.TrimSpace(comment), "\n")
 	var out []string
 	for _, l := range lines {
@@ -114,6 +115,8 @@ func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport st
 	if len(notes) == 0 {
 		return ""
 	}
+	pageURL = sanitizeMarkdownLine(pageURL)
+	viewport = sanitizeMarkdownLine(viewport)
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("## Design Feedback: %s\n\n", pageURL))
 	sb.WriteString(fmt.Sprintf("**URL:** %s\n", pageURL))
@@ -135,7 +138,7 @@ func FormatDesignFeedbackReport(notes []*ReviewNote, pageURL string, viewport st
 		if pinIndex <= 0 {
 			pinIndex = 1
 		}
-		componentLabel := target.TagName
+		componentLabel := sanitizeMarkdownLine(target.TagName)
 		if target.Role != "" && target.Role != target.TagName {
 			componentLabel = fmt.Sprintf("%s (%s)", componentLabel, sanitizeMarkdownLine(target.Role))
 		}
