@@ -538,36 +538,19 @@ func (d *CDPDriver) Snapshot(ctx context.Context, params protocol.SnapshotParams
 	};
 })(%t, %t)
 `
-	contextID, _ := d.getAutomationContextID(ctx, client)
-	evalCall := map[string]any{
-		"expression":    fmt.Sprintf(script, params.InteractiveOnly, params.Compact),
-		"returnByValue": true,
-	}
-	if contextID > 0 {
-		evalCall["contextId"] = contextID
-	}
-
-	evalResp, err := client.Call(ctx, "Runtime.evaluate", evalCall)
+	evalResp, err := d.evalRaw(ctx, client, fmt.Sprintf(script, params.InteractiveOnly, params.Compact))
 	if err != nil {
 		return nil, fmt.Errorf("evaluate snapshot script: %w", err)
 	}
-
-	var evalOut struct {
-		Result struct {
-			Value struct {
-				Root   []*protocol.AXNode `json:"root"`
-				RefMap map[string]int64   `json:"refMap"`
-				Title  string             `json:"title"`
-				URL    string             `json:"url"`
-			} `json:"value"`
-		} `json:"result"`
+	var val struct {
+		Root []*protocol.AXNode `json:"root"`
+		RefMap map[string]int64 `json:"refMap"`
+		Title string `json:"title"`
+		URL string `json:"url"`
 	}
-
-	if err := json.Unmarshal(evalResp, &evalOut); err != nil {
+	if err := json.Unmarshal(evalResp, &val); err != nil {
 		return nil, fmt.Errorf("unmarshal snapshot output: %w", err)
 	}
-
-	val := evalOut.Result.Value
 	gen := d.generation.Add(1)
 	rootHash := protocol.ComputeTreeHash(val.Root)
 
@@ -616,8 +599,9 @@ func (d *CDPDriver) Click(ctx context.Context, params protocol.ClickParams) erro
 	if err != nil {
 		return err
 	}
-	data, _ := json.Marshal(val)
-	_ = json.Unmarshal(data, &res)
+	if err := json.Unmarshal(val, &res); err != nil {
+		return err
+	}
 
 	if res.Stale {
 		return protocol.ErrStaleRef
@@ -702,8 +686,9 @@ func (d *CDPDriver) Fill(ctx context.Context, params protocol.FillParams) error 
 	if err != nil {
 		return err
 	}
-	data, _ := json.Marshal(val)
-	_ = json.Unmarshal(data, &res)
+	if err := json.Unmarshal(val, &res); err != nil {
+		return err
+	}
 
 	if res.Stale {
 		return protocol.ErrStaleRef
@@ -784,8 +769,9 @@ func (d *CDPDriver) Type(ctx context.Context, params protocol.TypeParams) error 
 	if err != nil {
 		return err
 	}
-	data, _ := json.Marshal(val)
-	_ = json.Unmarshal(data, &res)
+	if err := json.Unmarshal(val, &res); err != nil {
+		return err
+	}
 
 	if res.Stale {
 		return protocol.ErrStaleRef
@@ -938,8 +924,9 @@ func (d *CDPDriver) Hover(ctx context.Context, params protocol.HoverParams) erro
 	if err != nil {
 		return err
 	}
-	data, _ := json.Marshal(val)
-	_ = json.Unmarshal(data, &res)
+	if err := json.Unmarshal(val, &res); err != nil {
+		return err
+	}
 
 	if res.Stale {
 		return protocol.ErrStaleRef
@@ -984,8 +971,9 @@ func (d *CDPDriver) Focus(ctx context.Context, params protocol.FocusParams) erro
 	if err != nil {
 		return err
 	}
-	data, _ := json.Marshal(val)
-	_ = json.Unmarshal(data, &res)
+	if err := json.Unmarshal(val, &res); err != nil {
+		return err
+	}
 
 	if res.Stale {
 		return protocol.ErrStaleRef
@@ -1003,14 +991,17 @@ func (d *CDPDriver) Eval(ctx context.Context, params protocol.EvalParams) (*prot
 		return nil, err
 	}
 
-	val, err := d.evalRawWithContext(ctx, client, params.Expression, 0)
+	val, err := evaluate(ctx, client, params.Expression, 0, false)
 	if err != nil {
 		return &protocol.EvalResult{Error: err.Error()}, nil
+	}
+	if len(val) == 0 {
+		val = json.RawMessage("null")
 	}
 	return &protocol.EvalResult{Value: val}, nil
 }
 
-func (d *CDPDriver) getAutomationContextID(ctx context.Context, client *CDPClient) (int64, error) {
+func isolatedWorld(ctx context.Context, client *CDPClient, worldName string) (int64, error) {
 	treeResp, err := client.Call(ctx, "Page.getFrameTree", nil)
 	if err != nil {
 		return 0, err
@@ -1033,7 +1024,7 @@ func (d *CDPDriver) getAutomationContextID(ctx context.Context, client *CDPClien
 
 	createCall := map[string]any{
 		"frameId":              frameID,
-		"worldName":            "tether-automation",
+		"worldName":            worldName,
 		"grantUniversalAccess": true,
 	}
 	createResp, err := client.Call(ctx, "Page.createIsolatedWorld", createCall)
@@ -1051,16 +1042,17 @@ func (d *CDPDriver) getAutomationContextID(ctx context.Context, client *CDPClien
 	return createOut.ExecutionContextID, nil
 }
 
-func (d *CDPDriver) evalRaw(ctx context.Context, client *CDPClient, expression string) (any, error) {
-	contextID, _ := d.getAutomationContextID(ctx, client)
-	return d.evalRawWithContext(ctx, client, expression, contextID)
+func (d *CDPDriver) evalRaw(ctx context.Context, client *CDPClient, expression string) (json.RawMessage, error) {
+	contextID, _ := isolatedWorld(ctx, client, "tether-automation")
+	return evaluate(ctx, client, expression, contextID, false)
 }
 
-func (d *CDPDriver) evalRawWithContext(ctx context.Context, client *CDPClient, expression string, contextID int64) (any, error) {
+func evaluate(ctx context.Context, client *CDPClient, expression string, contextID int64, userGesture bool) (json.RawMessage, error) {
 	call := map[string]any{
 		"expression":    expression,
 		"returnByValue": true,
 		"awaitPromise":  true,
+		"userGesture": userGesture,
 	}
 	if contextID > 0 {
 		call["contextId"] = contextID
@@ -1072,8 +1064,7 @@ func (d *CDPDriver) evalRawWithContext(ctx context.Context, client *CDPClient, e
 
 	var out struct {
 		Result struct {
-			Type  string `json:"type"`
-			Value any    `json:"value"`
+			Value json.RawMessage `json:"value"`
 		} `json:"result"`
 		ExceptionDetails *struct {
 			Text      string `json:"text"`
@@ -1158,7 +1149,11 @@ func (d *CDPDriver) Wait(ctx context.Context, params protocol.WaitParams) error 
 		case <-ticker.C:
 			val, err := d.evalRaw(waitCtx, client, checkScript)
 			if err == nil {
-				if ok, _ := val.(bool); ok {
+				var ok bool
+				if err := json.Unmarshal(val, &ok); err != nil {
+					return err
+				}
+				if ok {
 					return nil
 				}
 			}

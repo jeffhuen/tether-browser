@@ -4,7 +4,6 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/jeffhuen/tether-browser/packages/protocol"
@@ -16,90 +15,12 @@ var reviewOverlayScript string
 // ReviewController manages the Tether Review in-page inspector for active tabs.
 type ReviewController struct{}
 
-func (rc *ReviewController) getIsolatedContextID(ctx context.Context, client *CDPClient) (int64, error) {
-	// Call Page.getFrameTree to find the root frame ID
-	treeResp, err := client.Call(ctx, "Page.getFrameTree", nil)
-	if err != nil {
-		return 0, fmt.Errorf("get frame tree: %w", err)
-	}
-
-	var treeOut struct {
-		FrameTree struct {
-			Frame struct {
-				ID string `json:"id"`
-			} `json:"frame"`
-		} `json:"frameTree"`
-	}
-	if err := json.Unmarshal(treeResp, &treeOut); err != nil {
-		return 0, fmt.Errorf("unmarshal frame tree: %w", err)
-	}
-	frameID := treeOut.FrameTree.Frame.ID
-	if frameID == "" {
-		return 0, errors.New("main frame ID not found")
-	}
-
-	// Call Page.createIsolatedWorld to get execution context ID for tether-review world
-	createCall := map[string]any{
-		"frameId":              frameID,
-		"worldName":            "tether-review",
-		"grantUniversalAccess": true,
-	}
-	createResp, err := client.Call(ctx, "Page.createIsolatedWorld", createCall)
-	if err != nil {
-		return 0, fmt.Errorf("create isolated world: %w", err)
-	}
-
-	var createOut struct {
-		ExecutionContextID int64 `json:"executionContextId"`
-	}
-	if err := json.Unmarshal(createResp, &createOut); err != nil {
-		return 0, fmt.Errorf("unmarshal execution context id: %w", err)
-	}
-
-	return createOut.ExecutionContextID, nil
-}
-
 func (rc *ReviewController) evalInIsolatedWorld(ctx context.Context, client *CDPClient, expression string) (json.RawMessage, error) {
-	contextID, err := rc.getIsolatedContextID(ctx, client)
+	contextID, err := isolatedWorld(ctx, client, "tether-review")
 	if err != nil {
 		return nil, err
 	}
-
-	call := map[string]any{
-		"expression":    expression,
-		"contextId":     contextID,
-		"returnByValue": true,
-		"awaitPromise":  true,
-		"userGesture":   true,
-	}
-	resp, err := client.Call(ctx, "Runtime.evaluate", call)
-	if err != nil {
-		return nil, err
-	}
-
-	var out struct {
-		Result struct {
-			Type  string          `json:"type"`
-			Value json.RawMessage `json:"value"`
-		} `json:"result"`
-		ExceptionDetails *struct {
-			Text      string `json:"text"`
-			Exception struct {
-				Description string `json:"description"`
-			} `json:"exception"`
-		} `json:"exceptionDetails"`
-	}
-	if err := json.Unmarshal(resp, &out); err != nil {
-		return nil, err
-	}
-	if out.ExceptionDetails != nil {
-		desc := out.ExceptionDetails.Exception.Description
-		if desc == "" {
-			desc = out.ExceptionDetails.Text
-		}
-		return nil, fmt.Errorf("javascript error: %s", desc)
-	}
-	return out.Result.Value, nil
+	return evaluate(ctx, client, expression, contextID, true)
 }
 
 // InjectReviewScript injects the review overlay script into the isolated world context.
