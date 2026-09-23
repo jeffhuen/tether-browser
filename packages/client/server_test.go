@@ -46,7 +46,7 @@ func TestServerHTTPSecurity(t *testing.T) {
 	body, _ := json.Marshal(reqObj)
 	for _, tc := range []struct {
 		name, origin, contentType, token string
-		want int
+		want                             int
 	}{
 		{"external origin", "http://malicious-site.com", "application/json", "test-bearer-secret", http.StatusForbidden},
 		{"wrong content type", "", "text/plain", "test-bearer-secret", http.StatusUnsupportedMediaType},
@@ -63,7 +63,7 @@ func TestServerHTTPSecurity(t *testing.T) {
 			req.Header.Set("Origin", tc.origin)
 			req.Header.Set("Content-Type", tc.contentType)
 			if tc.token != "" {
-				req.Header.Set("Authorization", "Bearer " + tc.token)
+				req.Header.Set("Authorization", "Bearer "+tc.token)
 			}
 			resp, err := client.Do(req)
 			if err != nil {

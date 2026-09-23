@@ -543,10 +543,10 @@ func (d *CDPDriver) Snapshot(ctx context.Context, params protocol.SnapshotParams
 		return nil, fmt.Errorf("evaluate snapshot script: %w", err)
 	}
 	var val struct {
-		Root []*protocol.AXNode `json:"root"`
-		RefMap map[string]int64 `json:"refMap"`
-		Title string `json:"title"`
-		URL string `json:"url"`
+		Root   []*protocol.AXNode `json:"root"`
+		RefMap map[string]int64   `json:"refMap"`
+		Title  string             `json:"title"`
+		URL    string             `json:"url"`
 	}
 	if err := json.Unmarshal(evalResp, &val); err != nil {
 		return nil, fmt.Errorf("unmarshal snapshot output: %w", err)
@@ -584,11 +584,11 @@ const elementCenterScript = `(function(sel) {
 })(%q)`
 
 type elementResult struct {
-	OK bool `json:"ok"`
-	NotFound bool `json:"notFound"`
-	Stale bool `json:"stale"`
-	X float64 `json:"x"`
-	Y float64 `json:"y"`
+	OK       bool    `json:"ok"`
+	NotFound bool    `json:"notFound"`
+	Stale    bool    `json:"stale"`
+	X        float64 `json:"x"`
+	Y        float64 `json:"y"`
 }
 
 func (d *CDPDriver) evalElement(ctx context.Context, client *CDPClient, script string) (elementResult, error) {
@@ -672,7 +672,7 @@ func (d *CDPDriver) Fill(ctx context.Context, params protocol.FillParams) error 
 	script := fmt.Sprintf(`
 (function(sel, txt) {
 	let el;
-` + elementLookup + `
+`+elementLookup+`
 	el.focus();
 	const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set ||
 	                     Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
@@ -690,7 +690,6 @@ func (d *CDPDriver) Fill(ctx context.Context, params protocol.FillParams) error 
 	_, err = d.evalElement(ctx, client, script)
 	return err
 }
-
 
 // Scroll scrolls the active page using mouse wheel or window.scrollTo.
 func (d *CDPDriver) Scroll(ctx context.Context, params protocol.ScrollParams) error {
@@ -723,6 +722,7 @@ func (d *CDPDriver) Scroll(ctx context.Context, params protocol.ScrollParams) er
 	_, err = client.Call(ctx, "Input.dispatchMouseEvent", wheel)
 	return err
 }
+
 // Type inserts text into an element preserving selection and caret.
 func (d *CDPDriver) Type(ctx context.Context, params protocol.TypeParams) error {
 	client, _, err := d.getTargetClient(params.TargetID)
@@ -734,7 +734,7 @@ func (d *CDPDriver) Type(ctx context.Context, params protocol.TypeParams) error 
 (function(sel, txt) {
 	let el;
 	if (sel) {
-` + elementLookup + `
+`+elementLookup+`
 		el.focus();
 	} else {
 		el = document.activeElement || document.body;
@@ -896,7 +896,7 @@ func (d *CDPDriver) Focus(ctx context.Context, params protocol.FocusParams) erro
 	script := fmt.Sprintf(`
 (function(sel) {
 	let el;
-` + elementLookup + `
+`+elementLookup+`
 	el.focus();
 	return { ok: true };
 })(%q)
@@ -917,10 +917,13 @@ func (d *CDPDriver) Eval(ctx context.Context, params protocol.EvalParams) (*prot
 	if err != nil {
 		return &protocol.EvalResult{Error: err.Error()}, nil
 	}
-	if len(val) == 0 {
-		val = json.RawMessage("null")
+	var value any
+	if len(val) > 0 {
+		if err := json.Unmarshal(val, &value); err != nil {
+			return &protocol.EvalResult{Error: err.Error()}, nil
+		}
 	}
-	return &protocol.EvalResult{Value: val}, nil
+	return &protocol.EvalResult{Value: value}, nil
 }
 
 func isolatedWorld(ctx context.Context, client *CDPClient, worldName string) (int64, error) {
@@ -974,7 +977,7 @@ func evaluate(ctx context.Context, client *CDPClient, expression string, context
 		"expression":    expression,
 		"returnByValue": true,
 		"awaitPromise":  true,
-		"userGesture": userGesture,
+		"userGesture":   userGesture,
 	}
 	if contextID > 0 {
 		call["contextId"] = contextID
@@ -1044,7 +1047,7 @@ func (d *CDPDriver) Wait(ctx context.Context, params protocol.WaitParams) error 
 	checkScript := fmt.Sprintf(`
 (function(sel, st) {
 	let el;
-` + elementLookup + `
+`+elementLookup+`
 	if (st === 'attached') return { ok: true };
 	const r = el.getBoundingClientRect();
 	const style = window.getComputedStyle(el);

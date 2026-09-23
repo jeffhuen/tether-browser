@@ -173,10 +173,10 @@ func TestBrokerLifecycleAndTargetInjection(t *testing.T) {
 func TestRunJSONResults(t *testing.T) {
 	t.Setenv("TETHER_BROKER_SOCKET", filepath.Join(t.TempDir(), "absent.sock"))
 	for _, tc := range []struct {
-		name string
-		args []string
+		name   string
+		args   []string
 		result json.RawMessage
-		code int
+		code   int
 	}{
 		{"empty tabs", []string{"tabs", "--json"}, json.RawMessage(`{"tabs":[],"activeId":""}`), 0},
 		{"eval error", []string{"eval", "throw new Error('bad')", "--json"}, json.RawMessage(`{"value":null,"error":"bad"}`), 1},

@@ -70,4 +70,3 @@ func TestFormatSnapshotText(t *testing.T) {
 		t.Errorf("expected text output to contain ref badge [@e1], got:\n%s", textOut)
 	}
 }
-
