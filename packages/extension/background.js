@@ -6,6 +6,7 @@ import { initializeNetwork, networkStatus, networkDisconnected, connectSSH, disc
 const NATIVE_HOST_NAME = "com.tether_browser.host";
 const CDP_TIMEOUT_MS = 25000;
 const REVIEW_SAVED_BINDING = "__tetherReviewSaved";
+const REVIEW_WORLD = "tether-review";
 
 let nativePort = null;
 let reconnectTimer = null;
@@ -1100,6 +1101,97 @@ async function handleTabSwitch(params = {}) {
   return { ok: true, activeId: String(tabId) };
 }
 
+async function reviewEval(tabId, expression) {
+  await ensureDomain(tabId, "Page");
+  await ensureDomain(tabId, "Runtime");
+  const { frameTree } = await cdp(tabId, "Page.getFrameTree");
+  const frameId = frameTree?.frame?.id;
+  if (!frameId) throw new Error("Review main frame not found");
+  const { executionContextId } = await cdp(tabId, "Page.createIsolatedWorld", {
+    frameId,
+    worldName: REVIEW_WORLD,
+  });
+  if (!executionContextId) throw new Error("Review isolated world not found");
+  const result = await cdp(tabId, "Runtime.evaluate", {
+    expression,
+    contextId: executionContextId,
+    returnByValue: true,
+  });
+  if (result.exceptionDetails) {
+    throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text || "Review script failed");
+  }
+  return result.result?.value;
+}
+
+// DOM is shared, but framework expandos live only in the page's JS world.
+// Keep review state isolated; import only bounded framework metadata for pinned notes.
+async function enrichReviewFrameworks(tabId) {
+  const notes = await reviewEval(tabId, "window.__tetherReview?.getNotes() || []");
+  const updates = [];
+  for (const note of notes) {
+    if (note?.payload?.target?.framework?.name !== "Static" || !/^note-\d+$/.test(note.id)) continue;
+    let value;
+    try {
+      const response = await cdp(tabId, "Runtime.evaluate", {
+        expression: `((id) => {
+          const el = document.querySelector('[data-tether-pin~="' + id + '"]');
+          if (!el) return null;
+          for (let node = el; node && node !== document.body; node = node.parentElement) {
+            if (node.__svelte_meta?.loc) {
+              const loc = node.__svelte_meta.loc;
+              return { name: "Svelte", sourceLocation: loc.file + ":" + loc.line, provenance: "exact" };
+            }
+            if (node.__vueParentComponent) {
+              const type = node.__vueParentComponent.type;
+              const name = type?.__name || type?.name || "";
+              return { name: "Vue", component: name ? "<" + name + ">" : "", provenance: "inferred" };
+            }
+          }
+          for (const key of Object.keys(el)) {
+            if (!key.startsWith("__reactFiber$") && !key.startsWith("__reactInternalInstance$")) continue;
+            let fiber = el[key], source = "", depth = 0;
+            const components = [];
+            while (fiber && depth++ < 30) {
+              const type = fiber.type || fiber.elementType;
+              const name = type?.displayName || type?.name;
+              if (typeof type !== "string" && typeof name === "string" &&
+                  !/^(Fragment|Root|Provider|Consumer|Suspense)$/.test(name) && !components.includes(name)) {
+                components.push(name);
+              }
+              if (!source && fiber._debugSource) {
+                source = fiber._debugSource.fileName + ":" + fiber._debugSource.lineNumber;
+              }
+              fiber = fiber.return;
+            }
+            return { name: "React", component: components.slice(0, 4).reverse().map(n => "<" + n + ">").join(" "),
+              sourceLocation: source, provenance: source ? "exact" : "inferred" };
+          }
+          return null;
+        })(${JSON.stringify(note.id)})`,
+        returnByValue: true,
+      });
+      value = response.exceptionDetails ? null : response.result?.value;
+    } catch {
+      continue;
+    }
+    if (!["React", "Vue", "Svelte"].includes(value?.name)) continue;
+    updates.push([note.id, {
+      name: value.name,
+      component: typeof value.component === "string" ? value.component.slice(0, 200) : "",
+      sourceLocation: typeof value.sourceLocation === "string" ? value.sourceLocation.slice(0, 300) : "",
+      provenance: value.provenance === "exact" ? "exact" : "inferred",
+    }]);
+  }
+  if (!updates.length) return;
+  await reviewEval(tabId, `(() => {
+    const updates = new Map(${JSON.stringify(updates)});
+    for (const note of window.__tetherReview?.notes || []) {
+      const framework = updates.get(note.id);
+      if (framework && note.payload?.target?.framework?.name === "Static") note.payload.target.framework = framework;
+    }
+  })()`);
+}
+
 async function handleReviewStart(params = {}) {
   const tabId = resolveTargetTabId(params);
   if (!tabId) throw new Error("No active tab in Tether group");
@@ -1112,25 +1204,19 @@ async function handleReviewStart(params = {}) {
     } catch {}
   }
 
-  await ensureDomain(tabId, "Runtime");
-  await ensureDomain(tabId, "Page");
   const url = chrome.runtime.getURL("review/overlay.js");
   const resp = await fetch(url);
   const code = await resp.text();
 
-  await cdp(tabId, "Runtime.evaluate", {
-    expression: code,
-  });
+  await reviewEval(tabId, code);
 
   if (params.returnToPopup) {
-    await cdp(tabId, "Runtime.addBinding", { name: REVIEW_SAVED_BINDING });
+    await cdp(tabId, "Runtime.addBinding", { name: REVIEW_SAVED_BINDING, executionContextName: REVIEW_WORLD });
   }
-  await cdp(tabId, "Runtime.evaluate", {
-    expression: `if (window.__tetherReview) {
-      window.__tetherReview.onNoteSaved = ${params.returnToPopup ? `() => window.${REVIEW_SAVED_BINDING}("saved")` : "null"};
-      window.__tetherReview.start();
-    }`,
-  });
+  await reviewEval(tabId, `if (window.__tetherReview) {
+    window.__tetherReview.onNoteSaved = ${params.returnToPopup ? `() => window.${REVIEW_SAVED_BINDING}("saved")` : "null"};
+    window.__tetherReview.start();
+  }`);
 
   return { ok: true, active: true };
 }
@@ -1138,16 +1224,12 @@ async function handleReviewStart(params = {}) {
 async function handleReviewList(params = {}) {
   const tabId = resolveTargetTabId(params);
   if (!tabId) throw new Error("No active tab in Tether group");
-  await ensureDomain(tabId, "Runtime");
-
-  const res = await cdp(tabId, "Runtime.evaluate", {
-    expression: "window.__tetherReview ? JSON.stringify(window.__tetherReview.getNotes()) : '[]'",
-    returnByValue: true,
-  });
+  await enrichReviewFrameworks(tabId);
+  const value = await reviewEval(tabId, "window.__tetherReview ? JSON.stringify(window.__tetherReview.getNotes()) : '[]'");
 
   let notes = [];
   try {
-    notes = JSON.parse(res.result?.value || "[]");
+    notes = JSON.parse(value || "[]");
   } catch {}
 
   return {
@@ -1160,11 +1242,7 @@ async function handleReviewList(params = {}) {
 async function handleReviewClear(params = {}) {
   const tabId = resolveTargetTabId(params);
   if (!tabId) throw new Error("No active tab in Tether group");
-  await ensureDomain(tabId, "Runtime");
-
-  await cdp(tabId, "Runtime.evaluate", {
-    expression: "window.__tetherReview ? (window.__tetherReview.clear ? window.__tetherReview.clear() : (window.__tetherReview.clearNotes ? window.__tetherReview.clearNotes() : false)) : false",
-  });
+  await reviewEval(tabId, "window.__tetherReview ? window.__tetherReview.clear() : false");
 
   return { ok: true };
 }
@@ -1267,13 +1345,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           let report = "";
           if (targetTabId) {
             try {
-              await ensureDomain(targetTabId, "Runtime");
-              const res = await cdp(targetTabId, "Runtime.evaluate", {
-                expression: "window.__tetherReview ? {notes: window.__tetherReview.getNotes(), report: window.__tetherReview.buildSummaryText()} : {notes: [], report: ''}",
-                returnByValue: true,
-              });
-              notes = res.result?.value?.notes || [];
-              report = res.result?.value?.report || "";
+              await enrichReviewFrameworks(targetTabId);
+              const value = await reviewEval(targetTabId, "window.__tetherReview ? {notes: window.__tetherReview.getNotes(), report: window.__tetherReview.buildSummaryText()} : {notes: [], report: ''}");
+              notes = value?.notes || [];
+              report = value?.report || "";
             } catch (err) {
               // Do not pair another tab's cached notes with an unavailable report.
             }
@@ -1352,20 +1427,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             sendResponse({ error: "No active tab" });
             break;
           }
-          await ensureDomain(targetTabId, "Runtime");
-          await ensureDomain(targetTabId, "Page");
 
           const url = chrome.runtime.getURL("review/overlay.js");
           const resp = await fetch(url);
           const code = await resp.text();
-          await cdp(targetTabId, "Runtime.evaluate", { expression: code });
+          await reviewEval(targetTabId, code);
 
           const requestId = crypto.randomUUID();
-          const started = await cdp(targetTabId, "Runtime.evaluate", {
-            expression: `window.__tetherReview.startCropMode(${JSON.stringify(requestId)})`,
-            returnByValue: true,
-          });
-          if (started.exceptionDetails || started.result?.value !== true) {
+          const started = await reviewEval(targetTabId, `window.__tetherReview.startCropMode(${JSON.stringify(requestId)})`);
+          if (started !== true) {
             throw new Error("Could not start area selection. Reload the page and try again.");
           }
 
@@ -1375,12 +1445,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             try {
               for (let i = 0; i < 150; i++) {
                 await new Promise((r) => setTimeout(r, 200));
-                const check = await cdp(targetTabId, "Runtime.evaluate", {
-                  expression: `window.__tetherReview?.cropRequestId === ${JSON.stringify(requestId)} ? window.__tetherReview.cropResult : {cancelled:true}`,
-                  returnByValue: true,
-                });
-                if (check.exceptionDetails) throw new Error("Could not read the selected area");
-                const cropData = check.result?.value;
+                const cropData = await reviewEval(targetTabId, `window.__tetherReview?.cropRequestId === ${JSON.stringify(requestId)} ? window.__tetherReview.cropResult : {cancelled:true}`);
                 if (!cropData) continue;
                 if (cropData.cancelled) break;
 
@@ -1420,11 +1485,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               failure = "Area capture failed: " + err.message;
               console.error("[Tether]", failure);
             } finally {
-              const finished = await cdp(targetTabId, "Runtime.evaluate", {
-                expression: `window.__tetherReview?.cropRequestId === ${JSON.stringify(requestId)} && (window.__tetherReview.finishCrop?.(${JSON.stringify(failure)}), true)`,
-                returnByValue: true,
-              }).catch(() => null);
-              if (saved && finished?.result?.value) await reopenPopup(targetTabId, "shots");
+              const finished = await reviewEval(targetTabId, `window.__tetherReview?.cropRequestId === ${JSON.stringify(requestId)} && (window.__tetherReview.finishCrop?.(${JSON.stringify(failure)}), true)`).catch(() => null);
+              if (saved && finished) await reopenPopup(targetTabId, "shots");
             }
           })();
 
