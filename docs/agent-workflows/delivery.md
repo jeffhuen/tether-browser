@@ -13,10 +13,10 @@ Read this document when planning isolated or parallel work, integrating, handing
 
 Follow `skill://herdr-workflow` for worktree creation, resume, parking, removal, and independent review mechanics. Use only owned or explicitly authorized resources. Review and cleanup do not grant Git authority.
 
-- Start new isolated slices from verified `origin/main`, never another feature branch. Use a stable slice or Bead ID in the branch name. Read-only work needs no worktree.
+- Start new isolated slices from verified `origin/main`, never another feature branch. `'/home/jeffhuen/.agents/skills/herdr-workflow/SKILL.md'` section 2 sets the branch and checkout names. Read-only work needs no worktree.
 - Keep repairs on the same branch and PR. Refresh against current `origin/main` before integration and rerun only checks affected by changes or evidence gaps.
 - Stage only intended files under existing Git authority, including intended new files. Keep commits atomic.
-- After a PR merge, fetch and prove `git merge-base --is-ancestor <slice-tip> origin/main`. A commit, push, passing check, or worker report does not prove integration.
+- After a PR merge, fetch and prove integration. For a true merge, prove `git merge-base --is-ancestor <slice-tip> origin/main`. A squash merge rewrites the commit. Rebase onto current `origin/main`, confirm that `origin/main` has not moved, and merge with the reviewed head pinned (`gh pr merge <pr> --squash --match-head-commit <slice-tip>`). Then prove `git merge-base --is-ancestor <merge-commit> origin/main` and `git diff --quiet <slice-tip> <merge-commit>`. Record the reviewed head and the merge commit. A commit, push, passing check, or worker report does not prove integration.
 - Fast-forward the primary checkout only when it is clean and on `main`. If it is dirty, on another branch, or ahead, leave it untouched and report the pending update. Never switch or reset the primary checkout.
 - Before authorized cleanup, verify integration and account for helpers, descendants, processes, and needed files. Park unfinished work only with a preserved branch and checkpoint. Without savepoint authority, leave the checkout intact.
 
