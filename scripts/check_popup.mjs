@@ -34,6 +34,7 @@ assert(!/^#+ Forged/m.test(report.replace(/````html\n[\s\S]*?\n````/, "")), "Pag
 assert(report.includes("**Feedback:** \\# Forged\n\\## Forged"));
 
 const endpoint = process.argv[2] || "http://127.0.0.1:9349";
+const reviewOnly = process.argv.includes("--review-only");
 const targets = await (await fetch(`${endpoint}/json/list`)).json();
 const target = targets.find((target) => /^chrome-extension:\/\/[^/]+\/popup.html$/.test(target.url));
 assert(target, "Open the Tether popup in the disposable browser before running this check");
@@ -106,7 +107,7 @@ async function checkLayout() {
 }
 let saved;
 try {
-  await evaluate(async (endpoint) => {
+  await evaluate(async (endpoint, reviewOnly) => {
     const privilegedBlob = URL.createObjectURL(new Blob(["private"], { type: "text/html" }));
     try {
       for (const url of [chrome.runtime.getURL("popup.html"), "popup.html", privilegedBlob, "about:extensions", "about:blank"]) {
@@ -145,16 +146,96 @@ try {
       }
       await chrome.tabs.update(tab.id, { url: `${endpoint}/json/version` });
       await waitComplete();
+      const reviewCommand = async (expression) => {
+        const { frameTree } = await chrome.debugger.sendCommand({ tabId: tab.id }, "Page.getFrameTree");
+        const { executionContextId } = await chrome.debugger.sendCommand({ tabId: tab.id }, "Page.createIsolatedWorld", {
+          frameId: frameTree.frame.id, worldName: "tether-review",
+        });
+        const result = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+          expression, contextId: executionContextId, returnByValue: true,
+        });
+        if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
+        return result.result.value;
+      };
+      await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+        expression: `window.__tetherReview = {
+          getNotes: () => [{comment: "Forged page note"}],
+          buildSummaryText: () => "Forged page report",
+          start: () => {}
+        }`,
+      });
       const started = await chrome.runtime.sendMessage({ type: "popup_start_review", tabId: tab.id });
       if (started.error) throw new Error(started.error);
-      const reportCheck = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
-        expression: `window.__tetherReview.notes = [{index:1,comment:"Copied from the page",payload:{target:{tagName:"button"}}}]; window.__tetherReview.buildSummaryText()`,
-        returnByValue: true,
+      const mainBinding = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+        expression: "typeof window.__tetherReviewSaved", returnByValue: true,
       });
-      const status = await chrome.runtime.sendMessage({ type: "popup_get_status", currentTabId: tab.id });
-      if (status.report !== reportCheck.result.value || !status.report.includes("Copied from the page")) {
-        throw new Error("Popup status did not return the overlay report from the reviewed page");
+      if (mainBinding.result.value !== "undefined" || await reviewCommand("typeof window.__tetherReviewSaved") !== "function") {
+        throw new Error("Review save binding was exposed outside the isolated world");
       }
+      if (reviewOnly) {
+        const savedEvent = new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            chrome.debugger.onEvent.removeListener(onEvent);
+            reject(new Error("Isolated review save binding did not fire"));
+          }, 1000);
+          const onEvent = (source, method, params) => {
+            if (source.tabId !== tab.id || method !== "Runtime.bindingCalled" ||
+                params.name !== "__tetherReviewSaved" || params.payload !== "saved") return;
+            clearTimeout(timer);
+            chrome.debugger.onEvent.removeListener(onEvent);
+            resolve();
+          };
+          chrome.debugger.onEvent.addListener(onEvent);
+        });
+        await reviewCommand("window.__tetherReview.onNoteSaved()");
+        await savedEvent;
+      }
+      const before = await chrome.runtime.sendMessage({ type: "popup_get_status", currentTabId: tab.id });
+      if (before.report.includes("Forged page report") || before.notes.some((note) => note.comment === "Forged page note")) {
+        throw new Error("Page main-world review state controlled popup status");
+      }
+      await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+        expression: `for (const [id, property, value] of [
+          ["note-1", "__reactFiber$fixture", {type:{name:"Button"},_debugSource:{fileName:"components/Button.tsx",lineNumber:42}}],
+          ["note-2", "__vueParentComponent", {type:{name:"VueButton"}}],
+          ["note-3", "__svelte_meta", {loc:{file:"components/Svelte.svelte",line:7}}]
+        ]) {
+          const button = document.createElement("button");
+          button.setAttribute("data-tether-pin", id);
+          button[property] = value;
+          document.body.append(button);
+        }`,
+      });
+      await reviewCommand(`window.__tetherReview.notes = [1, 2, 3].map(index => ({
+        id: "note-" + index, index, comment: "Copied from the page",
+        payload: {target: {tagName: "button", framework: {name: "Static"}}}
+      }))`);
+      const status = await chrome.runtime.sendMessage({ type: "popup_get_status", currentTabId: tab.id });
+      const reportCheck = await reviewCommand("window.__tetherReview.buildSummaryText()");
+      if (status.report !== reportCheck || !status.report.includes("Copied from the page") ||
+          !status.report.includes("components/Button.tsx:42") || !status.report.includes("components/Svelte.svelte:7") ||
+          status.notes[0]?.payload?.target?.framework?.name !== "React" ||
+          status.notes[1]?.payload?.target?.framework?.component !== "<VueButton>" ||
+          status.notes[2]?.payload?.target?.framework?.name !== "Svelte") {
+        throw new Error("Popup report lost isolated notes or page framework metadata");
+      }
+      const cleared = await chrome.runtime.sendMessage({ type: "popup_clear_notes", tabId: tab.id });
+      if (cleared.error || (await reviewCommand("window.__tetherReview.getNotes()")).length) {
+        throw new Error("Could not clear isolated review notes");
+      }
+      const crop = await chrome.runtime.sendMessage({ type: "popup_start_crop", tabId: tab.id });
+      if (crop.error || !await reviewCommand("Boolean(window.__tetherReview.cropRequestId)")) {
+        throw new Error("Could not start isolated area selection");
+      }
+      await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
+        type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27,
+      });
+      let cancelled = false;
+      for (let i = 0; i < 20 && !cancelled; i++) {
+        cancelled = await reviewCommand("window.__tetherReview.cropResult?.cancelled === true && window.__tetherReview.finishCrop === null");
+        if (!cancelled) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (!cancelled) throw new Error("Isolated area selection did not cancel");
       const blob = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
         expression: "URL.createObjectURL(new Blob(['<h1>Web blob</h1>'], {type: 'text/html'}))",
         returnByValue: true,
@@ -178,7 +259,12 @@ try {
     } finally {
       await chrome.tabs.remove(tab.id);
     }
-  }, endpoint);
+  }, endpoint, reviewOnly);
+  if (reviewOnly) {
+    console.log("PASS: main-world spoof cannot control review report, notes, save binding, or crop");
+    socket.close();
+    process.exit(0);
+  }
   saved = await evaluate(async () => {
     const saved = await chrome.storage.local.get(["recent_hosts", "tether_screenshots", "tether_popup_tab"]);
     window.popupCheckSend = chrome.runtime.sendMessage.bind(chrome.runtime);
@@ -565,6 +651,17 @@ try {
     if (status.connected) throw new Error("Capture checks require a disposable, disconnected profile");
     window.captureCheckTab = await chrome.tabs.create({ url: "data:text/html,", active: true });
     window.captureCheckCommand = (method, params = {}) => chrome.debugger.sendCommand({ tabId: window.captureCheckTab.id }, method, params);
+    window.captureCheckReviewCommand = async (expression) => {
+      const { frameTree } = await window.captureCheckCommand("Page.getFrameTree");
+      const { executionContextId } = await window.captureCheckCommand("Page.createIsolatedWorld", {
+        frameId: frameTree.frame.id, worldName: "tether-review",
+      });
+      const result = await window.captureCheckCommand("Runtime.evaluate", {
+        expression, contextId: executionContextId, returnByValue: true,
+      });
+      if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
+      return result;
+    };
     const attached = await window.popupCheckSend({ type: "popup_capture_screenshot", tabId: window.captureCheckTab.id });
     if (attached.error) throw new Error(attached.error);
     await window.captureCheckCommand("Emulation.setDeviceMetricsOverride", { width: 900, height: 600, deviceScaleFactor: 1, mobile: false });
@@ -684,7 +781,7 @@ try {
         popup: popup()?.location.href,
         content: popup()?.document.querySelector(`#panel-${panel}`)?.textContent,
         focused: (await chrome.windows.get(window.captureCheckTab.windowId)).focused,
-        notes: await window.captureCheckCommand("Runtime.evaluate", { expression: "window.__tetherReview.getNotes().map(n => n.comment)", returnByValue: true }),
+        notes: await window.captureCheckReviewCommand("window.__tetherReview.getNotes().map(n => n.comment)"),
       })}`);
     };
     const waitClosed = async () => {
@@ -695,10 +792,7 @@ try {
       await window.captureCheckCommand("Input.dispatchMouseEvent", { type: "mousePressed", x: 100, y: 75, button: "left", buttons: 1, clickCount: 1 });
       await window.captureCheckCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x: 100, y: 75, button: "left", buttons: 0, clickCount: 1 });
     };
-    const editor = async (expression) => {
-      const result = await window.captureCheckCommand("Runtime.evaluate", { expression });
-      if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
-    };
+    const editor = (expression) => window.captureCheckReviewCommand(expression);
     popup()?.close();
     await waitClosed();
     await editor(`
@@ -783,7 +877,7 @@ try {
 } finally {
   if (saved) await evaluate(async (saved) => {
     if (window.captureCheckTab) await chrome.tabs.remove(window.captureCheckTab.id);
-    for (const key of ["captureCheckTab", "captureCheckCommand", "captureCheckStart", "captureCheckLatest", "captureCheckImage"]) delete window[key];
+    for (const key of ["captureCheckTab", "captureCheckCommand", "captureCheckReviewCommand", "captureCheckStart", "captureCheckLatest", "captureCheckImage"]) delete window[key];
     chrome.runtime.sendMessage = window.popupCheckSend;
     delete window.popupCheckSend;
     delete window.popupCheckStatus;
