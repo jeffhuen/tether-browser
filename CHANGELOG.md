@@ -12,9 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The connection status strip now opens connection settings, replacing the separate **Connections** button. The version link moved beside the reload button.
 - The connection button is now state-aware (`Connect`, `Disconnect`, `Switch`, `Reconnect`, `Cancel`), replacing the separate header power icon with inline actions, input locking, and Enter-key protection.
 - Clarified remote browsing description: "Open websites through your remote server. Use `localhost` to reach remote services as if they were running locally."
+- Elevated muted text contrast to `#a4b3cd` (WCAG AAA 8.5:1, APCA $L_c$ 67.5) and borders to `rgba(255, 255, 255, 0.16)` for WCAG 3 perceptual contrast compliance.
+
 ### Fixed
 - Separate the popup's agent bridge, SSH tunnel, and remote browsing indicators. SSH readiness no longer implies an agent connection, and failed status polls show unknown SSH and browsing state.
 - Rewrite remote browsing help in plain language and combine connection errors into one warning, with the original errors under **Technical details**.
+- Preserved active keyboard focus in Open Tabs across the 2-second background status poll, eliminating focus drops to `<body>` (WCAG 2.4.3 Level A, WCAG 3 Barrier).
+- Added semantic heading hierarchy with `<h1>` for title and `<h2>` for all major sections (WCAG 1.3.1 Level A, WCAG 3 Friction).
+
 ## [0.1.34] - 2026-09-22
 
 ### Added

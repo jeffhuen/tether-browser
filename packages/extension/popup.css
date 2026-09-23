@@ -6,15 +6,15 @@
   --bg-input: #0b0c12;
   --text-primary: #ffffff;
   --text-secondary: #cbd5e1;
-  --text-muted: #94a3b8;
+  --text-muted: #a4b3cd;
   --accent: #f97316;
   --accent-glow: rgba(249, 115, 22, 0.15);
   --accent-hover: #fb923c;
   --success: #34d399;
   --danger: #f87171;
   --danger-bg: rgba(248, 113, 113, 0.14);
-  --border: rgba(255, 255, 255, 0.13);
-  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border: rgba(255, 255, 255, 0.16);
+  --border-subtle: rgba(255, 255, 255, 0.09);
   --radius-sm: 4px;
   --radius-md: 8px;
 }
@@ -39,6 +39,13 @@ body {
   font: 13px/1.45 'Geist', ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   letter-spacing: -0.012em;
   -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 {
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
 }
 
 button, input, textarea {

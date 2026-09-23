@@ -575,14 +575,30 @@ document.addEventListener("DOMContentLoaded", async () => {
   function updateTabsUI(tabs, activeId) {
     if (!tabs || tabs.length === 0) {
       tabsList.innerHTML = '<div class="empty-state">No open tabs found.</div>';
+      tabsList.dataset.rendered = "";
       return;
     }
+
+    const focusedTabId = document.activeElement && tabsList.contains(document.activeElement)
+      ? document.activeElement.dataset?.tabId
+      : null;
+
+    const signature = JSON.stringify({
+      activeId: String(activeId),
+      tabs: tabs.map((t) => ({ id: String(t.id), active: Boolean(t.active), inGroup: Boolean(t.inGroup), title: t.title, url: t.url })),
+    });
+
+    if (tabsList.dataset.rendered === signature) {
+      return;
+    }
+    tabsList.dataset.rendered = signature;
 
     tabsList.innerHTML = "";
     tabs.forEach((tab) => {
       const isActive = tab.id === activeId || tab.active;
       const item = document.createElement("button");
       item.type = "button";
+      item.dataset.tabId = String(tab.id);
       item.className = `tab-item ${isActive ? "active" : ""}`;
       item.title = `${tab.title}\n${tab.url}`;
 
@@ -604,6 +620,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       tabsList.appendChild(item);
     });
+
+    if (focusedTabId) {
+      const el = tabsList.querySelector(`[data-tab-id="${focusedTabId}"]`);
+      if (el) el.focus();
+    }
   }
 
   function updateNotesUI(notes, activeTab) {
@@ -622,6 +643,17 @@ document.addEventListener("DOMContentLoaded", async () => {
         activeTabTitleEl.textContent = "Active Tab";
       }
     }
+
+    const serializedNotes = JSON.stringify(
+      currentNotes.map((n) => ({
+        id: n.id,
+        comment: n.comment,
+        selector: n.payload?.target?.selector,
+      }))
+    );
+
+    if (notesList.dataset.rendered === serializedNotes) return;
+    notesList.dataset.rendered = serializedNotes;
 
     if (currentNotes.length === 0) {
       notesList.innerHTML = '<div class="empty-state">No pinned notes yet. Click <b>Inspect & Pin Notes</b> to review elements on this page.</div>';
@@ -642,7 +674,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       notesList.appendChild(item);
     });
   }
-
   // 2. Action: Inspect & Pin Notes (FireShot style)
   btnInspect.addEventListener("click", async () => {
     btnInspect.disabled = true;
