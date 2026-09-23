@@ -636,6 +636,6 @@ func isLocalTetherDaemon(pid int) bool {
 		return false
 	}
 	out, err := exec.Command("ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
-	exe, _, found := strings.Cut(strings.TrimSpace(string(out)), " daemon")
-	return err == nil && found && strings.Contains(filepath.Base(exe), "tether")
+	exe, rest, found := strings.Cut(strings.TrimSpace(string(out)), " daemon")
+	return err == nil && found && (rest == "" || rest[0] == ' ') && strings.Contains(filepath.Base(exe), "tether")
 }
