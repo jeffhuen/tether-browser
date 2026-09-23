@@ -515,16 +515,20 @@ func (d *ExtensionDriver) call(ctx context.Context, method string, params any) (
 	return nil, fmt.Errorf("bridge communication failed after retry: %w", lastErr)
 }
 
-func (d *ExtensionDriver) OpenTab(ctx context.Context, params protocol.OpenParams) (*protocol.OpenResult, error) {
-	res, err := d.call(ctx, protocol.MethodOpen, params)
+func extensionCall[T any](ctx context.Context, d *ExtensionDriver, method string, params any) (*T, error) {
+	res, err := d.call(ctx, method, params)
 	if err != nil {
 		return nil, err
 	}
-	var out protocol.OpenResult
-	if len(res) > 0 {
-		_ = json.Unmarshal(res, &out)
+	var out T
+	if err := json.Unmarshal(res, &out); err != nil {
+		return nil, fmt.Errorf("%s result: %w", method, err)
 	}
 	return &out, nil
+}
+
+func (d *ExtensionDriver) OpenTab(ctx context.Context, params protocol.OpenParams) (*protocol.OpenResult, error) {
+	return extensionCall[protocol.OpenResult](ctx, d, protocol.MethodOpen, params)
 }
 
 func (d *ExtensionDriver) CloseTab(ctx context.Context, params protocol.CloseParams) error {
@@ -533,27 +537,32 @@ func (d *ExtensionDriver) CloseTab(ctx context.Context, params protocol.ClosePar
 }
 
 func (d *ExtensionDriver) Snapshot(ctx context.Context, params protocol.SnapshotParams) (*protocol.SnapshotResult, error) {
-	res, err := d.call(ctx, protocol.MethodSnapshot, params)
+	// CDP accessibility values can be numbers or booleans, while AXNode uses text.
+	out, err := extensionCall[struct {
+		protocol.SnapshotResult
+		Nodes []struct {
+			protocol.AXNode
+			Value any `json:"value"`
+		} `json:"nodes"`
+	}](ctx, d, protocol.MethodSnapshot, params)
 	if err != nil {
 		return nil, err
 	}
-	var out protocol.SnapshotResult
-	if len(res) > 0 {
-		_ = json.Unmarshal(res, &out)
+	if out.Nodes != nil {
+		out.SnapshotResult.Nodes = make([]*protocol.AXNode, len(out.Nodes))
 	}
-	return &out, nil
+	for i := range out.Nodes {
+		node := &out.Nodes[i]
+		if node.Value != nil {
+			node.AXNode.Value = fmt.Sprint(node.Value)
+		}
+		out.SnapshotResult.Nodes[i] = &node.AXNode
+	}
+	return &out.SnapshotResult, nil
 }
 
 func (d *ExtensionDriver) Screenshot(ctx context.Context, params protocol.ScreenshotParams) (*protocol.ScreenshotResult, error) {
-	res, err := d.call(ctx, protocol.MethodScreenshot, params)
-	if err != nil {
-		return nil, err
-	}
-	var out protocol.ScreenshotResult
-	if len(res) > 0 {
-		_ = json.Unmarshal(res, &out)
-	}
-	return &out, nil
+	return extensionCall[protocol.ScreenshotResult](ctx, d, protocol.MethodScreenshot, params)
 }
 
 func (d *ExtensionDriver) Click(ctx context.Context, params protocol.ClickParams) error {
@@ -595,15 +604,7 @@ func (d *ExtensionDriver) Scroll(ctx context.Context, params protocol.ScrollPara
 	return err
 }
 func (d *ExtensionDriver) Eval(ctx context.Context, params protocol.EvalParams) (*protocol.EvalResult, error) {
-	res, err := d.call(ctx, protocol.MethodEval, params)
-	if err != nil {
-		return nil, err
-	}
-	var out protocol.EvalResult
-	if len(res) > 0 {
-		_ = json.Unmarshal(res, &out)
-	}
-	return &out, nil
+	return extensionCall[protocol.EvalResult](ctx, d, protocol.MethodEval, params)
 }
 
 func (d *ExtensionDriver) Wait(ctx context.Context, params protocol.WaitParams) error {
@@ -617,15 +618,11 @@ func (d *ExtensionDriver) StartReview(ctx context.Context, params protocol.Revie
 }
 
 func (d *ExtensionDriver) GetReviewNotes(ctx context.Context, params protocol.ReviewParams) ([]*protocol.ReviewNote, error) {
-	res, err := d.call(ctx, protocol.MethodReviewList, params)
+	out, err := extensionCall[protocol.ReviewListResult](ctx, d, protocol.MethodReviewList, params)
 	if err != nil {
 		return nil, err
 	}
-	var out []*protocol.ReviewNote
-	if len(res) > 0 {
-		_ = json.Unmarshal(res, &out)
-	}
-	return out, nil
+	return out.Notes, nil
 }
 
 func (d *ExtensionDriver) ClearReview(ctx context.Context, params protocol.ReviewParams) error {
@@ -633,26 +630,10 @@ func (d *ExtensionDriver) ClearReview(ctx context.Context, params protocol.Revie
 	return err
 }
 func (d *ExtensionDriver) Status(ctx context.Context, params protocol.StatusParams) (*protocol.StatusResult, error) {
-	res, err := d.call(ctx, protocol.MethodStatus, params)
-	if err != nil {
-		return nil, err
-	}
-	var out protocol.StatusResult
-	if len(res) > 0 {
-		_ = json.Unmarshal(res, &out)
-	}
-	return &out, nil
+	return extensionCall[protocol.StatusResult](ctx, d, protocol.MethodStatus, params)
 }
 func (d *ExtensionDriver) ListTabs(ctx context.Context) (*protocol.TabListResult, error) {
-	res, err := d.call(ctx, protocol.MethodTabList, nil)
-	if err != nil {
-		return nil, err
-	}
-	var out protocol.TabListResult
-	if len(res) > 0 {
-		_ = json.Unmarshal(res, &out)
-	}
-	return &out, nil
+	return extensionCall[protocol.TabListResult](ctx, d, protocol.MethodTabList, nil)
 }
 
 func (d *ExtensionDriver) SwitchTab(ctx context.Context, params protocol.TabSwitchParams) error {

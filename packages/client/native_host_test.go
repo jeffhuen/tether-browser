@@ -83,7 +83,11 @@ func TestExtensionBridgeOverUnixSocket(t *testing.T) {
 			case protocol.MethodOpen:
 				mockResult, _ = json.Marshal(map[string]any{"targetId": "tab-101", "url": "https://example.com"})
 			case protocol.MethodSnapshot:
-				mockResult, _ = json.Marshal(map[string]any{"targetId": "tab-101", "rootHash": "hash-5"})
+				mockResult = []byte(`{"rootHash":"hash-5","nodes":[{"role":"slider","value":42}]}`)
+			case protocol.MethodReviewList:
+				mockResult = []byte(`{"notes":[{"id":"note-1","comment":"Fix contrast"}],"pageUrl":"https://example.com","viewport":"800x600"}`)
+			case protocol.MethodStatus:
+				mockResult = []byte(`{"connected":"not-a-boolean"}`)
 			case protocol.MethodClick:
 				resp := nativeResponse{
 					ID:   req.ID,
@@ -135,6 +139,17 @@ func TestExtensionBridgeOverUnixSocket(t *testing.T) {
 	}
 	if snapRes.RootHash != "hash-5" {
 		t.Fatalf("expected rootHash hash-5, got %s", snapRes.RootHash)
+	}
+	if len(snapRes.Nodes) != 1 || snapRes.Nodes[0].Value != "42" {
+		t.Fatalf("expected numeric accessibility value as text, got %#v", snapRes.Nodes)
+	}
+	if _, err := driver.Status(callCtx, protocol.StatusParams{}); err == nil {
+		t.Fatal("expected malformed extension result to fail")
+	}
+
+	notes, err := driver.GetReviewNotes(callCtx, protocol.ReviewParams{})
+	if err != nil || len(notes) != 1 || notes[0].Comment != "Fix contrast" {
+		t.Fatalf("expected review notes from the extension result envelope, got %#v, %v", notes, err)
 	}
 
 	err = driver.Click(callCtx, protocol.ClickParams{Selector: "@e999"})
