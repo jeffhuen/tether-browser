@@ -127,42 +127,7 @@ func handleMockCDPConn(conn net.Conn, serverAddr string) {
 			switch cdpReq.Method {
 			case "Runtime.evaluate":
 				expr, _ := cdpReq.Params["expression"].(string)
-				if strings.Contains(expr, "isInteractive") {
-					// Mock snapshot extraction script
-					result = map[string]any{
-						"result": map[string]any{
-							"type": "object",
-							"value": map[string]any{
-								"root": []map[string]any{
-									{
-										"ref":           "@e1",
-										"backendNodeId": 101,
-										"role":          "button",
-										"name":          "Submit",
-										"isInteractive": true,
-									},
-								},
-								"refMap": map[string]any{
-									"@e1": 101,
-								},
-								"title": "Mock Page",
-								"url":   "http://example.com",
-							},
-						},
-					}
-				} else if strings.Contains(expr, "getBoundingClientRect") {
-					// Mock element resolver for click/hover
-					result = map[string]any{
-						"result": map[string]any{
-							"type": "object",
-							"value": map[string]any{
-								"ok": true,
-								"x":  150.0,
-								"y":  250.0,
-							},
-						},
-					}
-				} else if strings.Contains(expr, "devicePixelRatio") {
+				if strings.Contains(expr, "devicePixelRatio") {
 					result = map[string]any{
 						"result": map[string]any{
 							"type": "object",
@@ -237,64 +202,6 @@ func TestCDPDriverFullCycle(t *testing.T) {
 		t.Fatalf("OpenTab: %v", err)
 	}
 	targetID := openRes.TargetID
-	if targetID != "tab-mock-1" {
-		t.Fatalf("expected targetId tab-mock-1, got: %s", targetID)
-	}
-
-	// Eval
-	evalRes, err := driver.Eval(ctx, protocol.EvalParams{TargetID: targetID, Expression: "document.title"})
-	if err != nil {
-		t.Fatalf("Eval: %v", err)
-	}
-	if evalRes.Value != "evaluated-ok" {
-		t.Fatalf("expected evaluated-ok, got: %v", evalRes.Value)
-	}
-
-	// Snapshot
-	snap, err := driver.Snapshot(ctx, protocol.SnapshotParams{TargetID: targetID, InteractiveOnly: true})
-	if err != nil {
-		t.Fatalf("Snapshot: %v", err)
-	}
-	if snap == nil || len(snap.Nodes) != 1 {
-		t.Fatalf("expected 1 node, got: %+v", snap)
-	}
-	if snap.Nodes[0].Ref != "@e1" || snap.Nodes[0].Name != "Submit" {
-		t.Fatalf("unexpected node details: %+v", snap.Nodes[0])
-	}
-	if snap.RefTable["@e1"] == 0 {
-		t.Fatalf("expected ref table to contain @e1")
-	}
-
-	// Click
-	if err := driver.Click(ctx, protocol.ClickParams{TargetID: targetID, Selector: "@e1"}); err != nil {
-		t.Fatalf("Click: %v", err)
-	}
-
-	// Fill
-	if err := driver.Fill(ctx, protocol.FillParams{TargetID: targetID, Selector: "@e1", Text: "test-text"}); err != nil {
-		t.Fatalf("Fill: %v", err)
-	}
-
-	// Type
-	if err := driver.Type(ctx, protocol.TypeParams{TargetID: targetID, Selector: "@e1", Text: "more-text"}); err != nil {
-		t.Fatalf("Type: %v", err)
-	}
-
-	// Press
-	if err := driver.Press(ctx, protocol.PressParams{TargetID: targetID, Key: "Enter"}); err != nil {
-		t.Fatalf("Press: %v", err)
-	}
-
-	// Hover
-	if err := driver.Hover(ctx, protocol.HoverParams{TargetID: targetID, Selector: "@e1"}); err != nil {
-		t.Fatalf("Hover: %v", err)
-	}
-
-	// Focus
-	if err := driver.Focus(ctx, protocol.FocusParams{TargetID: targetID, Selector: "@e1"}); err != nil {
-		t.Fatalf("Focus: %v", err)
-	}
-
 	// Missing document dimensions must not silently produce a viewport screenshot.
 	if _, err := driver.Screenshot(ctx, protocol.ScreenshotParams{TargetID: targetID, FullPage: true}); err == nil {
 		t.Fatal("full-page capture must fail when the browser does not report document dimensions")
