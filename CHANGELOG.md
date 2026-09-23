@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clarified remote browsing description: "Open websites through your remote server. Use `localhost` to reach remote services as if they were running locally."
 - Elevated muted text contrast to `#a4b3cd` (WCAG AAA 8.5:1, APCA $L_c$ 67.5) and borders to `rgba(255, 255, 255, 0.16)` for WCAG 3 perceptual contrast compliance.
 - Optimized vertical rhythm and container heights to prevent bottom clipping under Chrome's 600px popup ceiling.
-- Upgraded Review Notes and Screenshots into connected physical folder tabs: distributed 50/50 across the full card width, with outer corners matching the card radius and the active tab merging directly into the tool panel below with no dividing line.
+- Upgraded Review Notes and Screenshots into connected physical folder tabs: distributed 50/50 across the full card width, with uppercase tracked typography matching section headers and the active tab merging directly into the tool panel below.
 - Added dedicated ambient icon wells to tool action cards, and styled section headers in uppercase tracked monospace for distinct visual hierarchy.
 - Renamed "Open Tabs" to "Tethered Tabs" with an aligned empty state, and removed the redundant `[TETHER]` badge from tab rows to free up horizontal space for titles while highlighting `[ACTIVE]`.
 - Updated screenshot mirror destination notice to "Mirroring to Local and Remote Server" for platform neutrality across Mac, Linux, and Windows.
