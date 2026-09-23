@@ -715,8 +715,8 @@ func (d *CDPDriver) Scroll(ctx context.Context, params protocol.ScrollParams) er
 	}
 	wheel := map[string]any{
 		"type":   "mouseWheel",
-		"x":      500,
-		"y":      400,
+		"x":      400,
+		"y":      300,
 		"deltaX": deltaX,
 		"deltaY": deltaY,
 	}
