@@ -2,7 +2,8 @@
 // Provides a clean, FireShot-style developer panel directly inside Chrome.
 
 document.addEventListener("DOMContentLoaded", async () => {
-  const statusBadge = document.getElementById("status-badge");
+  const connectionToggle = document.getElementById("connection-toggle");
+  const connectionAnnouncement = document.getElementById("connection-announcement");
   const statusText = document.getElementById("status-text");
   const sshStatus = document.getElementById("ssh-status");
   const remoteStatus = document.getElementById("remote-status");
@@ -360,9 +361,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     sshStatus.title = ssh.host || "";
     remoteStatus.textContent = statusError ? "Unknown" : network.state === "checking" ? "Checking..." :
       network.enabled ? remoteReady ? "On" : "On, not ready" : "Off";
+    const announcement = `Agent bridge ${statusText.textContent}. SSH tunnel ${sshStatus.textContent}. Remote browsing ${remoteStatus.textContent}.`;
+    // Only changed text should be announced by screen readers.
+    if (connectionAnnouncement.textContent !== announcement) connectionAnnouncement.textContent = announcement;
     remoteStatus.dataset.state = statusError || remoteProblem ? "error" : network.enabled ? "connected" : "off";
     connectSection.style.display = (connectionPanelOpen ?? (!bridgeConnected || connecting || hasSshError || remoteProblem || statusError)) ? "block" : "none";
-    statusBadge.setAttribute("aria-expanded", String(connectSection.style.display !== "none"));
+    connectionToggle.setAttribute("aria-expanded", String(connectSection.style.display !== "none"));
     btnDisconnect.style.display = connected || connecting ? "inline-flex" : "none";
     btnDisconnect.setAttribute("aria-label", connecting ? "Cancel SSH connection" : "Disconnect SSH tunnel");
     btnDisconnect.title = connecting ? "Cancel SSH connection" : "Disconnect SSH tunnel";
@@ -460,13 +464,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
-  if (statusBadge) {
-    statusBadge.addEventListener("click", () => {
+  if (connectionToggle) {
+    connectionToggle.addEventListener("click", () => {
       if (connectSection) {
         const isShown = connectSection.style.display !== "none";
         connectionPanelOpen = !isShown;
         connectSection.style.display = isShown ? "none" : "block";
-        statusBadge.setAttribute("aria-expanded", String(!isShown));
+        connectionToggle.setAttribute("aria-expanded", String(!isShown));
         if (!isShown) loadRecentHosts();
       }
     });

@@ -91,9 +91,9 @@ tether screenshot output.png
 
 The popup shows separate **Agent bridge**, **SSH tunnel**, and **Remote browsing** indicators, even when connection settings are closed. An SSH connection does not imply that an agent is connected. SSH errors and remote-route failures appear under their own indicators.
 
-Click **Connections** to open settings. **Remote browsing** shows **Ready** only when Tether has verified SSH forwarding, independently of the agent bridge. Turn the switch on, then click **Turn on for this profile** to route web traffic through that SSH host. Its indicator changes to **On**. If the route becomes unavailable, it shows **On, not ready** and the switch remains available to turn it off.
+Click the status strip to open connection settings. **Remote browsing** shows **Ready** only when Tether has verified SSH forwarding, independently of the agent bridge. Turn the switch on, then click **Turn on for this profile** to route web traffic through that SSH host. Its indicator changes to **On**. If the route becomes unavailable, it shows **On, not ready** and the switch remains available to turn it off.
 
-Connection problems appear in one warning below the status indicators. Expand **Technical details** to see the original errors.
+Connection problems appear in one warning directly below the status strip, even when settings are closed. Expand **Technical details** to see the original errors.
 
 - HTTP, HTTPS, WebSockets, and destination DNS use SSH SOCKS forwarding. `localhost`, `127.0.0.1`, and `::1` refer to the remote host, on any port.
 - This affects **all regular tabs in the Chrome profile**, not just the Tether group. Incognito is excluded. Chrome still renders locally and keeps its existing authentication and passkey support.

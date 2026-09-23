@@ -2,6 +2,9 @@
 // node scripts/check_popup.mjs http://127.0.0.1:9349
 // Chrome needs --remote-debugging-port=9349 and --enable-unsafe-extension-debugging.
 // For headless capture, add --disable-gpu --run-all-compositor-stages-before-draw.
+// Also add --disable-background-timer-throttling --disable-renderer-backgrounding.
+// Capture checks move this page to a background tab. Throttled timers there can
+// exceed the 35-second command limit even when the extension behaves correctly.
 // Uses synthetic notes plus real extension storage, page captures, and pointer input.
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
@@ -201,7 +204,7 @@ try {
     }
     window.popupCheckStatus.connected = true;
     await refresh();
-    if (document.querySelector("#status-badge").getAttribute("aria-expanded") !== "true") document.querySelector("#status-badge").click();
+    if (document.querySelector("#connection-toggle").getAttribute("aria-expanded") !== "true") document.querySelector("#connection-toggle").click();
     if (!toggle.getClientRects().length) throw new Error("Connection settings did not reveal the remote switch");
     toggle.click();
     const enable = document.querySelector("#network-enable");
@@ -228,7 +231,7 @@ try {
         document.querySelector("#remote-status").textContent !== "On") {
       throw new Error("Agent connection and enabled remote browsing must have separate indicators");
     }
-    document.querySelector("#status-badge").click();
+    document.querySelector("#connection-toggle").click();
     window.popupCheckNetwork = { ...window.popupCheckNetwork, state: "unavailable", canEnable: false, ssh: { state: "disconnected", error: "Helper unavailable" } };
     await refresh();
     if (!toggle.checked || toggle.disabled) throw new Error("SSH loss must leave the checked OFF control usable");
@@ -243,7 +246,7 @@ try {
         document.querySelector("#remote-status").textContent !== "On, not ready") {
       throw new Error("SSH loss must not hide a working agent bridge or a retained remote route");
     }
-    document.querySelector("#status-badge").click();
+    document.querySelector("#connection-toggle").click();
     toggle.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     if (toggle.checked) throw new Error("OFF remained checked after helper loss");
@@ -280,8 +283,9 @@ try {
     details.querySelector("summary").click();
     if (!document.querySelector("#network-error-detail").getClientRects().length) throw new Error("Technical details cannot be expanded");
     details.querySelector("summary").click();
-    document.querySelector("#status-badge").click();
+    document.querySelector("#connection-toggle").click();
     if (!document.querySelector("#ssh-status").getClientRects().length) throw new Error("Collapsing settings hid the SSH failure");
+    if (!document.querySelector("#network-error").getClientRects().length) throw new Error("Collapsing settings hid the only explanation of the failure");
     window.popupCheckNetwork = { enabled: false, state: "off", canEnable: true, ssh: { state: "connected", host: "dev-host", sessionId: "fixture" } };
     await refresh();
     if (!document.querySelector("#network-error").hidden || !details.hidden) throw new Error("A recovered connection left a stale warning");
@@ -309,7 +313,7 @@ try {
           },
         };
         await window.popupCheckRefresh();
-        if (document.querySelector("#status-badge").getAttribute("aria-expanded") !== "true") document.querySelector("#status-badge").click();
+        if (document.querySelector("#connection-toggle").getAttribute("aria-expanded") !== "true") document.querySelector("#connection-toggle").click();
         const toggle = document.querySelector("#network-toggle");
         if (state === "disconnected" || state === "ssh-error") {
           if (!toggle.disabled) throw new Error("An unavailable remote route must not be enabled");
@@ -322,7 +326,7 @@ try {
       await screenshot(`${width}-remote-${state}`);
     }
   }
-  await evaluate(() => document.querySelector("#status-badge").click());
+  await evaluate(() => document.querySelector("#connection-toggle").click());
   for (const width of [384, 320]) {
     await cdp("Emulation.setDeviceMetricsOverride", { width, height: 600, deviceScaleFactor: 1, mobile: false });
     for (const populated of [false, true]) {

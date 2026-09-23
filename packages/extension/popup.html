@@ -18,101 +18,99 @@
           </svg>
         </div>
         <span class="title">Tether</span>
+      </div>
+      <div class="header-actions">
         <a href="https://github.com/jeffhuen/tether-browser" target="_blank" rel="noopener noreferrer" class="version-link" title="View repository on GitHub">
           <svg class="gh-icon" width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
           </svg>
           <span id="ext-version" class="version">v0.1.21</span>
         </a>
-      </div>
-      <div class="header-actions">
         <button id="btn-reload-ext" class="btn-icon" aria-label="Reload extension" title="Reload extension from disk (after git pull)">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
           </svg>
         </button>
-        <button type="button" id="status-badge" class="btn-pill" aria-controls="connect-section" aria-expanded="false" title="Show connection settings">
-          <span>Connections</span>
-          <svg class="connection-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-            <path d="m6 9 6 6 6-6"/>
-          </svg>
-        </button>
       </div>
     </header>
 
-    <dl class="connection-summary" aria-label="Connection status">
-      <div>
-        <dt>Agent bridge</dt>
-        <dd id="status-text" class="connection-state" role="status">Checking...</dd>
-      </div>
-      <div>
-        <dt>SSH tunnel</dt>
-        <dd id="ssh-status" class="connection-state" role="status">Checking...</dd>
-      </div>
-      <div>
-        <dt>Remote browsing</dt>
-        <dd id="remote-status" class="connection-state" role="status">Checking...</dd>
-      </div>
-    </dl>
+    <section class="connection" aria-label="Connections">
+      <button type="button" id="connection-toggle" class="connection-summary" aria-controls="connect-section" aria-expanded="false" title="Connection settings">
+        <span class="connection-item">
+          <span class="connection-label">Agent bridge</span>
+          <span id="status-text" class="connection-state">Checking...</span>
+        </span>
+        <span class="connection-item">
+          <span class="connection-label">SSH tunnel</span>
+          <span id="ssh-status" class="connection-state">Checking...</span>
+        </span>
+        <span class="connection-item">
+          <span class="connection-label">Remote browsing</span>
+          <span id="remote-status" class="connection-state">Checking...</span>
+        </span>
+        <svg class="connection-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="m6 9 6 6 6-6"/>
+        </svg>
+      </button>
+      <p id="connection-announcement" class="visually-hidden" role="status"></p>
 
-    <p id="network-error" class="connection-error" role="status" hidden></p>
-    <details id="network-error-details" class="network-details" hidden>
-      <summary>Technical details</summary>
-      <p id="network-error-detail" class="network-help"></p>
-    </details>
-
-    <!-- Connect to Remote Server Card (shows when disconnected or clicked) -->
-    <section id="connect-section" class="section" style="display:none;">
-      <div class="connect-card">
-        <div class="connect-header">
-          <span class="connect-title">Connect to Remote Server</span>
-          <span class="connect-hint">SSH host or alias</span>
-        <button id="btn-disconnect" class="btn-icon" style="display:none;color:var(--danger);" aria-label="Disconnect SSH tunnel" title="Disconnect SSH tunnel">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
-            <line x1="12" y1="2" x2="12" y2="12"/>
-          </svg>
-        </button>
-        </div>
-        <form id="connect-form" class="connect-form">
-          <div class="connect-input-row">
-            <input type="text" id="connect-host-input" class="connect-input" aria-label="Remote SSH host" placeholder="user@remote-host" autocomplete="off" spellcheck="false">
-            <button type="submit" id="btn-do-connect" class="btn-connect">Connect</button>
-          </div>
-        </form>
-        <div id="recent-hosts-wrapper" class="recent-hosts-wrapper" style="display:none;">
-          <span class="recent-label">Recent:</span>
-          <div id="recent-hosts-list" class="recent-chips"></div>
-        </div>
-        <div class="network-settings">
-          <label class="network-row" for="network-toggle">
-            <span id="network-label">Remote browsing</span>
-            <span id="network-ready" class="network-readiness" role="status">Not ready</span>
-            <span id="network-value" class="network-value" aria-hidden="true">OFF</span>
-            <input id="network-toggle" class="network-toggle" type="checkbox" role="switch" aria-labelledby="network-label" aria-describedby="network-ready network-description network-scope" disabled>
-          </label>
-          <p id="network-description" class="network-help">Open websites through your server. Use <code>localhost</code> to reach apps running there.</p>
-          <p id="network-scope" class="network-help">Applies to all tabs in this Chrome profile, except Incognito.</p>
-          <div id="network-confirm" class="section" hidden>
-            <p class="network-help">Use <strong id="network-confirm-host"></strong> for all tabs in this Chrome profile, except Incognito? This includes localhost and website address lookups. Only use a server you trust. Chrome shares localhost cookies and saved data between servers.</p>
-            <div class="network-actions">
-              <button id="network-enable" class="btn-connect" type="button">Turn on for this profile</button>
-              <button id="network-cancel" class="btn-pill" type="button">Cancel</button>
-            </div>
-          </div>
-      <details class="network-details">
-        <summary>How it works</summary>
-        <p class="network-help">Web pages and WebSocket connections use your server's network. Other traffic, such as WebRTC calls, may use your usual connection. This is not a VPN.</p>
-        <p class="network-help">If your server disconnects, Remote browsing stays on and new pages may stop loading. Reconnect, or turn it off to browse normally. If you disable Tether, Chrome may use your usual connection instead.</p>
-      <div id="network-reload" class="section" hidden>
-        <p class="network-help">After switching networks, some open pages may still use the old connection. Reload your Tether tabs and reopen any other affected tabs.</p>
-        <button id="network-reload-tabs" class="btn-pill" type="button">Reload Tether tabs</button>
-      </div>
+      <p id="network-error" class="connection-error" role="status" hidden></p>
+      <details id="network-error-details" class="network-details" hidden>
+        <summary>Technical details</summary>
+        <p id="network-error-detail" class="network-help"></p>
       </details>
+
+      <div id="connect-section" class="section" style="display:none;">
+        <div class="connect-card">
+          <div class="connect-header">
+            <span class="connect-title">Connect to Remote Server</span>
+            <span class="connect-hint">SSH host or alias</span>
+          <button id="btn-disconnect" class="btn-icon" style="display:none;color:var(--danger);" aria-label="Disconnect SSH tunnel" title="Disconnect SSH tunnel">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
+              <line x1="12" y1="2" x2="12" y2="12"/>
+            </svg>
+          </button>
+          </div>
+          <form id="connect-form" class="connect-form">
+            <div class="connect-input-row">
+              <input type="text" id="connect-host-input" class="connect-input" aria-label="Remote SSH host" placeholder="user@remote-host" autocomplete="off" spellcheck="false">
+              <button type="submit" id="btn-do-connect" class="btn-connect">Connect</button>
+            </div>
+          </form>
+          <div id="recent-hosts-wrapper" class="recent-hosts-wrapper" style="display:none;">
+            <span class="recent-label">Recent:</span>
+            <div id="recent-hosts-list" class="recent-chips"></div>
+          </div>
+          <div class="network-settings">
+            <label class="network-row" for="network-toggle">
+              <span id="network-label">Remote browsing</span>
+              <span id="network-ready" class="network-readiness" role="status">Not ready</span>
+              <span id="network-value" class="network-value" aria-hidden="true">OFF</span>
+              <input id="network-toggle" class="network-toggle" type="checkbox" role="switch" aria-labelledby="network-label" aria-describedby="network-ready network-description network-scope" disabled>
+            </label>
+            <p id="network-description" class="network-help">Open websites through your server. Use <code>localhost</code> to reach apps running there.</p>
+            <p id="network-scope" class="network-help">Applies to all tabs in this Chrome profile, except Incognito.</p>
+            <div id="network-confirm" class="section" hidden>
+              <p class="network-help">Use <strong id="network-confirm-host"></strong> for all tabs in this Chrome profile, except Incognito? This includes localhost and website address lookups. Only use a server you trust. Chrome shares localhost cookies and saved data between servers.</p>
+              <div class="network-actions">
+                <button id="network-enable" class="btn-connect" type="button">Turn on for this profile</button>
+                <button id="network-cancel" class="btn-pill" type="button">Cancel</button>
+              </div>
+            </div>
+        <details class="network-details">
+          <summary>How it works</summary>
+          <p class="network-help">Web pages and WebSocket connections use your server's network. Other traffic, such as WebRTC calls, may use your usual connection. This is not a VPN.</p>
+          <p class="network-help">If your server disconnects, Remote browsing stays on and new pages may stop loading. Reconnect, or turn it off to browse normally. If you disable Tether, Chrome may use your usual connection instead.</p>
+        <div id="network-reload" class="section" hidden>
+          <p class="network-help">After switching networks, some open pages may still use the old connection. Reload your Tether tabs and reopen any other affected tabs.</p>
+          <button id="network-reload-tabs" class="btn-pill" type="button">Reload Tether tabs</button>
+        </div>
+        </details>
+          </div>
         </div>
       </div>
     </section>
-
 
     <!-- Workspace Tabs: Notes vs Screenshots -->
     <nav class="main-tabs" role="tablist" aria-label="Review tools">

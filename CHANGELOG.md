@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The connection status strip now opens connection settings, replacing the separate **Connections** button. The version link moved beside the reload button.
+
 ### Fixed
 - Separate the popup's agent bridge, SSH tunnel, and remote browsing indicators. SSH readiness no longer implies an agent connection, and failed status polls show unknown SSH and browsing state.
 - Rewrite remote browsing help in plain language and combine connection errors into one warning, with the original errors under **Technical details**.

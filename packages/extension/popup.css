@@ -168,28 +168,63 @@ svg {
 }
 
 @media (max-width: 360px) {
-  .version-link, .connect-hint {
+  .connect-hint {
     display: none;
   }
 }
 
-.connection-summary {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  padding: 2px 0 10px;
-  border-bottom: 1px solid var(--border);
+.connection {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
 }
 
-.connection-summary dt {
+.connection-summary {
+  display: grid;
+  grid-template-columns: repeat(3, auto) 12px;
+  justify-content: space-between;
+  align-items: start;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  transition: background-color 150ms ease;
+}
+
+.connection-summary:hover {
+  background: var(--bg-elevated);
+}
+
+.connection-summary:focus-visible {
+  outline-offset: -2px;
+}
+
+.connection-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.connection-label {
   color: var(--text-muted);
   font-size: 11px;
 }
 
 .connection-state {
-  margin-top: 2px;
   color: var(--text-secondary);
   font-size: 12px;
+}
+
+.connection-label, .connection-state {
+  white-space: nowrap;
 }
 
 .connection-state[data-state="connected"] {
@@ -204,8 +239,23 @@ svg {
   color: var(--accent);
 }
 
-[aria-expanded="true"] .connection-chevron {
+.connection-chevron {
+  align-self: center;
+  color: var(--text-muted);
+  transition: transform 150ms ease;
+}
+
+.connection-summary[aria-expanded="true"] .connection-chevron {
   transform: rotate(180deg);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .connect-card {
@@ -213,9 +263,7 @@ svg {
   flex-direction: column;
   gap: 6px;
   padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
 }
 
 .connect-header {
@@ -353,7 +401,13 @@ svg {
 }
 
 .connection-error {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
   color: var(--danger);
+}
+
+#network-error-details {
+  padding: 0 10px 8px;
 }
 
 #network-error-detail {
