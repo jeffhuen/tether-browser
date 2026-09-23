@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -322,6 +323,7 @@ func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.
 		if err != nil {
 			return mapDriverError(req, err)
 		}
+		res.DaemonVersion, res.DaemonPID = protocol.Version, os.Getpid()
 		resp, _ := protocol.NewResponse(req.ID, res, req.Seq, req.Epoch)
 		return resp
 	case protocol.MethodTabList:

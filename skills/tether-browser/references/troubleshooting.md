@@ -19,12 +19,15 @@ tether status
 Expected output when fully connected:
 ```text
 Daemon Status: connected
-Version: 0.1.35
+Version: 0.1.36
+Daemon Version: 0.1.36
 Mode: extension
 Targets: 3
 Active Target: 103
 Uptime: 42s
 ```
+
+`Version` is the extension's version in extension mode. `Daemon Version` is the `tether` binary running on the laptop. After you reinstall, reconnect with the extension's **Connect** button or `tether connect`. Either one replaces a daemon from a different version. A daemon older than 0.1.36 cannot be replaced automatically: stop it once with `pkill -f 'tether daemon'`, then reconnect.
 
 ---
 

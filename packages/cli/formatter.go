@@ -134,8 +134,12 @@ func FormatStatus(res *protocol.StatusResult) string {
 	if !res.Connected {
 		statusStr = "disconnected"
 	}
-	return fmt.Sprintf("Daemon Status: %s\nVersion: %s\nMode: %s\nTargets: %d\nActive Target: %s\nUptime: %ds\n",
-		statusStr, res.Version, res.Mode, res.TargetCount, res.ActiveTargetID, res.DaemonUptimeS)
+	daemonVersion := res.DaemonVersion
+	if daemonVersion == "" {
+		daemonVersion = "unknown (before 0.1.36)"
+	}
+	return fmt.Sprintf("Daemon Status: %s\nVersion: %s\nDaemon Version: %s\nMode: %s\nTargets: %d\nActive Target: %s\nUptime: %ds\n",
+		statusStr, res.Version, daemonVersion, res.Mode, res.TargetCount, res.ActiveTargetID, res.DaemonUptimeS)
 }
 
 // FormatReview formats the response of a review subcommand.

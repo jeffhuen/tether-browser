@@ -185,6 +185,8 @@ type StatusResult struct {
 	Version        string   `json:"version"`
 	Mode           string   `json:"mode"` // "managed", "daily-chrome", "extension"
 	DaemonUptimeS  int64    `json:"daemonUptimeS"`
+	DaemonVersion  string   `json:"daemonVersion,omitempty"` // tether binary serving this RPC; Version may be the extension's
+	DaemonPID      int      `json:"daemonPid,omitempty"`
 }
 
 // ReviewParams specifies target and options for Tether Review.

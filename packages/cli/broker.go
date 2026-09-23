@@ -24,13 +24,18 @@ func DefaultBrokerSocket() string {
 	if sock := os.Getenv("TETHER_BROKER_SOCKET"); sock != "" {
 		return sock
 	}
-	if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
-		dir := filepath.Join(runtimeDir, "tether")
-		_ = os.MkdirAll(dir, 0700)
-		return filepath.Join(dir, "broker.sock")
-	}
 	uid := os.Getuid()
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	if runtimeDir == "" {
+		// Shells without XDG_RUNTIME_DIR must find the same broker as login shells.
+		if fi, err := os.Stat(fmt.Sprintf("/run/user/%d", uid)); err == nil && fi.IsDir() {
+			runtimeDir = fmt.Sprintf("/run/user/%d", uid)
+		}
+	}
 	dir := filepath.Join(os.TempDir(), fmt.Sprintf("tether-%d", uid))
+	if runtimeDir != "" {
+		dir = filepath.Join(runtimeDir, "tether")
+	}
 	_ = os.MkdirAll(dir, 0700)
 	return filepath.Join(dir, "broker.sock")
 }

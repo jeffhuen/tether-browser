@@ -390,6 +390,9 @@ func runNativeHost(args []string) int {
 }
 
 func ensureDaemonRunning(ctx context.Context, token string) error {
+	if err := stopStaleDaemon(token); err != nil {
+		return err
+	}
 	if daemonHealthy(token) {
 		return nil
 	}
@@ -432,7 +435,7 @@ func runConnect(args []string) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
 		fmt.Println("Usage: tether connect [options] [user@]host")
 		fmt.Println("\nLinks your local workstation Chrome to a remote server over SSH in one step:")
-		fmt.Println("  1. Starts local tether daemon (if not already running)")
+		fmt.Println("  1. Starts the local tether daemon, replacing one from another tether version")
 		fmt.Println("  2. Opens SSH reverse tunnel (ssh -R 9333:localhost:9333)")
 		fmt.Println("  3. Sets TETHER_AUTH_TOKEN in the remote shell session")
 		fmt.Println("\nExample:")
@@ -451,6 +454,10 @@ func runConnect(args []string) int {
 	token, err := cli.EnsureDaemonToken()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error resolving auth token: %v\n", err)
+		return 1
+	}
+	if err := stopStaleDaemon(token); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
 	// Check if local daemon is already running and authenticated.
@@ -539,10 +546,9 @@ func runConnect(args []string) int {
 	return 0
 }
 
-// daemonHealthy dials the local daemon and performs an authenticated status
-// call, proving the port serves valid JSON-RPC 2.0, the token matches, and
-// the browser is actively connected.
-func daemonHealthy(token string) bool {
+// daemonStatus performs an authenticated status call against the local daemon,
+// proving the port serves valid JSON-RPC 2.0 and the token matches.
+func daemonStatus(token string) (*protocol.StatusResult, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	c := cli.NewClient("127.0.0.1:9333")
@@ -550,11 +556,44 @@ func daemonHealthy(token string) bool {
 	c.SetToken(token)
 	resp, err := c.Call(ctx, protocol.MethodStatus, protocol.StatusParams{})
 	if err != nil || resp == nil || resp.Error != nil || resp.JSONRPC != "2.0" || len(resp.Result) == 0 {
-		return false
+		return nil, false
 	}
 	var status protocol.StatusResult
 	if err := json.Unmarshal(resp.Result, &status); err != nil {
-		return false
+		return nil, false
 	}
-	return status.Connected
+	return &status, true
+}
+
+// daemonHealthy reports whether the local daemon is authenticated and its browser is connected.
+func daemonHealthy(token string) bool {
+	status, ok := daemonStatus(token)
+	return ok && status.Connected
+}
+
+// stopStaleDaemon stops a daemon from another tether version, so reconnecting
+// after a reinstall runs the installed binary instead of reusing the old one.
+func stopStaleDaemon(token string) error {
+	status, ok := daemonStatus(token)
+	if !ok || status.DaemonVersion == protocol.Version {
+		return nil
+	}
+	if status.DaemonPID <= 0 {
+		return errors.New("a tether daemon older than 0.1.36 is running on 127.0.0.1:9333; stop it once with: pkill -f 'tether daemon'")
+	}
+	proc, err := os.FindProcess(status.DaemonPID)
+	if err == nil {
+		err = proc.Signal(syscall.SIGTERM)
+	}
+	if err != nil {
+		return fmt.Errorf("stop tether daemon %s (pid %d): %w", status.DaemonVersion, status.DaemonPID, err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+		conn, err := net.DialTimeout("tcp", "127.0.0.1:9333", 300*time.Millisecond)
+		if err != nil {
+			return nil
+		}
+		_ = conn.Close()
+	}
+	return fmt.Errorf("tether daemon %s (pid %d) did not stop within 10s", status.DaemonVersion, status.DaemonPID)
 }
