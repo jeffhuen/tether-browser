@@ -469,6 +469,10 @@ svg {
   transition: background-color 150ms ease, border-color 150ms ease;
 }
 
+.btn-connect {
+  min-width: 88px;
+}
+
 .btn-connect, .btn-nav:not(.btn-nav-secondary) {
   background: var(--accent);
   color: var(--bg-canvas);
@@ -478,6 +482,32 @@ svg {
 
 .btn-connect:hover:not(:disabled), .btn-nav:not(.btn-nav-secondary):hover:not(:disabled) {
   background: var(--accent-hover);
+}
+
+.btn-connect.btn-connect-secondary {
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border-color: var(--border);
+  font-weight: 500;
+}
+
+.btn-connect.btn-connect-secondary:hover:not(:disabled) {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+
+.btn-connect.btn-connect-danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: rgba(239, 68, 68, 0.4);
+  font-weight: 500;
+}
+
+.btn-connect.btn-connect-danger:hover:not(:disabled) {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 .btn-pill, .btn-icon, .btn-del-shot {

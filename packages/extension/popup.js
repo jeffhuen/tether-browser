@@ -367,14 +367,47 @@ document.addEventListener("DOMContentLoaded", async () => {
     remoteStatus.dataset.state = statusError || remoteProblem ? "error" : network.enabled ? "connected" : "off";
     connectSection.style.display = (connectionPanelOpen ?? (!bridgeConnected || connecting || hasSshError || remoteProblem || statusError)) ? "block" : "none";
     connectionToggle.setAttribute("aria-expanded", String(connectSection.style.display !== "none"));
-    btnDisconnect.style.display = connected || connecting ? "inline-flex" : "none";
-    btnDisconnect.setAttribute("aria-label", connecting ? "Cancel SSH connection" : "Disconnect SSH tunnel");
-    btnDisconnect.title = connecting ? "Cancel SSH connection" : "Disconnect SSH tunnel";
-    btnDoConnect.disabled = networkBusy || connecting;
-    btnDoConnect.textContent = connecting ? "Connecting..." : network.enabled && !connected ? "Reconnect" : "Connect";
     connectHostInput.disabled = connecting || network.enabled;
-    if (network.enabled) connectHostInput.value = network.host;
-    else if (!connectHostInput.value && ssh.host) connectHostInput.value = ssh.host;
+    if (network.enabled) {
+      connectHostInput.value = network.host || ssh.host || "";
+    } else if (!connectHostInput.value && ssh.host && document.activeElement !== connectHostInput) {
+      connectHostInput.value = ssh.host;
+    }
+
+    const currentInput = connectHostInput ? connectHostInput.value.trim() : "";
+    const isSameHost = Boolean(ssh.host && currentInput.toLowerCase() === ssh.host.toLowerCase());
+
+    btnDoConnect.classList.remove("btn-connect-secondary", "btn-connect-danger");
+    if (connecting) {
+      btnDoConnect.textContent = "Cancel";
+      btnDoConnect.disabled = networkBusy;
+      btnDoConnect.classList.add("btn-connect-secondary");
+      btnDoConnect.title = "Cancel in-flight SSH connection";
+    } else if (connected) {
+      if (isSameHost || network.enabled) {
+        btnDoConnect.textContent = "Disconnect";
+        btnDoConnect.disabled = networkBusy;
+        if (network.enabled) {
+          btnDoConnect.classList.add("btn-connect-danger");
+          btnDoConnect.title = "Disconnect SSH tunnel (remote browsing is on)";
+        } else {
+          btnDoConnect.classList.add("btn-connect-secondary");
+          btnDoConnect.title = "Disconnect SSH tunnel";
+        }
+      } else {
+        btnDoConnect.textContent = "Switch";
+        btnDoConnect.disabled = networkBusy || !currentInput;
+        btnDoConnect.title = currentInput ? `Switch connection to ${currentInput}` : "Enter remote host to switch";
+      }
+    } else if (network.enabled && !connected) {
+      btnDoConnect.textContent = "Reconnect";
+      btnDoConnect.disabled = networkBusy;
+      btnDoConnect.title = `Reconnect to ${network.host || ssh.host}`;
+    } else {
+      btnDoConnect.textContent = "Connect";
+      btnDoConnect.disabled = networkBusy || !currentInput;
+      btnDoConnect.title = currentInput ? `Connect to ${currentInput}` : "Enter remote host to connect";
+    }
     recentHostsList.querySelectorAll("button").forEach((button) => { button.disabled = connecting || network.enabled || networkBusy; });
     networkToggle.checked = network.enabled;
     // Turning OFF remains available during reconnection and helper failure.
@@ -456,11 +489,68 @@ document.addEventListener("DOMContentLoaded", async () => {
     }, "Could not connect to the server.");
   }
 
+  async function doDisconnect() {
+    const warning = network.enabled
+      ? "Disconnect from the server? Remote browsing will stay on, so new pages may not load until you reconnect or turn it off."
+      : "Disconnect from the server?";
+    if (network.ssh?.state === "connecting" || confirm(warning)) {
+      await networkAction(async () => {
+        const ssh = await sendMessage({ type: "popup_ssh_disconnect" });
+        network = { ...network, ssh };
+      }, "Could not disconnect from the server.");
+    }
+  }
+
+  async function handleConnectAction({ fromEnter = false } = {}) {
+    const ssh = network.ssh || {};
+    const connecting = ssh.state === "connecting";
+    const connected = ssh.state === "connected";
+    const inputVal = connectHostInput ? connectHostInput.value.trim() : "";
+    const isSameHost = Boolean(ssh.host && inputVal.toLowerCase() === ssh.host.toLowerCase());
+
+    if (connecting) {
+      if (fromEnter) return;
+      await doDisconnect();
+      return;
+    }
+
+    if (connected && (isSameHost || network.enabled)) {
+      if (fromEnter) return;
+      await doDisconnect();
+      return;
+    }
+
+    const targetHost = (connected && !isSameHost) ? inputVal : (inputVal || ssh.host || network.host);
+    if (targetHost) {
+      await doConnect(targetHost);
+    }
+  }
+
   if (connectForm) {
     connectForm.addEventListener("submit", (e) => {
       e.preventDefault();
-      const host = connectHostInput ? connectHostInput.value.trim() : "";
-      if (host) doConnect(host);
+      handleConnectAction({ fromEnter: true });
+    });
+  }
+
+  if (btnDoConnect) {
+    btnDoConnect.addEventListener("click", (e) => {
+      e.preventDefault();
+      handleConnectAction({ fromEnter: false });
+    });
+  }
+
+  if (connectHostInput) {
+    connectHostInput.addEventListener("input", () => {
+      renderConnection();
+    });
+    connectHostInput.addEventListener("keydown", (e) => {
+      const ssh = network.ssh || {};
+      if (e.key === "Escape" && ssh.state === "connected" && ssh.host) {
+        e.preventDefault();
+        connectHostInput.value = ssh.host;
+        renderConnection();
+      }
     });
   }
 
@@ -472,21 +562,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         connectSection.style.display = isShown ? "none" : "block";
         connectionToggle.setAttribute("aria-expanded", String(!isShown));
         if (!isShown) loadRecentHosts();
-      }
-    });
-  }
-
-  const btnDisconnect = document.getElementById("btn-disconnect");
-  if (btnDisconnect) {
-    btnDisconnect.addEventListener("click", async () => {
-      const warning = network.enabled
-        ? "Disconnect from the server? Remote browsing will stay on, so new pages may not load until you reconnect or turn it off."
-        : "Disconnect from the server?";
-      if (network.ssh?.state === "connecting" || confirm(warning)) {
-        await networkAction(async () => {
-          const ssh = await sendMessage({ type: "popup_ssh_disconnect" });
-          network = { ...network, ssh };
-        }, "Could not disconnect from the server.");
       }
     });
   }

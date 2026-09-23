@@ -194,6 +194,11 @@ try {
         document.querySelector("#ssh-status").textContent !== "Connecting...") {
       throw new Error("SSH progress must not replace agent connection status");
     }
+    const connectBtn = document.querySelector("#btn-do-connect");
+    const hostInput = document.querySelector("#connect-host-input");
+    if (connectBtn.textContent !== "Cancel" || connectBtn.disabled || !hostInput.disabled) {
+      throw new Error("Connecting state must offer an active Cancel button and lock the host input");
+    }
     window.popupCheckNetwork = { enabled: false, state: "off", host: "dev-host", canEnable: true, ssh: { state: "connected", host: "dev-host", sessionId: "fixture", proxyPort: 12345 } };
     await refresh();
     if (document.querySelector("#status-text").textContent !== "Disconnected" ||
@@ -201,6 +206,18 @@ try {
         document.querySelector("#remote-status").textContent !== "Off" ||
         document.querySelector("#network-ready").textContent !== "Ready") {
       throw new Error("Remote readiness incorrectly implied that the original connection was up");
+    }
+    if (connectBtn.textContent !== "Disconnect" || !connectBtn.classList.contains("btn-connect-secondary") || hostInput.disabled) {
+      throw new Error("Connected state with remote browsing off must show Disconnect outline and editable input");
+    }
+    hostInput.value = "staging-host";
+    hostInput.dispatchEvent(new Event("input", { bubbles: true }));
+    if (connectBtn.textContent !== "Switch" || connectBtn.disabled || connectBtn.classList.contains("btn-connect-secondary")) {
+      throw new Error("Editing the host field while connected must offer an active Switch button");
+    }
+    hostInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    if (connectBtn.textContent !== "Disconnect" || hostInput.value !== "dev-host") {
+      throw new Error("Escape must revert dirty host input and restore Disconnect");
     }
     window.popupCheckStatus.connected = true;
     await refresh();
@@ -231,6 +248,9 @@ try {
         document.querySelector("#remote-status").textContent !== "On") {
       throw new Error("Agent connection and enabled remote browsing must have separate indicators");
     }
+    if (connectBtn.textContent !== "Disconnect" || !connectBtn.classList.contains("btn-connect-danger") || !hostInput.disabled) {
+      throw new Error("Connected state with remote browsing ON must lock input and show Disconnect danger outline");
+    }
     document.querySelector("#connection-toggle").click();
     window.popupCheckNetwork = { ...window.popupCheckNetwork, state: "unavailable", canEnable: false, ssh: { state: "disconnected", error: "Helper unavailable" } };
     await refresh();
@@ -245,6 +265,9 @@ try {
         document.querySelector("#ssh-status").textContent !== "Error" ||
         document.querySelector("#remote-status").textContent !== "On, not ready") {
       throw new Error("SSH loss must not hide a working agent bridge or a retained remote route");
+    }
+    if (connectBtn.textContent !== "Reconnect" || connectBtn.disabled || !hostInput.disabled) {
+      throw new Error("SSH drop with remote browsing ON must show Reconnect and keep input locked");
     }
     document.querySelector("#connection-toggle").click();
     toggle.click();
@@ -294,6 +317,11 @@ try {
     if (document.querySelector("#ssh-status").textContent !== "Connected" ||
         !document.querySelector("#network-error").hidden || !details.hidden) {
       throw new Error("A live tunnel must not report a stale helper message as a failure");
+    }
+    window.popupCheckNetwork = { enabled: false, state: "off", canEnable: true, ssh: { state: "disconnected" } };
+    await refresh();
+    if (connectBtn.textContent !== "Connect") {
+      throw new Error("Disconnected state must show Connect button");
     }
   });
   for (const width of [384, 320]) {
