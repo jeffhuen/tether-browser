@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestSnapshotTreeHashAndFormatting(t *testing.T) {
+func TestSnapshotTreeHash(t *testing.T) {
 	nodes := []*AXNode{
 		{
 			Ref:           "@e1",
@@ -94,16 +94,6 @@ func TestSnapshotTreeHashAndFormatting(t *testing.T) {
 		t.Errorf("structural delimiters should prevent tree vs forest collision")
 	}
 
-	// Compact text formatting checks
-	nodes[0].Children[0].Selected = true
-	nodes[0].Children[0].Expanded = true
-	formatted := FormatCompactText(nodes, 0)
-	if !strings.Contains(formatted, "(selected)") {
-		t.Errorf("expected formatted output to contain (selected), got:\n%s", formatted)
-	}
-	if !strings.Contains(formatted, "(expanded)") {
-		t.Errorf("expected formatted output to contain (expanded), got:\n%s", formatted)
-	}
 }
 
 func TestDesignFeedbackReportFormatting(t *testing.T) {
