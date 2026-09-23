@@ -169,3 +169,50 @@ func TestBrokerLifecycleAndTargetInjection(t *testing.T) {
 		t.Errorf("expected broker to inject target-tab-99 into click call, got targets: %v", receivedTargetIDs)
 	}
 }
+
+func TestRunJSONResults(t *testing.T) {
+	t.Setenv("TETHER_BROKER_SOCKET", filepath.Join(t.TempDir(), "absent.sock"))
+	for _, tc := range []struct {
+		name string
+		args []string
+		result json.RawMessage
+		code int
+	}{
+		{"empty tabs", []string{"tabs", "--json"}, json.RawMessage(`{"tabs":[],"activeId":""}`), 0},
+		{"eval error", []string{"eval", "throw new Error('bad')", "--json"}, json.RawMessage(`{"value":null,"error":"bad"}`), 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ln.Close()
+			t.Setenv("TETHER_DAEMON_ADDR", ln.Addr().String())
+			go func() {
+				conn, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				var req protocol.Request
+				if json.NewDecoder(conn).Decode(&req) != nil {
+					return
+				}
+				resp, _ := protocol.NewResponse(req.ID, tc.result, req.Seq, req.Epoch)
+				_ = json.NewEncoder(conn).Encode(resp)
+			}()
+			var stdout, stderr bytes.Buffer
+			code := Run(tc.args, &stdout, &stderr)
+			if code != tc.code {
+				t.Fatalf("exit code %d, expected %d; stderr: %s", code, tc.code, &stderr)
+			}
+			var compact bytes.Buffer
+			if err := json.Compact(&compact, stdout.Bytes()); err != nil {
+				t.Fatalf("expected JSON on stdout, got %q: %v", stdout.String(), err)
+			}
+			if compact.String() != string(tc.result) {
+				t.Fatalf("daemon result changed: %s", &compact)
+			}
+		})
+	}
+}

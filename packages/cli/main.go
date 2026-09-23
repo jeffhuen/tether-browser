@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -127,46 +128,43 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%v\n", err)
 		return 1
 	}
+	if cmd.Global.JSON {
+		var out bytes.Buffer
+		if err := json.Indent(&out, resp.Result, "", "  "); err != nil {
+			fmt.Fprintf(stderr, "Error: %v\n", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, out.String())
+		if cmd.Name == "eval" {
+			var res protocol.EvalResult
+			_ = resp.UnmarshalResult(&res)
+			if res.Error != "" {
+				return 1
+			}
+		}
+		return 0
+	}
 
 	switch cmd.Name {
 	case "open":
 		var res protocol.OpenResult
 		_ = resp.UnmarshalResult(&res)
-		out, err := FormatOpen(&res, cmd.Global.JSON)
-		if err != nil {
-			fmt.Fprintf(stderr, "Error: %v\n", err)
-			return 1
-		}
-		fmt.Fprint(stdout, out)
+		fmt.Fprint(stdout, FormatOpen(&res))
 
 	case "snapshot":
 		var res protocol.SnapshotResult
 		_ = resp.UnmarshalResult(&res)
-		out, err := FormatSnapshot(&res, cmd.Global.JSON)
-		if err != nil {
-			fmt.Fprintf(stderr, "Error: %v\n", err)
-			return 1
-		}
-		fmt.Fprint(stdout, out)
+		fmt.Fprint(stdout, FormatSnapshot(&res))
 
 	case "click", "dblclick", "fill", "type", "press", "hover", "focus", "wait", "close", "scroll":
 		var res protocol.ActionResult
 		_ = resp.UnmarshalResult(&res)
-		out, err := FormatAction(&res, cmd.Global.JSON)
-		if err != nil {
-			fmt.Fprintf(stderr, "Error: %v\n", err)
-			return 1
-		}
-		fmt.Fprint(stdout, out)
+		fmt.Fprint(stdout, FormatAction(&res))
 
 	case "eval":
 		var res protocol.EvalResult
 		_ = resp.UnmarshalResult(&res)
-		out, err := FormatEval(&res, cmd.Global.JSON)
-		if err != nil {
-			fmt.Fprintf(stderr, "Error: %v\n", err)
-			return 1
-		}
+		out := FormatEval(&res)
 		if res.Error != "" {
 			fmt.Fprint(stderr, out)
 			return 1
@@ -191,31 +189,16 @@ func Run(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 		}
-		out, err := FormatScreenshot(&res, cmd.ScreenshotPath, cmd.Global.JSON)
-		if err != nil {
-			fmt.Fprintf(stderr, "Error: %v\n", err)
-			return 1
-		}
-		fmt.Fprint(stdout, out)
+		fmt.Fprint(stdout, FormatScreenshot(&res, cmd.ScreenshotPath))
 
 	case "status":
 		var res protocol.StatusResult
 		_ = resp.UnmarshalResult(&res)
-		out, err := FormatStatus(&res, cmd.Global.JSON)
-		if err != nil {
-			fmt.Fprintf(stderr, "Error: %v\n", err)
-			return 1
-		}
-		fmt.Fprint(stdout, out)
+		fmt.Fprint(stdout, FormatStatus(&res))
 	case "tabs":
 		var res protocol.TabListResult
 		_ = resp.UnmarshalResult(&res)
-		out, err := FormatTabList(&res, cmd.Global.JSON)
-		if err != nil {
-			fmt.Fprintf(stderr, "Error: %v\n", err)
-			return 1
-		}
-		fmt.Fprint(stdout, out)
+		fmt.Fprint(stdout, FormatTabList(&res))
 
 	case "switch", "tab":
 		targetID := ""
@@ -225,12 +208,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "Switched active tab to %s\n", targetID)
 
 	case "review":
-		out, err := FormatReview(cmd.BrokerSubcmd, resp, cmd.Global.JSON)
-		if err != nil {
-			fmt.Fprintf(stderr, "Error: %v\n", err)
-			return 1
-		}
-		fmt.Fprint(stdout, out)
+		fmt.Fprint(stdout, FormatReview(cmd.BrokerSubcmd, resp))
 
 	default:
 		fmt.Fprintf(stderr, "Unknown command: %s\n", cmd.Name)
