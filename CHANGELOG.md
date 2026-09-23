@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upgraded Review Notes and Screenshots into connected physical folder tabs: distributed 50/50 across the full card width, with outer corners matching the card radius and the active tab merging directly into the tool panel below with no dividing line.
 - Added dedicated ambient icon wells to tool action cards, and styled section headers in uppercase tracked monospace for distinct visual hierarchy.
 - Renamed "Open Tabs" to "Tethered Tabs" with an aligned empty state, and removed the redundant `[TETHER]` badge from tab rows to free up horizontal space for titles while highlighting `[ACTIVE]`.
+- Updated screenshot mirror destination notice to "Mirroring to Local and Remote Server" for platform neutrality across Mac, Linux, and Windows.
 
 ### Fixed
 - Separate the popup's agent bridge, SSH tunnel, and remote browsing indicators. SSH readiness no longer implies an agent connection, and failed status polls show unknown SSH and browsing state.
