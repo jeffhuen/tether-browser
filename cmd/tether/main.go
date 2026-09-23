@@ -391,7 +391,8 @@ func runNativeHost(args []string) int {
 }
 
 func ensureDaemonRunning(ctx context.Context, token string) error {
-	if err := stopStaleDaemon(token); err != nil {
+	selfExe := selfExecutable()
+	if err := stopStaleDaemon(token, selfExe); err != nil {
 		return err
 	}
 	if daemonHealthy(token) {
@@ -399,10 +400,6 @@ func ensureDaemonRunning(ctx context.Context, token string) error {
 	}
 	if err := ctx.Err(); err != nil {
 		return err
-	}
-	selfExe, err := os.Executable()
-	if err != nil {
-		selfExe = "tether"
 	}
 	daemonCmd := exec.Command(selfExe, "daemon")
 	daemonEnv := make([]string, 0, len(os.Environ())+1)
@@ -457,7 +454,8 @@ func runConnect(args []string) int {
 		fmt.Fprintf(os.Stderr, "Error resolving auth token: %v\n", err)
 		return 1
 	}
-	if err := stopStaleDaemon(token); err != nil {
+	selfExe := selfExecutable()
+	if err := stopStaleDaemon(token, selfExe); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
@@ -476,10 +474,6 @@ func runConnect(args []string) int {
 		}
 
 		fmt.Println("Starting local workstation daemon...")
-		selfExe, err := os.Executable()
-		if err != nil {
-			selfExe = "tether"
-		}
 		daemonCmd := exec.Command(selfExe, "daemon")
 		daemonEnv := make([]string, 0, len(os.Environ())+1)
 		for _, kv := range os.Environ() {
@@ -572,11 +566,25 @@ func daemonHealthy(token string) bool {
 	return ok && status.Connected
 }
 
-// stopStaleDaemon stops a daemon from another tether version, so reconnecting
-// after a reinstall runs the installed binary instead of reusing the old one.
-func stopStaleDaemon(token string) error {
+// selfExecutable returns the tether binary to launch as the daemon.
+func selfExecutable() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "tether"
+	}
+	return exe
+}
+
+// stopStaleDaemon stops a local daemon whose version differs from exe, the
+// binary about to be launched. The native host lives as long as Chrome, so its
+// own compiled-in version can be older than the installed binary.
+func stopStaleDaemon(token, exe string) error {
 	status, ok := daemonStatus(token)
-	if !ok || status.DaemonVersion == protocol.Version {
+	if !ok {
+		return nil
+	}
+	want := binaryVersion(exe)
+	if status.DaemonVersion == want {
 		return nil
 	}
 	if !isLocalTetherDaemon(status.DaemonPID) {
@@ -586,14 +594,14 @@ func stopStaleDaemon(token string) error {
 		if version == "" {
 			version = "older than 0.1.36"
 		}
-		fmt.Fprintf(os.Stderr, "Warning: reusing tether daemon (%s) on 127.0.0.1:9333; this tether is %s. If that daemon runs on this machine, stop it with: pkill -f 'tether daemon'\n", version, protocol.Version)
+		fmt.Fprintf(os.Stderr, "Warning: reusing tether daemon (%s) on 127.0.0.1:9333; the installed tether is %s. If that daemon runs on this machine, stop it with: pkill -f 'tether daemon'\n", version, want)
 		return nil
 	}
 	proc, err := os.FindProcess(status.DaemonPID)
 	if err == nil {
 		err = proc.Signal(syscall.SIGTERM)
 	}
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("stop tether daemon %s (pid %d): %w", status.DaemonVersion, status.DaemonPID, err)
 	}
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
@@ -602,8 +610,24 @@ func stopStaleDaemon(token string) error {
 			return nil
 		}
 		_ = conn.Close()
+		// A concurrent connect may already have started the replacement.
+		if current, ok := daemonStatus(token); ok && current.DaemonPID != status.DaemonPID {
+			return nil
+		}
 	}
 	return fmt.Errorf("tether daemon %s (pid %d) did not stop within 10s", status.DaemonVersion, status.DaemonPID)
+}
+
+// binaryVersion returns the version exe reports, or this binary's version if it cannot be read.
+func binaryVersion(exe string) string {
+	out, err := exec.Command(exe, "version", "--json").Output()
+	var v struct {
+		Version string `json:"version"`
+	}
+	if err != nil || json.Unmarshal(out, &v) != nil || v.Version == "" {
+		return protocol.Version
+	}
+	return v.Version
 }
 
 // isLocalTetherDaemon reports whether pid is a `tether daemon` process on this machine.
@@ -612,6 +636,6 @@ func isLocalTetherDaemon(pid int) bool {
 		return false
 	}
 	out, err := exec.Command("ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
-	fields := strings.Fields(string(out))
-	return err == nil && len(fields) >= 2 && strings.Contains(filepath.Base(fields[0]), "tether") && fields[1] == "daemon"
+	exe, _, found := strings.Cut(strings.TrimSpace(string(out)), " daemon")
+	return err == nil && found && strings.Contains(filepath.Base(exe), "tether")
 }
