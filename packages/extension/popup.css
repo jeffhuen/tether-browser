@@ -1,22 +1,22 @@
 :root {
   color-scheme: dark;
-  --bg-canvas: #0b0c10;
-  --bg-surface: #141721;
-  --bg-elevated: #1c202e;
-  --bg-input: #08090d;
-  --text-primary: #f8fafc;
-  --text-secondary: #cbd5e1;
-  --text-muted: #94a3b8;
-  --accent: #38bdf8;
-  --accent-glow: rgba(56, 189, 248, 0.1);
-  --accent-hover: #7dd3fc;
-  --success: #34d399;
+  --bg-canvas: #101010;
+  --bg-surface: #181615;
+  --bg-elevated: #24211f;
+  --bg-input: #0c0b0b;
+  --text-primary: #eeeeee;
+  --text-secondary: #b8b3b0;
+  --text-muted: #8a8380;
+  --accent: #ee6018;
+  --accent-glow: rgba(238, 96, 24, 0.12);
+  --accent-hover: #ff7733;
+  --success: #a0ca92;
   --danger: #f87171;
-  --danger-bg: rgba(239, 68, 68, 0.1);
-  --border: rgba(255, 255, 255, 0.12);
-  --border-subtle: rgba(255, 255, 255, 0.06);
-  --radius-sm: 6px;
-  --radius-md: 10px;
+  --danger-bg: rgba(248, 113, 113, 0.12);
+  --border: #3d3a39;
+  --border-subtle: #242220;
+  --radius-sm: 3px;
+  --radius-md: 6px;
 }
 
 * {
@@ -36,7 +36,8 @@ body {
   overflow-y: auto;
   background: var(--bg-canvas);
   color: var(--text-primary);
-  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  font: 13px/1.45 'Geist', ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  letter-spacing: -0.012em;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -58,7 +59,7 @@ button, a, input, textarea {
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--text-secondary);
   outline-offset: 2px;
 }
 
@@ -140,10 +141,10 @@ svg {
   width: 24px;
   height: 24px;
   border-radius: var(--radius-sm);
-  background: #0284c7;
-  color: #ffffff;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
 }
-
 .title {
   font-size: 15px;
   font-weight: 650;
@@ -328,7 +329,7 @@ svg {
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-secondary);
-  font: 11px/1.4 ui-monospace, monospace;
+  font: 11px/1.4 'Geist Mono', ui-monospace, monospace;
 }
 
 .recent-chip:hover {
@@ -417,32 +418,34 @@ svg {
 .network-toggle {
   appearance: none;
   width: 36px;
-  height: 22px;
+  height: 20px;
   flex: 0 0 36px;
   margin: 0;
   padding: 2px;
-  border: 1px solid var(--text-muted);
-  border-radius: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
   background: var(--bg-input);
   cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease;
 }
 
 .network-toggle::before {
   content: "";
   display: block;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
-  background: var(--text-secondary);
+  background: var(--text-muted);
+  transition: transform 150ms ease, background-color 150ms ease;
 }
 
 .network-toggle:checked {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--text-primary);
+  border-color: var(--text-primary);
 }
 
 .network-toggle:checked::before {
-  transform: translateX(14px);
+  transform: translateX(16px);
   background: var(--bg-canvas);
 }
 
@@ -474,14 +477,16 @@ svg {
 }
 
 .btn-connect, .btn-nav:not(.btn-nav-secondary) {
-  background: var(--accent);
+  background: var(--text-primary);
   color: var(--bg-canvas);
-  border-color: transparent;
-  font-weight: 600;
+  border-color: var(--text-primary);
+  font-weight: 550;
 }
 
 .btn-connect:hover:not(:disabled), .btn-nav:not(.btn-nav-secondary):hover:not(:disabled) {
-  background: var(--accent-hover);
+  background: #ffffff;
+  border-color: #ffffff;
+  color: var(--bg-canvas);
 }
 
 .btn-connect.btn-connect-secondary {
@@ -494,13 +499,13 @@ svg {
 .btn-connect.btn-connect-secondary:hover:not(:disabled) {
   background: var(--bg-elevated);
   color: var(--text-primary);
-  border-color: var(--border);
+  border-color: var(--text-muted);
 }
 
 .btn-connect.btn-connect-danger {
   background: transparent;
   color: var(--danger);
-  border-color: rgba(239, 68, 68, 0.4);
+  border-color: rgba(248, 113, 113, 0.4);
   font-weight: 500;
 }
 
@@ -546,11 +551,11 @@ svg {
 .main-tabs {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px;
-  padding: 4px;
+  gap: 3px;
+  padding: 3px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-surface);
+  border-radius: var(--radius-sm);
+  background: var(--bg-canvas);
 }
 
 .main-tab {
@@ -558,7 +563,7 @@ svg {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 32px;
+  min-height: 28px;
   padding: 4px;
   border: 0;
   border-radius: var(--radius-sm);
@@ -566,28 +571,73 @@ svg {
   color: var(--text-muted);
   font-size: 12px;
   white-space: nowrap;
+  transition: background-color 150ms ease, color 150ms ease;
 }
 
-.main-tab:hover, .main-tab.active {
+.main-tab:hover {
   color: var(--text-primary);
-  background: var(--bg-elevated);
+  background: var(--bg-surface);
 }
 
 .main-tab.active {
-  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  font-weight: 500;
 }
 
 .tab-badge-count {
   min-width: 18px;
-  padding: 0 5px;
+  padding: 0 4px;
   border-radius: var(--radius-sm);
   background: var(--bg-canvas);
   color: var(--text-muted);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
+  font: 11px/1.4 'Geist Mono', ui-monospace, monospace;
 }
 
 .main-tab.active .tab-badge-count {
+  color: var(--text-secondary);
+}
+
+.action-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.action-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 72px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  text-align: center;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.action-card:hover:not(:disabled) {
+  background: var(--bg-elevated);
+  border-color: var(--text-muted);
+}
+
+.action-primary {
+  background: var(--bg-surface);
+  border-color: var(--border);
+}
+
+.action-primary:hover:not(:disabled) {
+  border-color: var(--text-muted);
+  background: var(--bg-elevated);
+}
+
+.action-icon {
   color: var(--accent);
 }
 
@@ -719,7 +769,7 @@ svg {
 
 .note-target {
   color: var(--accent);
-  font: 11px/1.5 ui-monospace, monospace;
+  font: 11px/1.5 'Geist Mono', ui-monospace, monospace;
 }
 
 .note-comment {
@@ -750,9 +800,8 @@ svg {
 }
 
 .tab-item.active {
-  background: var(--accent-glow);
+  background: var(--bg-elevated);
 }
-
 .tab-item:focus-visible {
   outline-offset: -2px;
 }
@@ -787,12 +836,14 @@ svg {
 }
 
 .tab-badge {
-  padding: 2px 4px;
-  border-radius: 4px;
+  padding: 2px 5px;
+  border-radius: var(--radius-sm);
   background: var(--bg-canvas);
-  color: var(--accent);
-  font-size: 9px;
-  font-weight: 600;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font: 10px/1 'Geist Mono', ui-monospace, monospace;
+  font-weight: 500;
+  letter-spacing: 0.04em;
 }
 
 /* Screenshot feed and preview */
@@ -863,7 +914,7 @@ svg {
 
 .shot-path-chip {
   color: var(--accent);
-  font-family: ui-monospace, monospace;
+  font: 11px/1.4 'Geist Mono', ui-monospace, monospace;
 }
 
 .shot-comment {
