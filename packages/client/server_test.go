@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type mockDriver struct {
@@ -281,69 +282,57 @@ func TestServerDispatchMethods(t *testing.T) {
 	}
 }
 
-func TestServerHTTPOriginSecurity(t *testing.T) {
-	driver := &mockDriver{}
-	server := NewServer(driver)
-
-	reqObj, _ := protocol.NewRequest("req-1", protocol.MethodStatus, nil, 1, "")
-	body, _ := json.Marshal(reqObj)
-
-	// 1. Request with evil Origin MUST be rejected with 403 Forbidden
-	httpReq := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
-	httpReq.Header.Set("Origin", "http://malicious-site.com")
-	httpReq.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	server.ServeHTTP(w, httpReq)
-	if w.Code != http.StatusForbidden {
-		t.Errorf("expected 403 Forbidden for external Origin, got %d", w.Code)
-	}
-
-	// 2. Request without Content-Type: application/json MUST be rejected with 415
-	httpReq2 := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
-	httpReq2.Header.Set("Content-Type", "text/plain")
-	w2 := httptest.NewRecorder()
-
-	server.ServeHTTP(w2, httpReq2)
-	if w2.Code != http.StatusUnsupportedMediaType {
-		t.Errorf("expected 415 Unsupported Media Type for text/plain, got %d", w2.Code)
-	}
-}
-
-func TestServerTokenAuthentication(t *testing.T) {
-	driver := &mockDriver{}
-	server := NewServer(driver)
+func TestServerHTTPSecurity(t *testing.T) {
+	server := NewServer(&mockDriver{})
 	server.SetAuthToken("test-bearer-secret")
-
+	done := make(chan error, 1)
+	go func() { done <- server.ListenAndServe(0) }()
+	t.Cleanup(func() {
+		server.Close()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for server.Port() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if server.Port() == 0 {
+		t.Fatal("server failed to bind")
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/", server.Port())
+	client := &http.Client{Timeout: 3 * time.Second}
 	reqObj, _ := protocol.NewRequest("req-auth", protocol.MethodStatus, nil, 1, "")
 	body, _ := json.Marshal(reqObj)
-
-	// 1. Unauthenticated HTTP request -> 401 Unauthorized
-	httpReq := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
-	httpReq.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	server.ServeHTTP(w, httpReq)
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401 Unauthorized without token, got: %d", w.Code)
-	}
-
-	// 2. HTTP request with wrong bearer token -> 401 Unauthorized
-	httpReqWrong := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
-	httpReqWrong.Header.Set("Content-Type", "application/json")
-	httpReqWrong.Header.Set("Authorization", "Bearer wrong-token")
-	wWrong := httptest.NewRecorder()
-	server.ServeHTTP(wWrong, httpReqWrong)
-	if wWrong.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401 Unauthorized with wrong token, got: %d", wWrong.Code)
-	}
-
-	// 3. HTTP request with correct bearer token -> 200 OK
-	httpReqAuth := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
-	httpReqAuth.Header.Set("Content-Type", "application/json")
-	httpReqAuth.Header.Set("Authorization", "Bearer test-bearer-secret")
-	wAuth := httptest.NewRecorder()
-	server.ServeHTTP(wAuth, httpReqAuth)
-	if wAuth.Code != http.StatusOK {
-		t.Errorf("expected 200 OK with valid bearer token, got: %d", wAuth.Code)
+	for _, tc := range []struct {
+		name, origin, contentType, token string
+		want int
+	}{
+		{"external origin", "http://malicious-site.com", "application/json", "test-bearer-secret", http.StatusForbidden},
+		{"wrong content type", "", "text/plain", "test-bearer-secret", http.StatusUnsupportedMediaType},
+		{"missing token", "", "application/json", "", http.StatusUnauthorized},
+		{"wrong token", "", "application/json", "wrong-token", http.StatusUnauthorized},
+		{"valid token", "", "application/json", "test-bearer-secret", http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Close = true
+			req.Header.Set("Origin", tc.origin)
+			req.Header.Set("Content-Type", tc.contentType)
+			if tc.token != "" {
+				req.Header.Set("Authorization", "Bearer " + tc.token)
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.want {
+				t.Fatalf("expected HTTP %d, got %d", tc.want, resp.StatusCode)
+			}
+		})
 	}
 }

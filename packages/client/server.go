@@ -241,52 +241,6 @@ func isAuthorizedOrigin(origin string) bool {
 	return h == "localhost" || h == "127.0.0.1" || h == "::1" || strings.HasSuffix(h, ".localhost")
 }
 
-// ServeHTTP implements http.Handler for standard HTTP servers and testing.
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	origin := r.Header.Get("Origin")
-	if origin != "" && !isAuthorizedOrigin(origin) {
-		http.Error(w, "forbidden origin", http.StatusForbidden)
-		return
-	}
-
-	ct := r.Header.Get("Content-Type")
-	if !strings.HasPrefix(ct, "application/json") {
-		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
-		return
-	}
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "read error", http.StatusBadRequest)
-		return
-	}
-
-	var req protocol.Request
-	if err := json.Unmarshal(body, &req); err != nil {
-		errResp := protocol.NewErrorResponse(nil, protocol.CodeParseError, "parse error", nil, 0, "")
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(errResp)
-		return
-	}
-
-	if !s.isAuthorized(&req, r) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		errResp := protocol.NewErrorResponse(req.ID, protocol.CodeAuthRequired, "authentication required: invalid or missing bearer token", nil, req.Seq, req.Epoch)
-		_ = json.NewEncoder(w).Encode(errResp)
-		return
-	}
-
-	resp := s.Dispatch(r.Context(), &req)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
-}
-
 // Dispatch routes a protocol.Request to the appropriate driver method.
 func (s *Server) Dispatch(ctx context.Context, req *protocol.Request) *protocol.Response {
 	if req.JSONRPC != protocol.JSONRPCVersion {
