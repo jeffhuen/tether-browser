@@ -5,6 +5,15 @@ All notable changes to `tether-browser` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.36] - 2026-09-23
+
+### Changed
+- `tether connect` and the extension's **Connect** button replace a running daemon from a different `tether` version, so a reinstall takes effect when you reconnect. Before, they reused whatever daemon was already running. A daemon older than 0.1.36 must be stopped once by hand with `pkill -f 'tether daemon'`.
+- `tether status` shows `Daemon Version`, the version of the `tether` binary running the daemon. In extension mode, `Version` is the extension's version.
+
+### Fixed
+- Shells without `XDG_RUNTIME_DIR` now use the same broker socket as login shells (`/run/user/<uid>/tether/broker.sock` on systemd hosts). Before, they could start a second broker that other shells never saw.
+
 ## [0.1.35] - 2026-09-23
 
 ### Changed
