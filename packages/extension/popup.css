@@ -105,7 +105,13 @@ svg {
 }
 
 .tab-panel {
+  position: relative;
+  z-index: 1;
   gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
 }
 
 .section {
@@ -562,59 +568,63 @@ svg {
   color: #ffffff;
 }
 
-/* Workspace tabs and actions */
+/* Workspace tabs: physical folder tabs connecting to the tool panel below */
 .main-tabs {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 3px;
-  padding: 3px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-input);
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 0 8px;
+  margin-bottom: -8px;
+  position: relative;
+  z-index: 2;
+  border: 0;
+  background: transparent;
 }
 
 .main-tab {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   min-height: 28px;
-  padding: 4px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
+  padding: 5px 12px;
+  border: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: rgba(20, 23, 34, 0.45);
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
+  letter-spacing: -0.01em;
   white-space: nowrap;
-  transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease;
+  transition: background-color 150ms ease, color 150ms ease;
 }
 
-.main-tab:hover {
+.main-tab:hover:not(.active) {
   color: var(--text-primary);
-  background: var(--bg-surface);
+  background: var(--bg-elevated);
 }
 
 .main-tab.active {
   color: #ffffff;
-  background: var(--bg-elevated);
-  border-color: rgba(255, 255, 255, 0.16);
+  background: var(--bg-surface);
+  border-color: var(--border);
+  border-bottom: 1px solid var(--bg-surface);
+  margin-bottom: -1px;
   font-weight: 600;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
 }
-
 .tab-badge-count {
   min-width: 18px;
   padding: 0 5px;
   border-radius: var(--radius-sm);
-  background: var(--bg-surface);
+  background: var(--bg-input);
   border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
-  font: 11px/1.4 'Geist Mono', ui-monospace, monospace;
+  font: 10px/1.4 'Geist Mono', ui-monospace, monospace;
 }
 
 .main-tab.active .tab-badge-count {
-  background: #10131c;
+  background: var(--bg-elevated);
   border-color: var(--border);
   color: #ffffff;
 }
@@ -636,13 +646,14 @@ svg {
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: var(--bg-surface);
+  background: var(--bg-elevated);
   color: var(--text-primary);
   text-align: center;
   transition: background-color 150ms ease, border-color 150ms ease;
 }
+
 .action-card:hover:not(:disabled) {
-  background: var(--bg-elevated);
+  background: #232838;
   border-color: rgba(255, 255, 255, 0.28);
 }
 
@@ -679,12 +690,12 @@ svg {
   padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: var(--bg-surface);
+  background: var(--bg-elevated);
   text-align: left;
 }
 
 #btn-inspect:hover:not(:disabled) {
-  background: var(--bg-elevated);
+  background: #232838;
   border-color: rgba(249, 115, 22, 0.4);
 }
 
@@ -739,8 +750,8 @@ svg {
   overflow-y: auto;
   overscroll-behavior: contain;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-surface);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
 }
 
 .tabs-container {

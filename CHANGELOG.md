@@ -14,8 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clarified remote browsing description: "Open websites through your remote server. Use `localhost` to reach remote services as if they were running locally."
 - Elevated muted text contrast to `#a4b3cd` (WCAG AAA 8.5:1, APCA $L_c$ 67.5) and borders to `rgba(255, 255, 255, 0.16)` for WCAG 3 perceptual contrast compliance.
 - Optimized vertical rhythm and container heights to prevent bottom clipping under Chrome's 600px popup ceiling.
-- Upgraded segmented tabs with elevated active pill styling, added dedicated ambient icon wells to tool action cards, and styled section headers in uppercase tracked monospace for distinct visual hierarchy.
-
+- Upgraded Review Notes and Screenshots into connected physical folder tabs: the active tab merges directly into the tool card below with no dividing line, visually framing all tab-specific tools and clearly distinguishing them from persistent sections below.
+- Added dedicated ambient icon wells to tool action cards, and styled section headers in uppercase tracked monospace for distinct visual hierarchy.
 ### Fixed
 - Separate the popup's agent bridge, SSH tunnel, and remote browsing indicators. SSH readiness no longer implies an agent connection, and failed status polls show unknown SSH and browsing state.
 - Rewrite remote browsing help in plain language and combine connection errors into one warning, with the original errors under **Technical details**.
