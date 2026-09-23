@@ -1,22 +1,22 @@
 :root {
   color-scheme: dark;
-  --bg-canvas: #101010;
-  --bg-surface: #181615;
-  --bg-elevated: #24211f;
-  --bg-input: #0c0b0b;
-  --text-primary: #eeeeee;
-  --text-secondary: #b8b3b0;
-  --text-muted: #8a8380;
-  --accent: #ee6018;
-  --accent-glow: rgba(238, 96, 24, 0.12);
-  --accent-hover: #ff7733;
-  --success: #a0ca92;
+  --bg-canvas: #090a0f;
+  --bg-surface: #141722;
+  --bg-elevated: #1e2230;
+  --bg-input: #0b0c12;
+  --text-primary: #ffffff;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --accent: #f97316;
+  --accent-glow: rgba(249, 115, 22, 0.15);
+  --accent-hover: #fb923c;
+  --success: #34d399;
   --danger: #f87171;
-  --danger-bg: rgba(248, 113, 113, 0.12);
-  --border: #3d3a39;
-  --border-subtle: #242220;
-  --radius-sm: 3px;
-  --radius-md: 6px;
+  --danger-bg: rgba(248, 113, 113, 0.14);
+  --border: rgba(255, 255, 255, 0.13);
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --radius-sm: 4px;
+  --radius-md: 8px;
 }
 
 * {
@@ -59,7 +59,7 @@ button, a, input, textarea {
 }
 
 :focus-visible {
-  outline: 2px solid var(--text-secondary);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -417,13 +417,13 @@ svg {
 
 .network-toggle {
   appearance: none;
-  width: 36px;
-  height: 20px;
-  flex: 0 0 36px;
+  width: 38px;
+  height: 22px;
+  flex: 0 0 38px;
   margin: 0;
   padding: 2px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 11px;
   background: var(--bg-input);
   cursor: pointer;
   transition: background-color 150ms ease, border-color 150ms ease;
@@ -432,21 +432,21 @@ svg {
 .network-toggle::before {
   content: "";
   display: block;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   background: var(--text-muted);
   transition: transform 150ms ease, background-color 150ms ease;
 }
 
 .network-toggle:checked {
-  background: var(--text-primary);
-  border-color: var(--text-primary);
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 .network-toggle:checked::before {
   transform: translateX(16px);
-  background: var(--bg-canvas);
+  background: #ffffff;
 }
 
 .network-toggle:disabled {
@@ -484,35 +484,35 @@ svg {
 }
 
 .btn-connect:hover:not(:disabled), .btn-nav:not(.btn-nav-secondary):hover:not(:disabled) {
-  background: #ffffff;
-  border-color: #ffffff;
-  color: var(--bg-canvas);
+  background: #f1f5f9;
+  border-color: #f1f5f9;
+  color: #090a0f;
 }
 
 .btn-connect.btn-connect-secondary {
-  background: var(--bg-surface);
+  background: var(--bg-elevated);
   color: var(--text-secondary);
   border-color: var(--border);
   font-weight: 500;
 }
 
 .btn-connect.btn-connect-secondary:hover:not(:disabled) {
-  background: var(--bg-elevated);
-  color: var(--text-primary);
-  border-color: var(--text-muted);
+  background: #252a3a;
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.28);
 }
 
 .btn-connect.btn-connect-danger {
-  background: transparent;
+  background: var(--danger-bg);
   color: var(--danger);
   border-color: rgba(248, 113, 113, 0.4);
   font-weight: 500;
 }
 
 .btn-connect.btn-connect-danger:hover:not(:disabled) {
-  background: var(--danger-bg);
+  background: rgba(248, 113, 113, 0.22);
   border-color: var(--danger);
-  color: var(--danger);
+  color: #ffffff;
 }
 
 .btn-pill, .btn-icon, .btn-del-shot {
@@ -528,23 +528,32 @@ svg {
 }
 
 .btn-pill {
-  padding: 0 8px;
-  font-size: 11px;
-}
-
-.btn-pill:hover:not(:disabled), .btn-icon:hover:not(:disabled),
-.btn-nav-secondary:hover:not(:disabled) {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   background: var(--bg-elevated);
-  color: var(--text-primary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
 }
 
-.btn-pill-danger, .btn-del-shot:hover {
-  color: var(--danger);
+.btn-pill:hover:not(:disabled) {
+  background: #252a3a;
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.28);
 }
 
-.btn-pill-danger:hover:not(:disabled), .btn-del-shot:hover {
+.btn-pill-danger {
   background: var(--danger-bg);
+  border-color: rgba(248, 113, 113, 0.35);
   color: var(--danger);
+}
+
+.btn-pill-danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.24);
+  border-color: var(--danger);
+  color: #ffffff;
 }
 
 /* Workspace tabs and actions */
@@ -588,15 +597,18 @@ svg {
 
 .tab-badge-count {
   min-width: 18px;
-  padding: 0 4px;
+  padding: 0 5px;
   border-radius: var(--radius-sm);
-  background: var(--bg-canvas);
-  color: var(--text-muted);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
   font: 11px/1.4 'Geist Mono', ui-monospace, monospace;
 }
 
 .main-tab.active .tab-badge-count {
-  color: var(--text-secondary);
+  background: #10131c;
+  border-color: var(--border);
+  color: #ffffff;
 }
 
 .action-grid {
@@ -624,7 +636,7 @@ svg {
 
 .action-card:hover:not(:disabled) {
   background: var(--bg-elevated);
-  border-color: var(--text-muted);
+  border-color: rgba(255, 255, 255, 0.28);
 }
 
 .action-primary {
@@ -633,55 +645,13 @@ svg {
 }
 
 .action-primary:hover:not(:disabled) {
-  border-color: var(--text-muted);
   background: var(--bg-elevated);
+  border-color: rgba(255, 255, 255, 0.35);
 }
 
 .action-icon {
   color: var(--accent);
 }
-
-.action-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.action-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  min-width: 0;
-  min-height: 72px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-surface);
-  color: var(--text-primary);
-  text-align: center;
-  transition: background-color 150ms ease, border-color 150ms ease;
-}
-
-.action-card:hover:not(:disabled) {
-  background: var(--bg-elevated);
-  border-color: var(--text-muted);
-}
-
-.action-primary {
-  background: var(--accent-glow);
-  border-color: rgba(56, 189, 248, 0.3);
-}
-
-.action-primary:hover:not(:disabled) {
-  border-color: var(--accent);
-}
-
-.action-icon {
-  color: var(--accent);
-}
-
 .action-label {
   font-size: 12px;
   font-weight: 600;

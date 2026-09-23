@@ -8,11 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- Adopted the "Factory" design system: pitch-black obsidian canvas (`#101010`), bone text (`#eeeeee` at 17:1 contrast), warm granite muted copy (`#8a8380`), 3px radii, hairline `#3d3a39` borders, and restrained signal accents (`#ee6018` orange, `#a0ca92` green).
+- Overhauled popup contrast and visual separation: replaced low-contrast warm darks with a high-contrast surface ladder (`#090a0f` canvas, `#141722` surface, `#1e2230` elevated), brightened hairline borders (`rgba(255, 255, 255, 0.13)`), added visible surfaces to secondary buttons (`Copy`, `Clear`), and eliminated muddy background washes so all components have clear edges.
 - The connection status strip now opens connection settings, replacing the separate **Connections** button. The version link moved beside the reload button.
 - The connection button is now state-aware (`Connect`, `Disconnect`, `Switch`, `Reconnect`, `Cancel`), replacing the separate header power icon with inline actions, input locking, and Enter-key protection.
 - Clarified remote browsing description: "Open websites through your remote server. Use `localhost` to reach remote services as if they were running locally."
-
 ### Fixed
 - Separate the popup's agent bridge, SSH tunnel, and remote browsing indicators. SSH readiness no longer implies an agent connection, and failed status polls show unknown SSH and browsing state.
 - Rewrite remote browsing help in plain language and combine connection errors into one warning, with the original errors under **Technical details**.
