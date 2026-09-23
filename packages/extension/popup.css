@@ -319,7 +319,7 @@ svg {
   border-color: var(--accent);
 }
 
-.connect-input[hidden] + .btn-connect {
+.connect-input[hidden] ~ .btn-connect {
   flex: 1;
 }
 

@@ -67,6 +67,7 @@
             <div class="connect-input-row">
               <input type="text" id="connect-host-input" class="connect-input" aria-label="Remote SSH host" placeholder="user@remote-host" autocomplete="off" spellcheck="false">
               <button type="submit" id="btn-do-connect" class="btn-connect">Connect Tether</button>
+              <button type="button" id="btn-do-disconnect" class="btn-connect btn-connect-secondary" hidden>Disconnect</button>
             </div>
           </form>
           <div id="recent-hosts-wrapper" class="recent-hosts-wrapper" style="display:none;">
@@ -218,17 +219,16 @@
                 <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
               </svg>
-              <span>Copy for Agent</span>
+              <span>Copy</span>
             </button>
             <button id="btn-clear-shots" class="btn-pill btn-pill-danger" title="Delete all screenshots locally and remotely" disabled>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="3 6 5 6 21 6"/>
                 <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
               </svg>
-              <span>Clear All</span>
+              <span>Clear</span>
             </button>
           </div>
-        </div>
         <div id="shots-list" class="shots-container">
           <div class="empty-state">No screenshots captured yet. Click <b>Crop Area</b> or <b>Viewport</b> above.</div>
         </div>
