@@ -202,6 +202,14 @@ func TestCDPDriverFullCycle(t *testing.T) {
 		t.Fatalf("OpenTab: %v", err)
 	}
 	targetID := openRes.TargetID
+
+	// A non-object evaluation result must not make an element action succeed.
+	err = driver.Fill(ctx, protocol.FillParams{TargetID: targetID, Selector: "#field", Text: "test"})
+	var decodeErr *json.UnmarshalTypeError
+	if !errors.As(err, &decodeErr) {
+		t.Fatalf("expected malformed element result to fail decoding, got %v", err)
+	}
+
 	// Missing document dimensions must not silently produce a viewport screenshot.
 	if _, err := driver.Screenshot(ctx, protocol.ScreenshotParams{TargetID: targetID, FullPage: true}); err == nil {
 		t.Fatal("full-page capture must fail when the browser does not report document dimensions")

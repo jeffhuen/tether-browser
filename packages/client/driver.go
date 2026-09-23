@@ -569,6 +569,46 @@ func (d *CDPDriver) Snapshot(ctx context.Context, params protocol.SnapshotParams
 	}, nil
 }
 
+const elementLookup = `
+	el = sel.startsWith('@e') ? (window.__tether_refs ? window.__tether_refs[sel] : null) : document.querySelector(sel);
+	if (!el) return { notFound: true };
+	if (!el.isConnected) return { stale: true };
+`
+
+const elementCenterScript = `(function(sel) {
+	let el;
+` + elementLookup + `
+	el.scrollIntoView({ block: 'center', inline: 'center' });
+	const r = el.getBoundingClientRect();
+	return { ok: true, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+})(%q)`
+
+type elementResult struct {
+	OK bool `json:"ok"`
+	NotFound bool `json:"notFound"`
+	Stale bool `json:"stale"`
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+func (d *CDPDriver) evalElement(ctx context.Context, client *CDPClient, script string) (elementResult, error) {
+	var res elementResult
+	val, err := d.evalRaw(ctx, client, script)
+	if err != nil {
+		return res, err
+	}
+	if err := json.Unmarshal(val, &res); err != nil {
+		return res, err
+	}
+	if res.Stale {
+		return res, protocol.ErrStaleRef
+	}
+	if res.NotFound || !res.OK {
+		return res, protocol.ErrTargetNotFound
+	}
+	return res, nil
+}
+
 // Click resolves an element, scrolls it into view, and dispatches native mouse events.
 func (d *CDPDriver) Click(ctx context.Context, params protocol.ClickParams) error {
 	client, _, err := d.getTargetClient(params.TargetID)
@@ -576,38 +616,9 @@ func (d *CDPDriver) Click(ctx context.Context, params protocol.ClickParams) erro
 		return err
 	}
 
-	resolveScript := fmt.Sprintf(`
-(function(sel) {
-	let el = sel.startsWith('@e') ? (window.__tether_refs ? window.__tether_refs[sel] : null) : document.querySelector(sel);
-	if (!el) return { notFound: true };
-	if (!el.isConnected) return { stale: true };
-	el.scrollIntoView({ block: 'center', inline: 'center' });
-	const r = el.getBoundingClientRect();
-	return { ok: true, x: r.left + r.width / 2, y: r.top + r.height / 2 };
-})(%q)
-`, params.Selector)
-
-	var res struct {
-		OK       bool    `json:"ok"`
-		NotFound bool    `json:"notFound"`
-		Stale    bool    `json:"stale"`
-		X        float64 `json:"x"`
-		Y        float64 `json:"y"`
-	}
-
-	val, err := d.evalRaw(ctx, client, resolveScript)
+	res, err := d.evalElement(ctx, client, fmt.Sprintf(elementCenterScript, params.Selector))
 	if err != nil {
 		return err
-	}
-	if err := json.Unmarshal(val, &res); err != nil {
-		return err
-	}
-
-	if res.Stale {
-		return protocol.ErrStaleRef
-	}
-	if res.NotFound || !res.OK {
-		return protocol.ErrTargetNotFound
 	}
 
 	button := params.Button
@@ -660,9 +671,8 @@ func (d *CDPDriver) Fill(ctx context.Context, params protocol.FillParams) error 
 
 	script := fmt.Sprintf(`
 (function(sel, txt) {
-	let el = sel.startsWith('@e') ? (window.__tether_refs ? window.__tether_refs[sel] : null) : document.querySelector(sel);
-	if (!el) return { notFound: true };
-	if (!el.isConnected) return { stale: true };
+	let el;
+` + elementLookup + `
 	el.focus();
 	const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set ||
 	                     Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
@@ -673,30 +683,12 @@ func (d *CDPDriver) Fill(ctx context.Context, params protocol.FillParams) error 
 	}
 	el.dispatchEvent(new Event('input', { bubbles: true }));
 	el.dispatchEvent(new Event('change', { bubbles: true }));
+	return { ok: true };
 })(%q, %q)
 `, params.Selector, params.Text)
 
-	var res struct {
-		OK       bool `json:"ok"`
-		NotFound bool `json:"notFound"`
-		Stale    bool `json:"stale"`
-	}
-
-	val, err := d.evalRaw(ctx, client, script)
-	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal(val, &res); err != nil {
-		return err
-	}
-
-	if res.Stale {
-		return protocol.ErrStaleRef
-	}
-	if res.NotFound {
-		return protocol.ErrTargetNotFound
-	}
-	return nil
+	_, err = d.evalElement(ctx, client, script)
+	return err
 }
 
 
@@ -742,9 +734,7 @@ func (d *CDPDriver) Type(ctx context.Context, params protocol.TypeParams) error 
 (function(sel, txt) {
 	let el;
 	if (sel) {
-		el = sel.startsWith('@e') ? (window.__tether_refs ? window.__tether_refs[sel] : null) : document.querySelector(sel);
-		if (!el) return { notFound: true };
-		if (!el.isConnected) return { stale: true };
+` + elementLookup + `
 		el.focus();
 	} else {
 		el = document.activeElement || document.body;
@@ -759,27 +749,8 @@ func (d *CDPDriver) Type(ctx context.Context, params protocol.TypeParams) error 
 })(%q, %q)
 `, params.Selector, params.Text)
 
-	var res struct {
-		OK       bool `json:"ok"`
-		NotFound bool `json:"notFound"`
-		Stale    bool `json:"stale"`
-	}
-
-	val, err := d.evalRaw(ctx, client, script)
-	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal(val, &res); err != nil {
-		return err
-	}
-
-	if res.Stale {
-		return protocol.ErrStaleRef
-	}
-	if res.NotFound {
-		return protocol.ErrTargetNotFound
-	}
-	return nil
+	_, err = d.evalElement(ctx, client, script)
+	return err
 }
 
 // Press dispatches native CDP keyboard events.
@@ -901,38 +872,9 @@ func (d *CDPDriver) Hover(ctx context.Context, params protocol.HoverParams) erro
 		return err
 	}
 
-	script := fmt.Sprintf(`
-(function(sel) {
-	let el = sel.startsWith('@e') ? (window.__tether_refs ? window.__tether_refs[sel] : null) : document.querySelector(sel);
-	if (!el) return { notFound: true };
-	if (!el.isConnected) return { stale: true };
-	el.scrollIntoView({ block: 'center', inline: 'center' });
-	const r = el.getBoundingClientRect();
-	return { ok: true, x: r.left + r.width / 2, y: r.top + r.height / 2 };
-})(%q)
-`, params.Selector)
-
-	var res struct {
-		OK       bool    `json:"ok"`
-		NotFound bool    `json:"notFound"`
-		Stale    bool    `json:"stale"`
-		X        float64 `json:"x"`
-		Y        float64 `json:"y"`
-	}
-
-	val, err := d.evalRaw(ctx, client, script)
+	res, err := d.evalElement(ctx, client, fmt.Sprintf(elementCenterScript, params.Selector))
 	if err != nil {
 		return err
-	}
-	if err := json.Unmarshal(val, &res); err != nil {
-		return err
-	}
-
-	if res.Stale {
-		return protocol.ErrStaleRef
-	}
-	if res.NotFound || !res.OK {
-		return protocol.ErrTargetNotFound
 	}
 
 	moveCall := map[string]any{
@@ -953,35 +895,15 @@ func (d *CDPDriver) Focus(ctx context.Context, params protocol.FocusParams) erro
 
 	script := fmt.Sprintf(`
 (function(sel) {
-	let el = sel.startsWith('@e') ? (window.__tether_refs ? window.__tether_refs[sel] : null) : document.querySelector(sel);
-	if (!el) return { notFound: true };
-	if (!el.isConnected) return { stale: true };
+	let el;
+` + elementLookup + `
 	el.focus();
 	return { ok: true };
 })(%q)
 `, params.Selector)
 
-	var res struct {
-		OK       bool `json:"ok"`
-		NotFound bool `json:"notFound"`
-		Stale    bool `json:"stale"`
-	}
-
-	val, err := d.evalRaw(ctx, client, script)
-	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal(val, &res); err != nil {
-		return err
-	}
-
-	if res.Stale {
-		return protocol.ErrStaleRef
-	}
-	if res.NotFound {
-		return protocol.ErrTargetNotFound
-	}
-	return nil
+	_, err = d.evalElement(ctx, client, script)
+	return err
 }
 
 // Eval evaluates a JavaScript expression in the page context.
@@ -1121,22 +1043,16 @@ func (d *CDPDriver) Wait(ctx context.Context, params protocol.WaitParams) error 
 
 	checkScript := fmt.Sprintf(`
 (function(sel, st) {
-	let el = sel.startsWith('@e') ? (window.__tether_refs ? window.__tether_refs[sel] : null) : document.querySelector(sel);
-	const isAttached = Boolean(el && el.isConnected);
-	if (st === 'attached') {
-		return isAttached;
-	}
-	if (!isAttached) {
-		return st === 'hidden';
-	}
+	let el;
+` + elementLookup + `
+	if (st === 'attached') return { ok: true };
 	const r = el.getBoundingClientRect();
 	const style = window.getComputedStyle(el);
 	const visible = style.display !== 'none' &&
 					style.visibility !== 'hidden' &&
 					style.opacity !== '0' &&
 					(r.width > 0 || r.height > 0);
-	if (st === 'hidden') return !visible;
-	return visible;
+	return { ok: st === 'hidden' ? !visible : visible };
 })(%q, %q)
 `, params.Selector, state)
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -1149,11 +1065,11 @@ func (d *CDPDriver) Wait(ctx context.Context, params protocol.WaitParams) error 
 		case <-ticker.C:
 			val, err := d.evalRaw(waitCtx, client, checkScript)
 			if err == nil {
-				var ok bool
-				if err := json.Unmarshal(val, &ok); err != nil {
+				var res elementResult
+				if err := json.Unmarshal(val, &res); err != nil {
 					return err
 				}
-				if ok {
+				if res.OK || (state == "hidden" && (res.NotFound || res.Stale)) {
 					return nil
 				}
 			}
