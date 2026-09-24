@@ -14,11 +14,11 @@ Choose isolation, delegation, and review separately:
 
 | Decision | When it is needed |
 |---|---|
-| **Isolated checkout** | Concurrent or user-owned work, dependency changes, new component boundaries, or meaningful protocol/concurrency risk |
+| **Isolated checkout** | Follows the level in `skill://herdr-workflow` section 6. L0 and L1 changes work in the primary checkout under section 8. L2 and L3 changes, dependency changes, new component boundaries, and protocol or concurrency risk use a worktree |
 | **Delegation** | Explicit user request, useful parallelism, ownership transfer, or dependency coordination |
 | **Independent review** | Wire protocols, cryptographic operations, cross-platform compatibility, concurrency and recovery; also when explicitly requested |
 
-The primary checkout is user-owned. Start direct work there only when it is clean, on `main`, and equal to freshly fetched `origin/main`. Otherwise use an owned isolated checkout on the NVMe workspace root (`/home/jeffhuen/herdr/workspaces/tether-browser/<slice-name>`).
+The primary checkout is shared. `skill://herdr-workflow` section 8 governs work there, including the standing authority to push L0 and L1 changes. Section 2 governs worktrees.
 
 ## 2. Keep the Scope Fixed
 
