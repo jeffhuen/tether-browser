@@ -31,6 +31,21 @@ type sshConnectionStatus struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// Cellular and relayed Tailscale links stall for seconds at a time. A stall
+// must not tear down agent access, so probes are slow to give up and a
+// session that was working reconnects on its own until Disconnect.
+const (
+	probeTimeout      = 10 * time.Second
+	probeInterval     = 15 * time.Second
+	probeFailureLimit = 3
+)
+
+var (
+	runSSH            = (*sshSession).run // replaced in tests
+	reconnectDelay    = 2 * time.Second
+	maxReconnectDelay = 30 * time.Second
+)
+
 // The native host owns both the SSH child and a stable, loopback-only proxy
 // listener. Losing SSH rejects new requests rather than releasing its port.
 type sshSession struct {
@@ -105,25 +120,46 @@ func (s *sshSession) Connect(parent context.Context, host string, port int) (ssh
 	status := s.status
 	go func(done chan struct{}) {
 		defer close(done)
+		defer cancel()
 		// Reap the previous SSH child before competing for the remote reverse port.
 		if previousDone != nil {
 			<-previousDone
 		}
-		if ctx.Err() != nil {
-			return
-		}
-		err := s.run(ctx, status)
-		cancel()
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if s.status.SessionID == status.SessionID {
-			s.status.State, s.upstream = "disconnected", 0
+		delay := reconnectDelay
+		for everConnected := false; ctx.Err() == nil; {
+			err := runSSH(s, ctx, status)
+			s.mu.Lock()
+			// Disconnect, Close, or a newer Connect already owns the status.
+			if ctx.Err() != nil || s.status.SessionID != status.SessionID {
+				s.mu.Unlock()
+				return
+			}
+			up := s.upstream != 0 // run sets upstream only after forwarding was verified
+			everConnected = everConnected || up
+			s.upstream = 0
 			if err != nil {
 				s.status.Error = err.Error()
 			}
-			if getActiveHost() == host {
-				clearActiveHost()
+			if !everConnected {
+				// Never came up: a bad host, sign-in, or denied forwarding will not fix itself.
+				s.status.State = "disconnected"
+				if getActiveHost() == host {
+					clearActiveHost()
+				}
+				s.mu.Unlock()
+				return
 			}
+			s.status.State = "connecting"
+			s.mu.Unlock()
+			if up {
+				delay = reconnectDelay
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(delay):
+			}
+			delay = min(delay*2, maxReconnectDelay)
 		}
 	}(s.done)
 	return status, nil
@@ -223,7 +259,7 @@ func (s *sshSession) run(ctx context.Context, status sshConnectionStatus) error 
 	remote = "sh -c " + cli.ShellQuote(remote)
 	args := []string{
 		"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-		"-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2",
+		"-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
 		"-o", "ExitOnForwardFailure=yes", "-o", "ForkAfterAuthentication=no",
 		"-o", "ControlMaster=yes", "-o", "ControlPersist=no", "-S", controlPath, "-o", "SessionType=default",
 		"-D", fmt.Sprintf("127.0.0.1:%d", port),
@@ -303,22 +339,22 @@ func (s *sshSession) run(ctx context.Context, status sshConnectionStatus) error 
 		s.mu.Unlock()
 		return nil
 	}
-	s.status.State, s.upstream = "connected", port
+	s.status.State, s.status.Error, s.upstream = "connected", "", port
 	saveActiveHost(status.Host)
 	s.mu.Unlock()
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(probeInterval)
 	defer ticker.Stop()
-	for {
+	for failures := 0; ; {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-connectionClosed:
 			return fmt.Errorf("SSH connection closed: %s", stderr.String())
 		case <-ticker.C:
-			if err := probeSOCKS(ctx, port, token, status.SessionID); err != nil {
-				if err := ensureReverse(); err != nil {
-					return fmt.Errorf("SSH forwarding unavailable: %w", err)
-				}
+			if err := ensureReverse(); err == nil {
+				failures = 0
+			} else if failures++; failures >= probeFailureLimit {
+				return fmt.Errorf("SSH forwarding unavailable: %w", err)
 			}
 		}
 	}
@@ -336,12 +372,12 @@ func reserveSSHPort() (int, error) {
 // Exercise direct-tcpip through SSH to our reverse listener, not just the
 // SOCKS greeting. This detects hosts that authenticate but deny TCP forwarding.
 func probeSOCKS(ctx context.Context, port int, token, sessionID string) error {
-	conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	conn, err := (&net.Dialer{Timeout: probeTimeout}).DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(probeTimeout))
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	if _, err := conn.Write([]byte{5, 1, 0}); err != nil {
