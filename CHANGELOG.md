@@ -5,6 +5,20 @@ All notable changes to `tether-browser` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.37] - 2026-09-26
+
+### Changed
+- The popup has two connection controls: the **Connect Tether** button and the **Remote browsing** switch. Remote browsing needs a connected Tether. Turning Remote browsing off restores Chrome's previous proxy and keeps the SSH session and agent access up.
+- **Disconnect Tether** turns Remote browsing off, closes the SSH session that Tether opened, closes the connection to the local `tether` helper, and detaches Chrome's debugger from every tab. Agent commands fail until you connect again.
+- The extension reconnects on its own after Chrome restarts only if Tether was connected when Chrome closed. After you update, click **Connect Tether** once, unless Remote browsing was on.
+- When Tether loses its server connection, the popup shows **Reconnect** next to **Disconnect**. Before, it offered only **Disconnect Tether**.
+- The Remote browsing confirmation appears once for each server and proxy port. Turning the switch on again for the same server skips it.
+- In the screenshot panel, **Copy for Agent** is now **Copy** and **Clear All** is now **Clear**, matching the notes panel.
+
+### Security
+- The review overlay runs in an isolated JavaScript world. A page can no longer define `window.__tetherReview` to change the notes and report that the popup copies or that `tether review list` returns.
+- Agent commands act only on tabs in the Tether tab group. The popup's status check no longer attaches Chrome's debugger to tabs outside the group.
+
 ## [0.1.36] - 2026-09-23
 
 ### Changed

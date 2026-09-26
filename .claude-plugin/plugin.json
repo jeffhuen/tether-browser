@@ -1,7 +1,7 @@
 {
   "name": "tether-browser",
   "description": "Remote-to-local browser automation bridge for AI coding agents across Herdr, tmux, and SSH. Controls Google Chrome on the developer's laptop with native 2FA/Passkeys, tab groups, accessibility snapshots, and visual review notes.",
-  "version": "0.1.36",
+  "version": "0.1.37",
   "author": {
     "name": "Jeff Huen",
     "url": "https://github.com/jeffhuen"
