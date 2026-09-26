@@ -91,6 +91,37 @@ func TestSessionThatNeverConnectsDoesNotRetry(t *testing.T) {
 	}
 }
 
+func TestReconnectRetriesDroppedSessionNow(t *testing.T) {
+	attempts, started := fakeSSH(t, time.Hour,
+		map[int32]bool{1: true}, map[int32]string{1: "SSH connection closed", 2: "ssh: connect timed out"})
+	session := &sshSession{}
+	defer session.Close()
+	if _, err := session.Connect(context.Background(), "host", 0); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	for _, step := range []struct {
+		lastErr string
+		want    int32
+	}{{"SSH connection closed", 2}, {"ssh: connect timed out", 3}} {
+		waitStatus(t, session, func(s sshConnectionStatus) bool { return s.State == "connecting" && s.Error == step.lastErr })
+		if _, err := session.Connect(context.Background(), "host", 0); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case got := <-started:
+			if got != step.want {
+				t.Fatalf("attempt %d started, want %d", got, step.want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("Reconnect waited out the backoff instead of starting attempt %d", step.want)
+		}
+	}
+	if n := attempts.Load(); n != 3 {
+		t.Fatalf("%d attempts, want 3: a failed manual retry must not stop the reconnect loop", n)
+	}
+}
+
 func TestDisconnectInterruptsReconnectBackoff(t *testing.T) {
 	attempts, _ := fakeSSH(t, time.Hour, map[int32]bool{1: true}, map[int32]string{1: "SSH connection closed"})
 	session := &sshSession{}

@@ -56,6 +56,7 @@ type sshSession struct {
 	done     chan struct{}
 	ctx      context.Context
 	upstream int
+	wake     chan struct{} // cuts a reconnect wait short
 	closed   bool
 }
 
@@ -88,6 +89,13 @@ func (s *sshSession) Connect(parent context.Context, host string, port int) (ssh
 		if port != 0 && port != s.status.ProxyPort {
 			return sshConnectionStatus{}, errors.New("turn remote browsing off before changing proxy ports")
 		}
+		// A dropped session keeps its retry loop; an explicit Connect retries now.
+		if s.status.State == "connecting" && s.status.Error != "" {
+			select {
+			case s.wake <- struct{}{}:
+			default:
+			}
+		}
 		return s.status, nil
 	}
 	if s.listener == nil {
@@ -111,7 +119,8 @@ func (s *sshSession) Connect(parent context.Context, host string, port int) (ssh
 		return sshConnectionStatus{}, err
 	}
 	s.ctx, s.cancel, s.upstream = ctx, cancel, 0
-	s.done = make(chan struct{})
+	s.done, s.wake = make(chan struct{}), make(chan struct{}, 1)
+	wake := s.wake
 	s.status = sshConnectionStatus{
 		State: "connecting", Host: host,
 		ProxyPort: s.listener.Addr().(*net.TCPAddr).Port,
@@ -157,6 +166,7 @@ func (s *sshSession) Connect(parent context.Context, host string, port int) (ssh
 			select {
 			case <-ctx.Done():
 				return
+			case <-wake:
 			case <-time.After(delay):
 			}
 			delay = min(delay*2, maxReconnectDelay)
@@ -185,6 +195,9 @@ func (s *sshSession) Close() {
 		s.cancel()
 	}
 	s.status.State, s.upstream = "disconnected", 0
+	if s.status.Host != "" && getActiveHost() == s.status.Host {
+		clearActiveHost()
+	}
 	ln, done := s.listener, s.done
 	s.mu.Unlock()
 	if ln != nil {
