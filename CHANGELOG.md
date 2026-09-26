@@ -5,6 +5,14 @@ All notable changes to `tether-browser` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.38] - 2026-09-26
+
+### Fixed
+- Tether's SSH session no longer drops within seconds on cellular or relayed Tailscale links. It now tolerates about a minute of stalled network, and its health check ends the session only after three failed checks, 15 seconds apart. Before, it ended after about 10 seconds without keepalive replies, or after three missed 2-second checks.
+- When SSH drops after it was working, Tether reconnects on its own until you click **Disconnect Tether**. It retries after 2 seconds and doubles the wait up to 30 seconds. **Reconnect** retries immediately. Before, the session stayed down until you reconnected it yourself.
+
+Update the `tether` binary on the computer that runs Chrome. The server needs no update. To free port 9333 quickly after an unclean drop, set `ClientAliveInterval 15` and `ClientAliveCountMax 4` in the server's `sshd_config`.
+
 ## [0.1.37] - 2026-09-26
 
 ### Changed

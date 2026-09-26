@@ -13,7 +13,7 @@ import (
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
-const usageText = `tether v0.1.37 - remote-to-local browser bridge for AI agents
+const usageText = `tether v0.1.38 - remote-to-local browser bridge for AI agents
 Usage: tether <command> [args] [options]
 Commands:
   open <url>                 Navigate to URL
