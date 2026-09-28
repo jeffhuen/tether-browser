@@ -196,6 +196,64 @@ func TestWaitReadyGivesSignInMoreTime(t *testing.T) {
 	if _, err := waitReady(ctx, make(chan bool), signIn); err != errSignInTimeout {
 		t.Fatalf("abandoned sign-in: err = %v, want %v", err, errSignInTimeout)
 	}
+	// A server that keeps printing new links gets one extension, not an endless wait.
+	// The flood stops after 1.5 s so a regression fails here instead of hanging.
+	signInTimeout = 100 * time.Millisecond
+	flood := make(chan struct{})
+	go func() {
+		for end := time.Now().Add(1500 * time.Millisecond); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+			select {
+			case flood <- struct{}{}:
+			case <-time.After(time.Until(end)):
+			}
+		}
+	}()
+	start := time.Now()
+	if _, err := waitReady(ctx, make(chan bool), flood); err != errSignInTimeout || time.Since(start) > time.Second {
+		t.Fatalf("repeated links: err = %v after %v; want one bounded extension", err, time.Since(start))
+	}
+}
+
+func TestCompletedSignInStillRetriesForwarding(t *testing.T) {
+	run, oldDelay := runSSH, reconnectDelay
+	t.Cleanup(func() { runSSH, reconnectDelay = run, oldDelay })
+	reconnectDelay = time.Millisecond
+	var attempts atomic.Int32
+	third := make(chan struct{})
+	runSSH = func(s *sshSession, ctx context.Context, status sshConnectionStatus) error {
+		switch attempts.Add(1) {
+		case 1:
+			s.mu.Lock()
+			s.upstream = 1
+			s.mu.Unlock()
+			return errors.New("SSH connection closed")
+		case 2:
+			// The user signs in; then the server still holds the old port 9333.
+			s.setSignInURL(status.SessionID, "https://login.tailscale.com/a/1a2b")
+			s.completeSignIn(status.SessionID)
+			if s.setSignInURL(status.SessionID, "https://login.tailscale.com/a/late") {
+				t.Error("a late banner re-opened a completed sign-in")
+			}
+			return errors.New("SSH reverse forwarding failed: remote port forwarding failed")
+		default:
+			close(third)
+			<-ctx.Done()
+			return nil
+		}
+	}
+	session := &sshSession{}
+	defer session.Close()
+	if _, err := session.Connect(context.Background(), "host", 0); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-third:
+	case <-time.After(time.Second):
+		t.Fatalf("no retry after a completed sign-in; status %+v", session.Status())
+	}
+	if status := session.Status(); status.SignInRequired || status.SignInURL != "" {
+		t.Fatalf("status %+v still asks for sign-in", status)
+	}
 }
 
 func TestAbandonedSignInStopsReconnecting(t *testing.T) {

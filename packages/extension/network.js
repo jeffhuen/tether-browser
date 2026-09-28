@@ -11,7 +11,8 @@ let polling = null;
 let lastBadge = "";
 // The link comes from the SSH server's output: open only Tailscale's own sign-in page.
 const SIGN_IN_URL = /^https:\/\/login\.tailscale\.com\/a\/[0-9A-Za-z]+$/;
-let openedSignIn = "";
+// One automatic tab per connection attempt; later links stay behind the popup button.
+let signInOpened = false;
 
 export function initializeNetwork(request) {
   nativeRequest = request;
@@ -96,8 +97,10 @@ export async function networkStatus(pollSSH = true) {
   }
   // A pending Tailscale sign-in: open it once, but not through a proxy that cannot load it.
   const signInUrl = pollSSH && ssh.state === "connecting" && SIGN_IN_URL.test(ssh.signInUrl || "") ? ssh.signInUrl : "";
-  if (signInUrl && !enabled && signInUrl !== openedSignIn) {
-    openedSignIn = signInUrl;
+  if (ssh.state !== "connecting") {
+    signInOpened = false;
+  } else if (signInUrl && !enabled && !signInOpened) {
+    signInOpened = true;
     void chrome.tabs.create({ url: signInUrl }).catch((error) => console.warn("[Tether] Sign-in tab:", error.message));
   }
   return {

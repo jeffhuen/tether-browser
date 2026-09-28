@@ -82,6 +82,9 @@ type sshSession struct {
 	ctx      context.Context
 	upstream int
 	wake     chan struct{} // cuts a reconnect wait short
+	// signedIn: the current attempt passed SSH authentication, so a late
+	// sign-in banner must not mark it as waiting for sign-in again.
+	signedIn bool
 	closed   bool
 }
 
@@ -161,6 +164,9 @@ func (s *sshSession) Connect(parent context.Context, host string, port int) (ssh
 		}
 		delay := reconnectDelay
 		for everConnected := false; ctx.Err() == nil; {
+			s.mu.Lock()
+			s.signedIn = false
+			s.mu.Unlock()
 			err := runSSH(s, ctx, status)
 			s.mu.Lock()
 			// Disconnect, Close, or a newer Connect already owns the status.
@@ -208,11 +214,21 @@ func (s *sshSession) Connect(parent context.Context, host string, port int) (ssh
 func (s *sshSession) setSignInURL(sessionID, url string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.status.SessionID != sessionID || s.status.State != "connecting" || s.status.SignInURL == url {
+	if s.signedIn || s.status.SessionID != sessionID || s.status.State != "connecting" || s.status.SignInURL == url {
 		return false
 	}
 	s.status.SignInURL = url
 	return true
+}
+
+// completeSignIn records that the current attempt passed SSH authentication.
+// A later forwarding failure then retries instead of asking to sign in again.
+func (s *sshSession) completeSignIn(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.status.SessionID == sessionID {
+		s.signedIn, s.status.SignInURL = true, ""
+	}
 }
 
 func (s *sshSession) Disconnect() sshConnectionStatus {
@@ -374,6 +390,7 @@ func (s *sshSession) run(ctx context.Context, status sshConnectionStatus) error 
 	case !ok:
 		return fmt.Errorf("SSH could not connect%s. Check this host in a terminal with ssh first", sshDetail(stderr))
 	}
+	s.completeSignIn(status.SessionID)
 	// Reuse a CLI-created reverse tunnel after a status check. If its owner
 	// exits later, establish our own forward without interrupting SOCKS traffic.
 	ensureReverse := func() error {
@@ -481,8 +498,8 @@ func probeSOCKS(ctx context.Context, port int, token, sessionID string) error {
 	return nil
 }
 
-// waitReady waits for the SSH readiness marker. A pending Tailscale sign-in
-// replaces the setup timeout with signInTimeout, so the user can finish it.
+// waitReady waits for the SSH readiness marker. The first pending Tailscale
+// sign-in replaces the setup timeout with signInTimeout, once per attempt.
 func waitReady(ctx context.Context, ready <-chan bool, signIn <-chan struct{}) (bool, error) {
 	timer := time.NewTimer(setupTimeout)
 	defer timer.Stop()
@@ -492,8 +509,11 @@ func waitReady(ctx context.Context, ready <-chan bool, signIn <-chan struct{}) (
 		case ok := <-ready:
 			return ok, nil
 		case <-signIn:
-			timer.Reset(signInTimeout)
-			timeout = errSignInTimeout
+			// Extend once: a server that keeps printing new links must not stall forever.
+			if timeout == errSetupTimeout {
+				timer.Reset(signInTimeout)
+				timeout = errSignInTimeout
+			}
 		case <-timer.C:
 			return false, timeout
 		case <-ctx.Done():
