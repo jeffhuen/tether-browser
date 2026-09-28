@@ -11,8 +11,11 @@ let polling = null;
 let lastBadge = "";
 // The link comes from the SSH server's output: open only Tailscale's own sign-in page.
 const SIGN_IN_URL = /^https:\/\/login\.tailscale\.com\/a\/[0-9A-Za-z]+$/;
-// One automatic tab per connection attempt; later links stay behind the popup button.
-let signInOpened = false;
+// One automatic tab per SSH session until it connects; later links in the same
+// attempt stay behind the popup button. A new session (for example after the
+// helper restarts) gets its own tab. Only the helper reports "connected", so a
+// failed status poll cannot reset this and reopen the same link.
+let signInSession = "";
 
 export function initializeNetwork(request) {
   nativeRequest = request;
@@ -97,10 +100,10 @@ export async function networkStatus(pollSSH = true) {
   }
   // A pending Tailscale sign-in: open it once, but not through a proxy that cannot load it.
   const signInUrl = pollSSH && ssh.state === "connecting" && SIGN_IN_URL.test(ssh.signInUrl || "") ? ssh.signInUrl : "";
-  if (ssh.state !== "connecting") {
-    signInOpened = false;
-  } else if (signInUrl && !enabled && !signInOpened) {
-    signInOpened = true;
+  if (ssh.state === "connected") {
+    signInSession = "";
+  } else if (signInUrl && !enabled && ssh.sessionId !== signInSession) {
+    signInSession = ssh.sessionId;
     void chrome.tabs.create({ url: signInUrl }).catch((error) => console.warn("[Tether] Sign-in tab:", error.message));
   }
   return {
