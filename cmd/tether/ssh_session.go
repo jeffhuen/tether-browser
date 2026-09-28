@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +30,10 @@ type sshConnectionStatus struct {
 	ProxyPort int    `json:"proxyPort"`
 	SessionID string `json:"sessionId"`
 	Error     string `json:"error,omitempty"`
+	// SignInURL is a pending Tailscale SSH check-mode sign-in for this attempt.
+	SignInURL string `json:"signInUrl,omitempty"`
+	// SignInRequired reports that the session stopped because sign-in was not completed.
+	SignInRequired bool `json:"signInRequired,omitempty"`
 }
 
 // Cellular and relayed Tailscale links stall for seconds at a time. A stall
@@ -44,7 +49,27 @@ var (
 	runSSH            = (*sshSession).run // replaced in tests
 	reconnectDelay    = 2 * time.Second
 	maxReconnectDelay = 30 * time.Second
+	setupTimeout      = 30 * time.Second
+	// Tailscale SSH check mode holds the connection until the user signs in.
+	signInTimeout = 5 * time.Minute
 )
+
+// Tailscale SSH check mode prints this link and waits; it never opens a browser.
+var tailscaleSignIn = regexp.MustCompile(`https://login\.tailscale\.com/a/[0-9A-Za-z]+`)
+
+var (
+	errSetupTimeout  = errors.New("SSH setup timed out")
+	errSignInTimeout = errors.New("Tailscale sign-in was not completed in time")
+)
+
+// signInURL returns the last Tailscale sign-in link in text, or "".
+func signInURL(text string) string {
+	found := tailscaleSignIn.FindAllString(text, -1)
+	if len(found) == 0 {
+		return ""
+	}
+	return found[len(found)-1]
+}
 
 // The native host owns both the SSH child and a stable, loopback-only proxy
 // listener. Losing SSH rejects new requests rather than releasing its port.
@@ -145,13 +170,16 @@ func (s *sshSession) Connect(parent context.Context, host string, port int) (ssh
 			}
 			up := s.upstream != 0 // run sets upstream only after forwarding was verified
 			everConnected = everConnected || up
-			s.upstream = 0
+			// The link belongs to the finished attempt; Tailscale issues a new one next time.
+			needSignIn := s.status.SignInURL != ""
+			s.upstream, s.status.SignInURL = 0, ""
 			if err != nil {
 				s.status.Error = err.Error()
 			}
-			if !everConnected {
+			// Retrying would only print links nobody is watching; wait for Reconnect.
+			if !everConnected || needSignIn {
 				// Never came up: a bad host, sign-in, or denied forwarding will not fix itself.
-				s.status.State = "disconnected"
+				s.status.State, s.status.SignInRequired = "disconnected", needSignIn
 				if getActiveHost() == host {
 					clearActiveHost()
 				}
@@ -175,6 +203,18 @@ func (s *sshSession) Connect(parent context.Context, host string, port int) (ssh
 	return status, nil
 }
 
+// setSignInURL records a sign-in link for the attempt still connecting under
+// sessionID. It reports whether the link is new.
+func (s *sshSession) setSignInURL(sessionID, url string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.status.SessionID != sessionID || s.status.State != "connecting" || s.status.SignInURL == url {
+		return false
+	}
+	s.status.SignInURL = url
+	return true
+}
+
 func (s *sshSession) Disconnect() sshConnectionStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -185,6 +225,7 @@ func (s *sshSession) Disconnect() sshConnectionStatus {
 		clearActiveHost()
 	}
 	s.status.State, s.status.SessionID, s.status.Error, s.upstream = "disconnected", "", "", 0
+	s.status.SignInURL, s.status.SignInRequired = "", false
 	return s.status
 }
 
@@ -194,7 +235,7 @@ func (s *sshSession) Close() {
 	if s.cancel != nil {
 		s.cancel()
 	}
-	s.status.State, s.upstream = "disconnected", 0
+	s.status.State, s.status.SignInURL, s.upstream = "disconnected", "", 0
 	if s.status.Host != "" && getActiveHost() == s.status.Host {
 		clearActiveHost()
 	}
@@ -280,7 +321,17 @@ func (s *sshSession) run(ctx context.Context, status sshConnectionStatus) error 
 	}
 	cmd := exec.CommandContext(ctx, "ssh", args...)
 	cmd.WaitDelay = time.Second
-	stderr := &sshErrorBuffer{}
+	// The Tailscale sign-in link can arrive as an SSH banner (stderr) or as session output.
+	signIn := make(chan struct{}, 1)
+	noteSignIn := func(url string) {
+		if url != "" && s.setSignInURL(status.SessionID, url) {
+			select {
+			case signIn <- struct{}{}:
+			default:
+			}
+		}
+	}
+	stderr := &sshErrorBuffer{onSignIn: noteSignIn}
 	cmd.Stderr = stderr
 	input, err := cmd.StdinPipe()
 	if err != nil {
@@ -311,20 +362,17 @@ func (s *sshSession) run(ctx context.Context, status sshConnectionStatus) error 
 				_, _ = io.Copy(io.Discard, output)
 				return
 			}
+			noteSignIn(signInURL(scanner.Text()))
 		}
 		ready <- false
 	}()
-	timer := time.NewTimer(30 * time.Second)
-	defer timer.Stop()
-	select {
-	case ok := <-ready:
-		if !ok {
-			return fmt.Errorf("SSH could not connect: %s. Check this host in a terminal with ssh first", stderr.String())
-		}
-	case <-timer.C:
-		return errors.New("SSH setup timed out; check this host in a terminal with ssh first")
-	case <-ctx.Done():
+	switch ok, err := waitReady(ctx, ready, signIn); {
+	case ctx.Err() != nil:
 		return nil
+	case err != nil:
+		return fmt.Errorf("%w%s. Check this host in a terminal with ssh first", err, sshDetail(stderr))
+	case !ok:
+		return fmt.Errorf("SSH could not connect%s. Check this host in a terminal with ssh first", sshDetail(stderr))
 	}
 	// Reuse a CLI-created reverse tunnel after a status check. If its owner
 	// exits later, establish our own forward without interrupting SOCKS traffic.
@@ -352,7 +400,7 @@ func (s *sshSession) run(ctx context.Context, status sshConnectionStatus) error 
 		s.mu.Unlock()
 		return nil
 	}
-	s.status.State, s.status.Error, s.upstream = "connected", "", port
+	s.status.State, s.status.Error, s.status.SignInURL, s.upstream = "connected", "", "", port
 	saveActiveHost(status.Host)
 	s.mu.Unlock()
 	ticker := time.NewTicker(probeInterval)
@@ -433,17 +481,57 @@ func probeSOCKS(ctx context.Context, port int, token, sessionID string) error {
 	return nil
 }
 
+// waitReady waits for the SSH readiness marker. A pending Tailscale sign-in
+// replaces the setup timeout with signInTimeout, so the user can finish it.
+func waitReady(ctx context.Context, ready <-chan bool, signIn <-chan struct{}) (bool, error) {
+	timer := time.NewTimer(setupTimeout)
+	defer timer.Stop()
+	timeout := errSetupTimeout
+	for {
+		select {
+		case ok := <-ready:
+			return ok, nil
+		case <-signIn:
+			timer.Reset(signInTimeout)
+			timeout = errSignInTimeout
+		case <-timer.C:
+			return false, timeout
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
+}
+
+// sshDetail formats what SSH printed as ": text", or "" when it printed nothing.
+func sshDetail(b *sshErrorBuffer) string {
+	if text := b.String(); text != "" {
+		return ": " + text
+	}
+	return ""
+}
+
 type sshErrorBuffer struct {
-	mu   sync.Mutex
-	text string
+	mu       sync.Mutex
+	text     string
+	signIn   string
+	onSignIn func(string)
 }
 
 func (b *sshErrorBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	b.text += string(p)
 	if len(b.text) > 4096 {
 		b.text = b.text[len(b.text)-4096:]
+	}
+	// Only complete lines: a link split across writes must not be reported truncated.
+	url := signInURL(b.text[:strings.LastIndexByte(b.text, '\n')+1])
+	fresh := url != "" && url != b.signIn
+	if fresh {
+		b.signIn = url
+	}
+	b.mu.Unlock()
+	if fresh && b.onSignIn != nil {
+		b.onSignIn(url)
 	}
 	return len(p), nil
 }

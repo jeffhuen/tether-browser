@@ -431,6 +431,10 @@ svg {
   padding: 0 10px 8px;
 }
 
+#network-signin {
+  margin: 0 10px 8px;
+}
+
 #network-error-detail {
   white-space: pre-wrap;
 }
