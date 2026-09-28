@@ -228,6 +228,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const networkError = document.getElementById("network-error");
   const networkErrorDetails = document.getElementById("network-error-details");
   const networkErrorDetail = document.getElementById("network-error-detail");
+  const networkSignIn = document.getElementById("network-signin");
   let network = { tetherEnabled: false, nativeConnected: false, enabled: false, state: "checking", canEnable: false, ssh: { state: "checking" } };
   let tetherConnected = false;
   let connectionPanelOpen = null;
@@ -322,6 +323,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       void networkAction(() => sendMessage({ type: "popup_reload_remote_tabs" }), "Could not reload the Tether tabs.");
     }
   });
+  // network.js has already restricted signInUrl to Tailscale's sign-in page.
+  networkSignIn.addEventListener("click", () => {
+    if (network.signInUrl) void chrome.tabs.create({ url: network.signInUrl });
+  });
 
   function renderConnection() {
     const ssh = network.ssh || {};
@@ -333,7 +338,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     const hasSshError = tetherConnected && Boolean(ssh.error) && !connected;
 
     statusText.textContent = statusError ? "Unknown" : !tetherConnected ? "Disconnected" :
-      needsAttention ? "Needs attention" : connecting ? "Connecting..." : connected ? "Connected" : "Checking...";
+      needsAttention ? "Needs attention" : network.signInUrl ? "Sign-in needed" : connecting ? "Connecting..." :
+      connected ? "Connected" : "Checking...";
     statusText.dataset.state = needsAttention || statusError ? "error" : !tetherConnected ? "disconnected" : ssh.state;
     remoteStatus.textContent = statusError ? "Unknown" : network.state === "checking" ? "Checking..." :
       network.enabled ? remoteReady ? "On" : "On, not ready" : "Off";
@@ -390,6 +396,12 @@ document.addEventListener("DOMContentLoaded", async () => {
       networkError.textContent = `${actionError} Check the details below, then try again.`;
     } else if (statusError) {
       networkError.textContent = "Tether can't check the connection right now. Reopen this popup to try again.";
+    } else if (network.signInUrl) {
+      networkError.textContent = network.enabled
+        ? "Tailscale needs you to sign in. Turn Remote browsing off so the sign-in page can load."
+        : "Sign in to Tailscale to finish connecting. The sign-in page opened in a new tab.";
+    } else if (needsAttention && ssh.signInRequired) {
+      networkError.textContent = "Tailscale sign-in was not completed. Click Reconnect for a new sign-in page.";
     } else if (network.state === "conflict" || (!network.enabled && connected && !network.canEnable)) {
       networkError.textContent = network.enabled
         ? "Remote browsing isn't active. Turn it off, then check your proxy extensions or Chrome's network settings."
@@ -402,6 +414,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       networkError.textContent = "";
     }
     networkError.hidden = !networkError.textContent;
+    networkSignIn.hidden = !network.signInUrl || network.enabled;
     networkErrorDetail.textContent = [...new Set([actionErrorDetails, statusError, tetherConnected ? ssh.error : "", network.message].filter(Boolean))].join("\n\n");
     networkErrorDetails.hidden = networkError.hidden || !networkErrorDetail.textContent;
     if (networkErrorDetails.hidden) networkErrorDetails.open = false;

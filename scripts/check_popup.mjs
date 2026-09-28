@@ -302,7 +302,7 @@ try {
   });
   for (const width of [384, 320]) {
     await cdp("Emulation.setDeviceMetricsOverride", { width, height: 600, deviceScaleFactor: 1, mobile: false });
-    for (const state of ["disconnected", "ready", "on", "blocked", "offline", "reconnecting", "ssh-error"]) {
+    for (const state of ["disconnected", "ready", "on", "blocked", "offline", "reconnecting", "ssh-error", "signin"]) {
       await evaluate(async (state) => {
         const tetherEnabled = state !== "disconnected";
         const enabled = ["on", "blocked", "offline", "reconnecting"].includes(state);
@@ -312,8 +312,9 @@ try {
           tetherEnabled, nativeConnected: tetherEnabled && state !== "offline",
           enabled, state: !enabled ? "off" : state === "on" ? "on" : "unavailable",
           host: "dev-host", canEnable: state === "ready",
+          signInUrl: state === "signin" ? "https://login.tailscale.com/a/fixture" : "",
           ssh: {
-            state: state === "reconnecting" ? "connecting" : sshConnected ? "connected" : "disconnected",
+            state: ["reconnecting", "signin"].includes(state) ? "connecting" : sshConnected ? "connected" : "disconnected",
             host: "dev-host", sessionId: "fixture", proxyPort: 12345,
             error: state === "ssh-error" ? "Tailscale SSH requires reauthentication at https://login.tailscale.com/a/fixture-with-a-long-authentication-token" : "",
           },
@@ -321,8 +322,12 @@ try {
         await window.popupCheckRefresh();
         if (document.querySelector("#connection-toggle").getAttribute("aria-expanded") !== "true") document.querySelector("#connection-toggle").click();
         const toggle = document.querySelector("#network-toggle");
-        if (state === "disconnected" || state === "ssh-error") {
+        if (state === "disconnected" || state === "ssh-error" || state === "signin") {
           if (!toggle.disabled) throw new Error("An unavailable remote route must not be enabled");
+          if (state === "signin" && (document.querySelector("#status-text").textContent !== "Sign-in needed" ||
+              !document.querySelector("#network-signin").getClientRects().length)) {
+            throw new Error("A pending Tailscale sign-in must be named and offer its sign-in page");
+          }
         } else {
           toggle.focus();
           if (document.activeElement !== toggle || !toggle.getClientRects().length) throw new Error("Remote control must stay keyboard-accessible in connection settings");

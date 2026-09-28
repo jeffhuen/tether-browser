@@ -146,6 +146,148 @@ func TestDisconnectInterruptsReconnectBackoff(t *testing.T) {
 	}
 }
 
+const checkBanner = "# Tailscale SSH requires an additional check.\n# To authenticate, visit: https://login.tailscale.com/a/1a2b3c4d5e6f\n"
+
+func TestSignInURLAcceptsOnlyTailscaleLoginLinks(t *testing.T) {
+	for text, want := range map[string]string{
+		checkBanner: "https://login.tailscale.com/a/1a2b3c4d5e6f",
+		"visit: https://login.tailscale.com.evil.example/a/1a2b\n":                         "",
+		"visit: http://login.tailscale.com/a/1a2b\n":                                       "",
+		"visit: https://login.tailscale.com/admin/machines\n":                              "",
+		"old https://login.tailscale.com/a/old1\nnew https://login.tailscale.com/a/new2\n": "https://login.tailscale.com/a/new2",
+	} {
+		if got := signInURL(text); got != want {
+			t.Errorf("signInURL(%q) = %q, want %q", text, got, want)
+		}
+	}
+}
+
+func TestSignInLinkSplitAcrossWritesIsReportedWhole(t *testing.T) {
+	var got []string
+	b := &sshErrorBuffer{onSignIn: func(url string) { got = append(got, url) }}
+	half := len(checkBanner) - 6
+	for _, part := range []string{checkBanner[:half], checkBanner[half:], "Warning: unrelated\n"} {
+		if _, err := b.Write([]byte(part)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(got) != 1 || got[0] != "https://login.tailscale.com/a/1a2b3c4d5e6f" {
+		t.Fatalf("reported %q; want the whole link exactly once", got)
+	}
+}
+
+func TestWaitReadyGivesSignInMoreTime(t *testing.T) {
+	oldSetup, oldSignIn := setupTimeout, signInTimeout
+	t.Cleanup(func() { setupTimeout, signInTimeout = oldSetup, oldSignIn })
+	setupTimeout, signInTimeout = 20*time.Millisecond, 500*time.Millisecond
+	ctx := context.Background()
+
+	if _, err := waitReady(ctx, make(chan bool), make(chan struct{})); err != errSetupTimeout {
+		t.Fatalf("no sign-in: err = %v, want %v", err, errSetupTimeout)
+	}
+	ready, signIn := make(chan bool, 1), make(chan struct{}, 1)
+	signIn <- struct{}{}
+	time.AfterFunc(100*time.Millisecond, func() { ready <- true })
+	if ok, err := waitReady(ctx, ready, signIn); !ok || err != nil {
+		t.Fatalf("sign-in finished after the setup timeout: ok=%v err=%v", ok, err)
+	}
+	signInTimeout = 20 * time.Millisecond
+	signIn <- struct{}{}
+	if _, err := waitReady(ctx, make(chan bool), signIn); err != errSignInTimeout {
+		t.Fatalf("abandoned sign-in: err = %v, want %v", err, errSignInTimeout)
+	}
+	// A server that keeps printing new links gets one extension, not an endless wait.
+	// The flood stops after 1.5 s so a regression fails here instead of hanging.
+	signInTimeout = 100 * time.Millisecond
+	flood := make(chan struct{})
+	go func() {
+		for end := time.Now().Add(1500 * time.Millisecond); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+			select {
+			case flood <- struct{}{}:
+			case <-time.After(time.Until(end)):
+			}
+		}
+	}()
+	start := time.Now()
+	if _, err := waitReady(ctx, make(chan bool), flood); err != errSignInTimeout || time.Since(start) > time.Second {
+		t.Fatalf("repeated links: err = %v after %v; want one bounded extension", err, time.Since(start))
+	}
+}
+
+func TestCompletedSignInStillRetriesForwarding(t *testing.T) {
+	run, oldDelay := runSSH, reconnectDelay
+	t.Cleanup(func() { runSSH, reconnectDelay = run, oldDelay })
+	reconnectDelay = time.Millisecond
+	var attempts atomic.Int32
+	third := make(chan struct{})
+	runSSH = func(s *sshSession, ctx context.Context, status sshConnectionStatus) error {
+		switch attempts.Add(1) {
+		case 1:
+			s.mu.Lock()
+			s.upstream = 1
+			s.mu.Unlock()
+			return errors.New("SSH connection closed")
+		case 2:
+			// The user signs in; then the server still holds the old port 9333.
+			s.setSignInURL(status.SessionID, "https://login.tailscale.com/a/1a2b")
+			s.completeSignIn(status.SessionID)
+			if s.setSignInURL(status.SessionID, "https://login.tailscale.com/a/late") {
+				t.Error("a late banner re-opened a completed sign-in")
+			}
+			return errors.New("SSH reverse forwarding failed: remote port forwarding failed")
+		default:
+			close(third)
+			<-ctx.Done()
+			return nil
+		}
+	}
+	session := &sshSession{}
+	defer session.Close()
+	if _, err := session.Connect(context.Background(), "host", 0); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-third:
+	case <-time.After(time.Second):
+		t.Fatalf("no retry after a completed sign-in; status %+v", session.Status())
+	}
+	if status := session.Status(); status.SignInRequired || status.SignInURL != "" {
+		t.Fatalf("status %+v still asks for sign-in", status)
+	}
+}
+
+func TestAbandonedSignInStopsReconnecting(t *testing.T) {
+	run, oldDelay := runSSH, reconnectDelay
+	t.Cleanup(func() { runSSH, reconnectDelay = run, oldDelay })
+	reconnectDelay = time.Millisecond
+	var attempts atomic.Int32
+	runSSH = func(s *sshSession, ctx context.Context, status sshConnectionStatus) error {
+		if attempts.Add(1) == 1 {
+			s.mu.Lock()
+			s.upstream = 1
+			s.mu.Unlock()
+			return errors.New("SSH connection closed")
+		}
+		if !s.setSignInURL(status.SessionID, "https://login.tailscale.com/a/1a2b") {
+			t.Error("sign-in link rejected while reconnecting")
+		}
+		return errSignInTimeout
+	}
+	session := &sshSession{}
+	defer session.Close()
+	if _, err := session.Connect(context.Background(), "host", 0); err != nil {
+		t.Fatal(err)
+	}
+	status := waitStatus(t, session, func(s sshConnectionStatus) bool { return s.State == "disconnected" })
+	time.Sleep(20 * time.Millisecond)
+	if n := attempts.Load(); n != 2 || !status.SignInRequired || status.SignInURL != "" {
+		t.Fatalf("attempts=%d status=%+v; want a stop after the unfinished sign-in", n, status)
+	}
+	if status := session.Disconnect(); status.SignInRequired {
+		t.Fatal("Disconnect kept the sign-in flag")
+	}
+}
+
 func TestSOCKSReadinessRequiresForwarding(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
