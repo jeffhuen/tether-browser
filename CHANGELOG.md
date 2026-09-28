@@ -5,6 +5,19 @@ All notable changes to `tether-browser` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.39] - 2026-09-28
+
+### Fixed
+- Tailscale SSH sign-in no longer looks like a timeout. When the host uses Tailscale SSH check mode, Tether opens Tailscale's sign-in page in a new tab and waits up to 5 minutes for you to finish. The popup shows **Sign-in needed** and an **Open Tailscale sign-in** button. Before, Tether discarded the sign-in link, gave up after 30 seconds, and reported "SSH setup timed out".
+- While Remote browsing is on, the sign-in page cannot load through the stalled proxy. The popup asks you to turn Remote browsing off, and the page opens as soon as you do.
+- A sign-in that you don't finish stops automatic reconnects until you click **Reconnect**. Before, reconnects repeated the timeout every 30 seconds.
+- SSH setup errors now include what `ssh` printed.
+
+### Security
+- Tether opens only `https://login.tailscale.com/a/` links, at most once per SSH session, because the link comes from the SSH server's output.
+
+Update both the `tether` binary and the extension on the computer that runs Chrome.
+
 ## [0.1.38] - 2026-09-26
 
 ### Fixed
