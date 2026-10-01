@@ -1,6 +1,6 @@
 //go:build linux
 
-package cli
+package protocol
 
 import (
 	"fmt"
@@ -9,7 +9,7 @@ import (
 	"syscall"
 )
 
-func verifyPeerCredentials(conn net.Conn) error {
+func VerifyPeerCredentials(conn net.Conn) error {
 	uconn, ok := conn.(*net.UnixConn)
 	if !ok {
 		return fmt.Errorf("expected unix connection, got %T", conn)

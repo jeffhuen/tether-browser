@@ -181,9 +181,17 @@ func (m *e2eMockDriver) ClearReview(ctx context.Context, p protocol.ReviewParams
 }
 
 func TestEndToEndCLIAutomationCycle(t *testing.T) {
-	// Isolate from any user-running broker by assigning a private temporary socket path
-	testSocket := filepath.Join(t.TempDir(), "test-e2e-broker.sock")
+	// Keep broker, home and authentication state separate from the user's files.
+	tmpDir := t.TempDir()
+	testSocket := filepath.Join(tmpDir, "broker", "test-e2e-broker.sock")
+	if err := protocol.PrivateDir(filepath.Dir(testSocket)); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmpDir, "cache"))
 	t.Setenv("TETHER_BROKER_SOCKET", testSocket)
+	t.Setenv("TETHER_AUTH_TOKEN", "e2e-tls-fixture-key")
 
 	driver := &e2eMockDriver{
 		reviewNotes: []*protocol.ReviewNote{
@@ -225,17 +233,27 @@ func TestEndToEndCLIAutomationCycle(t *testing.T) {
 		},
 	}
 	server := client.NewServer(driver)
+	server.SetAuthToken("e2e-tls-fixture-key")
 
+	serverErrors := make(chan error, 1)
 	go func() {
-		_ = server.ListenAndServe(0)
+		serverErrors <- server.ListenAndServe(0)
 	}()
 	defer server.Close()
 
 	for i := 0; i < 50; i++ {
+		select {
+		case runErr := <-serverErrors:
+			t.Fatalf("daemon exited before becoming ready: %v", runErr)
+		default:
+		}
 		if server.Port() > 0 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if server.Port() == 0 {
+		t.Fatal("daemon failed to bind port")
 	}
 
 	daemonAddr := fmt.Sprintf("127.0.0.1:%d", server.Port())
@@ -327,7 +345,6 @@ func TestEndToEndCLIAutomationCycle(t *testing.T) {
 		t.Fatalf("expected no active review notes after clear, got: %s", out)
 	}
 	// 11. Screenshot
-	tmpDir := t.TempDir()
 	shotPath := filepath.Join(tmpDir, "screen.png")
 	out, errOut, code = runCLI("screenshot", shotPath)
 	if code != 0 {

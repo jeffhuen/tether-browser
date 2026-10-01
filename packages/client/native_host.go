@@ -43,20 +43,7 @@ func GetBridgeSocketPath() string {
 
 // EnsureBridgeSocketDir creates the 0700 private user directory for the Unix domain socket.
 func EnsureBridgeSocketDir(socketPath string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	dir := filepath.Dir(socketPath)
-	if fi, err := os.Lstat(dir); err == nil {
-		// Prevent symlink following or redirection attacks
-		if fi.Mode()&os.ModeSymlink != 0 {
-			_ = os.Remove(dir)
-		}
-	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
-	}
-	return os.Chmod(dir, 0700)
+	return protocol.PrivateDir(filepath.Dir(socketPath))
 }
 
 // ClearStaleBridgeSocket probes the socket and removes it only if no live host is listening.
@@ -64,8 +51,14 @@ func ClearStaleBridgeSocket(socketPath string) error {
 	if runtime.GOOS == "windows" {
 		return nil
 	}
+	if err := protocol.ValidatePrivateDir(filepath.Dir(socketPath)); err != nil {
+		return err
+	}
 	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
 		return nil
+	}
+	if err := protocol.ValidatePrivateSocket(socketPath); err != nil {
+		return err
 	}
 	conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond)
 	if err == nil {
@@ -86,8 +79,8 @@ func ReadNativeMessage(r io.Reader) ([]byte, error) {
 	if msgLen == 0 {
 		return nil, errors.New("empty native message")
 	}
-	if msgLen > 16*1024*1024 {
-		return nil, fmt.Errorf("native message length %d exceeds 16MB limit", msgLen)
+	if msgLen > 64*1024*1024 {
+		return nil, fmt.Errorf("native message length %d exceeds Chrome's 64MiB limit", msgLen)
 	}
 
 	payload := make([]byte, msgLen)
@@ -99,6 +92,9 @@ func ReadNativeMessage(r io.Reader) ([]byte, error) {
 
 // WriteNativeMessage writes one length-prefixed message to a native messaging stream.
 func WriteNativeMessage(w io.Writer, payload []byte) error {
+	if len(payload) > 1<<20 {
+		return errors.New("native response exceeds Chrome's 1MiB limit")
+	}
 	var lenBuf [4]byte
 	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(payload)))
 	if _, err := w.Write(lenBuf[:]); err != nil {
@@ -106,6 +102,25 @@ func WriteNativeMessage(w io.Writer, payload []byte) error {
 	}
 	_, err := w.Write(payload)
 	return err
+}
+
+// WriteNativeSystemResponse writes the ordinary correlated system reply.
+func WriteNativeSystemResponse(out io.Writer, id string, result any, callErr error) error {
+	resp := nativeResponse{ID: id, Type: "response"}
+	if callErr != nil {
+		resp.Error = &nativeError{Code: -32000, Message: callErr.Error()}
+	} else {
+		data, err := json.Marshal(result)
+		if err != nil {
+			return err
+		}
+		resp.Result = data
+	}
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		return err
+	}
+	return WriteNativeMessage(out, payload)
 }
 
 // ExtensionBridge bridges JSON-RPC requests from local/tunnel clients to the Chrome extension
@@ -118,7 +133,6 @@ type ExtensionBridge struct {
 	pendingCalls map[string]chan *nativeResponse
 	reqCounter   atomic.Uint64
 	closed       atomic.Bool
-	token        string
 	onClose      func()
 	onSystemMsg  func(msgType string, payload []byte) (any, error)
 }
@@ -154,20 +168,24 @@ type nativeError struct {
 }
 
 // NewExtensionBridge creates a bridge instance operating over the provided native messaging streams.
-func NewExtensionBridge(in io.Reader, out io.Writer, token string) *ExtensionBridge {
+func NewExtensionBridge(in io.Reader, out io.Writer) *ExtensionBridge {
 	return &ExtensionBridge{
 		in:           in,
 		out:          out,
 		pendingCalls: make(map[string]chan *nativeResponse),
-		token:        token,
 	}
 }
 
-// StartReader starts processing inbound messages from Chrome in a background goroutine.
-func (b *ExtensionBridge) StartReader(ctx context.Context) {
+// StartReader processes the already-read initial frame, then reads subsequent Chrome messages.
+func (b *ExtensionBridge) StartReader(ctx context.Context, initialFrame []byte) {
 	go func() {
-		for {
-			payload, err := ReadNativeMessage(b.in)
+		for first := true; ; first = false {
+			payload := initialFrame
+			initialFrame = nil
+			var err error
+			if !first {
+				payload, err = ReadNativeMessage(b.in)
+			}
 			if err != nil {
 				if !b.closed.Load() {
 					fmt.Fprintf(os.Stderr, "[Tether NativeHost] Chrome disconnected: %v\n", err)
@@ -198,24 +216,8 @@ func (b *ExtensionBridge) StartReader(ctx context.Context) {
 				if onSys != nil {
 					go func(msgType, reqID string, p []byte) {
 						res, err := onSys(msgType, p)
-						var outResp nativeResponse
-						if err != nil {
-							outResp = nativeResponse{
-								ID:    reqID,
-								Type:  "response",
-								Error: &nativeError{Code: -32000, Message: err.Error()},
-							}
-						} else {
-							resBytes, _ := json.Marshal(res)
-							outResp = nativeResponse{
-								ID:     reqID,
-								Type:   "response",
-								Result: resBytes,
-							}
-						}
-						outBytes, _ := json.Marshal(outResp)
 						b.writeMu.Lock()
-						_ = WriteNativeMessage(b.out, outBytes)
+						_ = WriteNativeSystemResponse(b.out, reqID, res, err)
 						b.writeMu.Unlock()
 					}(resp.Type, resp.ID, payload)
 				}
@@ -297,7 +299,8 @@ func (b *ExtensionBridge) Call(ctx context.Context, method string, params any) (
 
 // RunNativeHostServer runs the native messaging host loop. It listens on the private
 // Unix domain socket (or named pipe) and proxies incoming JSON-RPC calls to the Chrome extension.
-func RunNativeHostServer(ctx context.Context, in io.Reader, out io.Writer, onSystemMsg func(string, []byte) (any, error)) error {
+// initialFrame is the first payload already read from in by the native host entrypoint.
+func RunNativeHostServer(ctx context.Context, in io.Reader, out io.Writer, initialFrame []byte, onSystemMsg func(string, []byte) (any, error)) error {
 	socketPath := GetBridgeSocketPath()
 	if err := EnsureBridgeSocketDir(socketPath); err != nil {
 		return fmt.Errorf("ensure socket dir: %w", err)
@@ -308,7 +311,7 @@ func RunNativeHostServer(ctx context.Context, in io.Reader, out io.Writer, onSys
 
 	network := "unix"
 	if runtime.GOOS == "windows" {
-		network = "tcp"
+		return errors.New("native bridge requires Windows named-pipe ACL support; TCP fallback is not permitted")
 	}
 
 	ln, err := net.Listen(network, socketPath)
@@ -322,13 +325,13 @@ func RunNativeHostServer(ctx context.Context, in io.Reader, out io.Writer, onSys
 	serverCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	bridge := NewExtensionBridge(in, out, "")
+	bridge := NewExtensionBridge(in, out)
 	bridge.SetOnSystemMessage(onSystemMsg)
 	bridge.SetOnClose(func() {
 		cancel()
 		_ = ln.Close()
 	})
-	bridge.StartReader(serverCtx)
+	bridge.StartReader(serverCtx, initialFrame)
 
 	fmt.Fprintf(os.Stderr, "[Tether NativeHost] Bridge listening on %s\n", socketPath)
 
@@ -356,6 +359,10 @@ func RunNativeHostServer(ctx context.Context, in io.Reader, out io.Writer, onSys
 			}
 			return err
 		}
+		if err := protocol.VerifyPeerCredentials(conn); err != nil {
+			_ = conn.Close()
+			continue
+		}
 		active := activeClients.Add(1)
 		notifyClientCount(active)
 		go func(c net.Conn) {
@@ -368,15 +375,14 @@ func RunNativeHostServer(ctx context.Context, in io.Reader, out io.Writer, onSys
 
 func handleBridgeConnection(ctx context.Context, bridge *ExtensionBridge, conn net.Conn) {
 	defer conn.Close()
-	scanner := bufio.NewScanner(conn)
-	// Buffer up to 16MB for large DOM / accessibility snapshots
-	buf := make([]byte, 64*1024)
-	scanner.Buffer(buf, 16*1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
+	reader := bufio.NewReader(conn)
+	for {
+		_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
+		line, err := protocol.ReadFrame(reader, protocol.MaxCommandBytes)
+		if err != nil {
+			return
 		}
 		var req protocol.Request
 		if err := json.Unmarshal(line, &req); err != nil {
@@ -389,13 +395,14 @@ func handleBridgeConnection(ctx context.Context, bridge *ExtensionBridge, conn n
 
 		var resp protocol.Response
 		if err != nil {
-			errResp := protocol.NewErrorResponse(req.ID, protocol.CodeInternalError, err.Error(), nil, 0, "")
+			errResp := protocol.NewErrorResponse(req.ID, protocol.CodeInternalError, err.Error(), nil, req.Seq, req.Epoch)
 			resp = *errResp
 		} else {
 			resp = protocol.Response{
 				JSONRPC: "2.0",
 				ID:      req.ID,
 				Result:  res,
+				Seq:     req.Seq, Epoch: req.Epoch,
 			}
 		}
 
@@ -431,7 +438,10 @@ func NewExtensionDriver(socketPath string) *ExtensionDriver {
 func (d *ExtensionDriver) IsAvailable() bool {
 	network := "unix"
 	if runtime.GOOS == "windows" {
-		network = "tcp"
+		return false
+	}
+	if err := protocol.ValidatePrivateSocket(d.socketPath); err != nil {
+		return false
 	}
 	conn, err := net.DialTimeout(network, d.socketPath, 150*time.Millisecond)
 	if err != nil {
@@ -444,11 +454,18 @@ func (d *ExtensionDriver) IsAvailable() bool {
 func (d *ExtensionDriver) dialConnLocked() error {
 	network := "unix"
 	if runtime.GOOS == "windows" {
-		network = "tcp"
+		return errors.New("native bridge peer verification is unsupported on Windows")
+	}
+	if err := protocol.ValidatePrivateSocket(d.socketPath); err != nil {
+		return err
 	}
 	conn, err := net.DialTimeout(network, d.socketPath, 2*time.Second)
 	if err != nil {
 		return fmt.Errorf("connect to extension bridge at %s: %w (is Chrome open with Tether extension?)", d.socketPath, err)
+	}
+	if err := protocol.VerifyPeerCredentials(conn); err != nil {
+		_ = conn.Close()
+		return err
 	}
 	d.conn = conn
 	d.reader = bufio.NewReaderSize(conn, 1024*1024)
@@ -474,6 +491,9 @@ func (d *ExtensionDriver) call(ctx context.Context, method string, params any) (
 	if err != nil {
 		return nil, err
 	}
+	if len(data)+1 > protocol.MaxCommandBytes {
+		return nil, errors.New("command exceeds 1MiB size limit")
+	}
 	data = append(data, '\n')
 
 	d.mu.Lock()
@@ -486,7 +506,15 @@ func (d *ExtensionDriver) call(ctx context.Context, method string, params any) (
 				return nil, err
 			}
 		}
+		conn := d.conn
+		stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+		defer stop()
 
+		if dl, ok := ctx.Deadline(); ok {
+			_ = d.conn.SetDeadline(dl)
+		} else {
+			_ = d.conn.SetDeadline(time.Now().Add(30 * time.Second))
+		}
 		if _, err := d.conn.Write(data); err != nil {
 			_ = d.conn.Close()
 			d.conn = nil
@@ -494,7 +522,7 @@ func (d *ExtensionDriver) call(ctx context.Context, method string, params any) (
 			continue
 		}
 
-		line, err := d.reader.ReadBytes('\n')
+		line, err := protocol.ReadFrame(d.reader, protocol.MaxResponseBytes)
 		if err != nil {
 			_ = d.conn.Close()
 			d.conn = nil
@@ -505,6 +533,9 @@ func (d *ExtensionDriver) call(ctx context.Context, method string, params any) (
 		var resp protocol.Response
 		if err := json.Unmarshal(line, &resp); err != nil {
 			return nil, fmt.Errorf("unmarshal bridge response: %w", err)
+		}
+		if err := protocol.ValidateResponse(req, &resp); err != nil {
+			return nil, err
 		}
 		if resp.Error != nil {
 			return nil, fmt.Errorf("extension error: %s", resp.Error.Message)

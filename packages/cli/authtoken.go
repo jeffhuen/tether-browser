@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
 // daemonTokenPath is the workstation-side persisted daemon token.
@@ -37,6 +39,9 @@ func readTokenFile(path string) string {
 	if path == "" {
 		return ""
 	}
+	if err := protocol.ValidatePrivateFile(path); err != nil {
+		return ""
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
@@ -63,14 +68,29 @@ func EnsureDaemonToken() (string, error) {
 	if path == "" {
 		return tok, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := protocol.PrivateDir(filepath.Dir(path)); err != nil {
 		return "", fmt.Errorf("create token dir: %w", err)
 	}
-	_ = os.Chmod(filepath.Dir(path), 0700)
-	if err := os.WriteFile(path, []byte(tok+"\n"), 0600); err != nil {
+	file, err := os.CreateTemp(filepath.Dir(path), ".auth-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(file.Name())
+	if _, err := file.WriteString(tok + "\n"); err != nil {
+		file.Close()
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		return "", err
+	}
+	// Publishing with a hard link is atomic and first-writer-wins, including
+	// concurrent native hosts. Readers never see a partially written key.
+	if err := os.Link(file.Name(), path); err != nil {
+		if existing := readTokenFile(path); os.IsExist(err) && existing != "" {
+			return existing, nil
+		}
 		return "", fmt.Errorf("persist auth token: %w", err)
 	}
-	_ = os.Chmod(path, 0600)
 	return tok, nil
 }
 

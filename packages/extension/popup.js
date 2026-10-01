@@ -66,9 +66,28 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   async function saveScreenshots(shots) {
-    currentShots = shots;
     await chrome.storage.local.set({ tether_screenshots: shots });
+    currentShots = shots;
     updateShotsUI(currentShots);
+  }
+
+  async function screenshotDestination(shot) {
+    const destination = {
+      filename: shot.filename, targetHost: shot.targetHost || "",
+      remotePath: shot.remotePath || "", mirrored: Boolean(shot.mirrored || shot.remotePath),
+    };
+    if (!destination.mirrored || destination.targetHost) return destination;
+    const status = await sendMessage({ type: "popup_network_status" });
+    const host = status.ssh?.state === "connected" ? status.ssh.host : "";
+    if (!host) return { ...destination, remoteError:
+      "This older capture has no recorded host. Connect to its original SSH host, then retry deletion." };
+    if (!confirm(`This older capture has no recorded host. Delete remote copy on ${host}?`)) {
+      return { ...destination, remoteError: "Remote deletion cancelled. Retry and confirm the original SSH host." };
+    }
+    destination.targetHost = host;
+    await saveScreenshots(currentShots.map((item) =>
+      item.filename === shot.filename ? { ...item, targetHost: host } : item));
+    return destination;
   }
 
   function updateShotsUI(shots) {
@@ -84,7 +103,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       const card = document.createElement("div");
       card.className = "shot-card";
       const label = shot.label || shot.title || "Screenshot";
-      const remotePath = shot.mirrored && shot.remotePath ? shot.remotePath : "Local only";
+      const path = (shot.mirrored || shot.remotePath) && shot.remotePath
+        ? `${shot.targetHost ? shot.targetHost + ":" : ""}${shot.remotePath}` : "Local only";
+      const remotePath = shot.mirrorError ? `${path} · ${shot.mirrorError}` : path;
       card.innerHTML = `
         <div class="shot-top-row">
           <button type="button" class="shot-thumb-wrapper" aria-label="Enlarge screenshot" title="Click to enlarge">
@@ -112,9 +133,23 @@ document.addEventListener("DOMContentLoaded", async () => {
       });
       const delBtn = card.querySelector(".btn-del-shot");
       delBtn.addEventListener("click", async () => {
-        const updated = currentShots.filter((_, i) => i !== idx);
-        await sendMessage({ type: "popup_delete_screenshot", filename: shot.filename });
-        saveScreenshots(updated);
+        delBtn.disabled = true;
+        try {
+          const { remoteError, ...destination } = await screenshotDestination(shot);
+          const result = await sendMessage({ type: "popup_delete_screenshot", ...destination });
+          if (result.localDeleted !== true) throw new Error(result.localError || "Local screenshot deletion failed.");
+          if (destination.mirrored && (remoteError || result.remoteError || result.remoteDeleted !== true)) {
+            const mirrorError = remoteError || result.remoteError || "Remote screenshot was not deleted. Reconnect to its original host and retry.";
+            await saveScreenshots(currentShots.map((item) => item.filename === shot.filename ? { ...item, mirrorError } : item));
+            showToast("Remote deletion failed: " + mirrorError, 5000);
+          } else {
+            await saveScreenshots(currentShots.filter((item) => item.filename !== shot.filename));
+          }
+        } catch (error) {
+          showToast("Delete failed: " + error.message, 5000);
+        } finally {
+          delBtn.disabled = false;
+        }
       });
       const textarea = card.querySelector(".shot-comment");
       textarea.addEventListener("input", () => {
@@ -323,9 +358,18 @@ document.addEventListener("DOMContentLoaded", async () => {
       void networkAction(() => sendMessage({ type: "popup_reload_remote_tabs" }), "Could not reload the Tether tabs.");
     }
   });
-  // network.js has already restricted signInUrl to Tailscale's sign-in page.
   networkSignIn.addEventListener("click", () => {
-    if (network.signInUrl) void chrome.tabs.create({ url: network.signInUrl });
+    const netBirdAuth = network.enabled && network.ssh?.state === "connecting" &&
+      network.ssh.authProvider === "NetBird" && network.ssh.authMessage;
+    if (networkBusy || (!network.signInUrl && !netBirdAuth)) return;
+    const sessionId = network.ssh?.sessionId;
+    const turnOff = network.enabled;
+    void networkAction(async () => {
+      const result = await sendMessage({ type: "popup_network_signin", sessionId, turnOff });
+      showToast(result.authProvider === "NetBird"
+        ? `Remote browsing is off. ${result.authMessage}`
+        : "Sign-in page opened. Verify the device and request on Tailscale.", 5000);
+    }, "Could not prepare sign-in.");
   });
 
   function renderConnection() {
@@ -338,7 +382,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const hasSshError = tetherConnected && Boolean(ssh.error) && !connected;
 
     statusText.textContent = statusError ? "Unknown" : !tetherConnected ? "Disconnected" :
-      needsAttention ? "Needs attention" : network.signInUrl ? "Sign-in needed" : connecting ? "Connecting..." :
+      needsAttention ? "Needs attention" : network.signInUrl || (connecting && ssh.authMessage) ? "Sign-in needed" : connecting ? "Connecting..." :
       connected ? "Connected" : "Checking...";
     statusText.dataset.state = needsAttention || statusError ? "error" : !tetherConnected ? "disconnected" : ssh.state;
     remoteStatus.textContent = statusError ? "Unknown" : network.state === "checking" ? "Checking..." :
@@ -397,11 +441,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     } else if (statusError) {
       networkError.textContent = "Tether can't check the connection right now. Reopen this popup to try again.";
     } else if (network.signInUrl) {
-      networkError.textContent = network.enabled
-        ? "Tailscale needs you to sign in. Turn Remote browsing off so the sign-in page can load."
-        : "Sign in to Tailscale to finish connecting. The sign-in page opened in a new tab.";
+      networkError.textContent = `Sign-in link supplied by SSH server ${ssh.host || network.host || "unknown host"}. Verify the device and request on Tailscale before approving.` +
+        (network.enabled ? " This action turns Remote browsing off and opens sign-in; it stays off until you enable it again." : "");
+    } else if (connecting && ssh.authMessage) {
+      networkError.textContent = `${ssh.authProvider || "SSH"} sign-in needed for ${ssh.host || network.host || "your server"}. ${ssh.authMessage}`;
     } else if (needsAttention && ssh.signInRequired) {
-      networkError.textContent = "Tailscale sign-in was not completed. Click Reconnect for a new sign-in page.";
+      networkError.textContent = `${ssh.authProvider || "SSH"} authentication wait expired. Reconnect to start a new sign-in request.`;
     } else if (network.state === "conflict" || (!network.enabled && connected && !network.canEnable)) {
       networkError.textContent = network.enabled
         ? "Remote browsing isn't active. Turn it off, then check your proxy extensions or Chrome's network settings."
@@ -409,12 +454,16 @@ document.addEventListener("DOMContentLoaded", async () => {
     } else if (remoteProblem) {
       networkError.textContent = "Remote browsing can't reach your server. New pages may not load. Turn Remote browsing off to browse normally.";
     } else if (needsAttention || hasSshError) {
-      networkError.textContent = "Tether lost its server connection. Reconnect, or disconnect Tether.";
+      networkError.textContent = ssh.error || "Tether lost its server connection. Reconnect, or disconnect Tether.";
     } else {
       networkError.textContent = "";
     }
     networkError.hidden = !networkError.textContent;
-    networkSignIn.hidden = !network.signInUrl || network.enabled;
+    const netBirdSignIn = connecting && ssh.authProvider === "NetBird" && ssh.authMessage && network.enabled;
+    networkSignIn.hidden = !network.signInUrl && !netBirdSignIn;
+    networkSignIn.disabled = networkBusy;
+    networkSignIn.textContent = netBirdSignIn ? "Turn off Remote browsing for sign-in" :
+      network.enabled ? "Turn Remote browsing off and open sign-in" : "Open Tailscale sign-in";
     networkErrorDetail.textContent = [...new Set([actionErrorDetails, statusError, tetherConnected ? ssh.error : "", network.message].filter(Boolean))].join("\n\n");
     networkErrorDetails.hidden = networkError.hidden || !networkErrorDetail.textContent;
     if (networkErrorDetails.hidden) networkErrorDetails.open = false;
@@ -649,19 +698,23 @@ document.addEventListener("DOMContentLoaded", async () => {
       try {
         const tab = await getActiveTab();
         const res = await sendMessage({ type: "popup_capture_screenshot", tabId: tab?.id || null, fullPage });
-        if (res?.data) {
+        if (res?.base64) {
           await saveScreenshots([{
             filename: res.filename,
-            data: res.data,
+            data: res.base64,
             label,
             title: tab?.title || label,
             url: tab?.url || "",
             dimensions: res.width && res.height ? `${res.width}×${res.height}` : label,
             remotePath: res.saveResult?.mirrored ? res.saveResult.remotePath : "",
+            targetHost: res.saveResult?.mirrored ? res.saveResult.targetHost : "",
             mirrored: res.saveResult?.mirrored || false,
+            mirrorError: res.saveResult?.mirrorError || "",
             comment: "",
           }, ...currentShots]);
-          showToast(`${label} screenshot captured!`, 2000);
+          showToast(res.saveResult?.mirrorError
+            ? `${label} captured locally. ${res.saveResult.mirrorError}`
+            : `${label} screenshot captured!`, res.saveResult?.mirrorError ? 5000 : 2000);
         }
       } catch (err) {
         showToast("Capture failed: " + err.message, 3000);
@@ -692,7 +745,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     ];
     shots.forEach((s, idx) => {
       lines.push(`### ${idx + 1}. ${s.label || s.title || "Screenshot"}`);
-      lines.push(s.mirrored && s.remotePath ? `- **Server Path:** \`${s.remotePath}\`` : "- **Storage:** Local only");
+      lines.push((s.mirrored || s.remotePath) && s.remotePath
+        ? `- **Server Path:** \`${s.targetHost ? s.targetHost + ":" : ""}${s.remotePath}\`` : "- **Storage:** Local only");
+      if (s.mirrorError) lines.push(`- **Mirror error:** ${s.mirrorError}`);
       if (s.url) lines.push(`- **URL:** ${s.url}`);
       if (s.dimensions) lines.push(`- **Dimensions:** ${s.dimensions}`);
       if (s.comment) lines.push(`- **Feedback:** ${s.comment}`);
@@ -713,10 +768,34 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
 
     btnClearShots.addEventListener("click", async () => {
-      if (confirm("Delete all screenshots both locally on your Mac and remotely on the server?")) {
-        await sendMessage({ type: "popup_clear_screenshots" });
-        await saveScreenshots([]);
-        showToast("✓ Cleared all screenshots", 2000);
+      if (!confirm("Delete all saved screenshots locally and from their recorded SSH hosts?")) return;
+      btnClearShots.disabled = true;
+      try {
+        const destinations = [];
+        for (const shot of [...currentShots]) destinations.push(await screenshotDestination(shot));
+        const result = await sendMessage({ type: "popup_clear_screenshots",
+          screenshots: destinations.map(({ remoteError, ...destination }) => destination) });
+        if (result.localDeleted !== true) throw new Error(result.localError || "Local screenshot deletion failed.");
+        const results = new Map((result.results || []).map((item) => [item.filename, item]));
+        const pending = new Map();
+        for (const destination of destinations) {
+          if (!destination.mirrored) continue;
+          const deleted = results.get(destination.filename);
+          if (destination.remoteError || deleted?.remoteError || deleted?.remoteDeleted !== true) {
+            pending.set(destination.filename, destination.remoteError || deleted?.remoteError ||
+              result.remoteError || "Remote screenshot was not deleted. Reconnect to its original host and retry.");
+          }
+        }
+        const requested = new Set(destinations.map((item) => item.filename));
+        await saveScreenshots(currentShots.filter((shot) =>
+          !requested.has(shot.filename) || pending.has(shot.filename)).map((shot) =>
+          pending.has(shot.filename) ? { ...shot, mirrorError: pending.get(shot.filename) } : shot));
+        showToast(pending.size ? `Local screenshots deleted; ${pending.size} remote deletion${pending.size === 1 ? "" : "s"} pending. See the retained captures for details.`
+          : "Cleared all screenshots", pending.size ? 5000 : 2000);
+      } catch (error) {
+        showToast("Clear failed: " + error.message, 5000);
+      } finally {
+        btnClearShots.disabled = currentShots.length === 0;
       }
     });
 

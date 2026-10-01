@@ -389,22 +389,36 @@ func TestParseArgsEndOfOptionsDelimiter(t *testing.T) {
 
 func TestBrokerSocketHardening(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test-secure-broker.sock")
+	sockPath := filepath.Join(tmpDir, "broker", "test-secure-broker.sock")
+	if err := protocol.PrivateDir(filepath.Dir(sockPath)); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TETHER_AUTH_TOKEN", "fixture-key")
 
 	broker := NewBroker(sockPath, "127.0.0.1:9333")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	runErrors := make(chan error, 1)
 	go func() {
-		_ = broker.Run(ctx)
+		runErrors <- broker.Run(ctx)
 	}()
+	defer broker.Close()
 
 	var info os.FileInfo
 	var err error
 	for i := 0; i < 50; i++ {
+		select {
+		case runErr := <-runErrors:
+			t.Fatalf("broker exited before becoming ready: %v", runErr)
+		default:
+		}
 		info, err = os.Lstat(sockPath)
 		if err == nil {
-			break
+			err = protocol.ValidatePrivateSocket(sockPath)
+			if err == nil {
+				break
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

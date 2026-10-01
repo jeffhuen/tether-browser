@@ -1,19 +1,17 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -23,7 +21,7 @@ import (
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
-const helpText = `tether v0.1.39 - remote-to-local browser bridge for AI agents
+const helpText = `tether v0.1.40 - remote-to-local browser bridge for AI agents
 Usage:
   tether connect <host>        Link local Chrome to a remote server via SSH in one command
   tether extension install     Register native messaging host for Chrome, Brave, and Edge
@@ -66,7 +64,7 @@ func runDaemon(args []string) int {
 	noChrome := fs.Bool("no-chrome", false, "Do not launch Chrome automatically")
 	chromeURL := fs.String("chrome-url", "", "Custom Chrome CDP URL to attach to")
 	enroll := fs.String("enroll", "localhost:3000=127.0.0.1:3000,localhost:5173=127.0.0.1:5173,localhost:8000=127.0.0.1:8000,localhost:8080=127.0.0.1:8080", "Comma-separated route enrollments")
-	tokenFlag := fs.String("token", "", "Bearer authentication token for daemon RPC (default: persisted workstation token)")
+	tokenFlag := fs.String("token", "", "Private TLS identity key (default: persisted workstation key)")
 	_ = fs.Parse(args)
 
 	token := strings.TrimSpace(*tokenFlag)
@@ -281,24 +279,44 @@ func localScreenshotsDir() string {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return filepath.Join(os.TempDir(), "tether-screenshots")
+		return ""
 	}
 	return filepath.Join(home, ".cache", "tether", "screenshots")
 }
 func runNativeHost(args []string) int {
-	ctx, cancel := context.WithCancel(context.Background())
+	// Keep the OS signal defaults while waiting for Chrome's first frame.
+	// A sendNativeMessage file operation must never claim the automation socket.
+	firstFrame, err := client.ReadNativeMessage(os.Stdin)
+	if errors.Is(err, io.EOF) {
+		return 0
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[Tether NativeHost] Error: %v\n", err)
+		return 1
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	if err := serveNativeHost(ctx, os.Stdin, os.Stdout, firstFrame); err != nil {
+		fmt.Fprintf(os.Stderr, "[Tether NativeHost] Error: %v\n", err)
+		return 1
+	}
+	return 0
+}
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		cancel()
-	}()
-
+func serveNativeHost(ctx context.Context, in io.Reader, out io.Writer, firstFrame []byte) error {
+	var first struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(firstFrame, &first); err != nil {
+		return err
+	}
 	var ssh sshSession
 	defer ssh.Close()
-
+	if first.Type == "system_delete_screenshot" || first.Type == "system_clear_screenshots" {
+		result, err := handleScreenshotSystem(ctx, &ssh, first.Type, firstFrame)
+		return client.WriteNativeSystemResponse(out, first.ID, result, err)
+	}
 	onSys := func(msgType string, payload []byte) (any, error) {
 		switch msgType {
 		case "system_ssh_connect":
@@ -314,119 +332,68 @@ func runNativeHost(args []string) int {
 			return ssh.Status(), nil
 		case "system_ssh_disconnect":
 			return ssh.Disconnect(), nil
-		case "system_save_screenshot":
-			var req struct {
-				Filename string `json:"filename"`
-				Base64   string `json:"base64"`
-			}
-			if err := json.Unmarshal(payload, &req); err != nil {
-				return nil, err
-			}
-			if req.Filename == "" {
-				req.Filename = fmt.Sprintf("tether-shot-%d.png", time.Now().Unix())
-			}
-			data, err := base64.StdEncoding.DecodeString(req.Base64)
-			if err != nil {
-				return nil, fmt.Errorf("decode base64: %w", err)
-			}
-			localDir := localScreenshotsDir()
-			_ = os.MkdirAll(localDir, 0755)
-			localPath := filepath.Join(localDir, req.Filename)
-			if err := os.WriteFile(localPath, data, 0644); err != nil {
-				return nil, fmt.Errorf("save local screenshot: %w", err)
-			}
-			remotePath := "/tmp/tether-screenshots/" + req.Filename
-			mirrored := false
-			host := getActiveHost()
-			if host != "" {
-				remoteCmd := fmt.Sprintf("mkdir -p /tmp/tether-screenshots && cat > %s", cli.ShellQuote(remotePath))
-				cmd := exec.Command("ssh", "--", host, remoteCmd)
-				cmd.Stdin = bytes.NewReader(data)
-				if err := cmd.Run(); err == nil {
-					mirrored = true
-				}
-			}
-			return map[string]any{
-				"ok":         true,
-				"filename":   req.Filename,
-				"localPath":  localPath,
-				"remotePath": remotePath,
-				"mirrored":   mirrored,
-				"targetHost": host,
-			}, nil
-		case "system_clear_screenshots":
-			localDir := localScreenshotsDir()
-			_ = os.RemoveAll(localDir)
-			_ = os.MkdirAll(localDir, 0755)
-			host := getActiveHost()
-			if host != "" {
-				_ = exec.Command("ssh", "--", host, "rm -rf /tmp/tether-screenshots && mkdir -p /tmp/tether-screenshots").Run()
-			}
-			return map[string]any{"ok": true}, nil
-		case "system_delete_screenshot":
-			var req struct {
-				Filename string `json:"filename"`
-			}
-			if err := json.Unmarshal(payload, &req); err != nil {
-				return nil, err
-			}
-			if req.Filename != "" {
-				_ = os.Remove(filepath.Join(localScreenshotsDir(), req.Filename))
-				host := getActiveHost()
-				if host != "" {
-					remotePath := "/tmp/tether-screenshots/" + req.Filename
-					_ = exec.Command("ssh", "--", host, fmt.Sprintf("rm -f %s", cli.ShellQuote(remotePath))).Run()
-				}
-			}
-			return map[string]any{"ok": true}, nil
+		case "system_save_screenshot", "system_clear_screenshots", "system_delete_screenshot":
+			return handleScreenshotSystem(ctx, &ssh, msgType, payload)
 		}
 		return nil, fmt.Errorf("unknown system message type: %s", msgType)
 	}
 
-	if err := client.RunNativeHostServer(ctx, os.Stdin, os.Stdout, onSys); err != nil {
-		fmt.Fprintf(os.Stderr, "[Tether NativeHost] Error: %v\n", err)
-		return 1
-	}
-	return 0
+	return client.RunNativeHostServer(ctx, in, out, firstFrame, onSys)
 }
 
 func ensureDaemonRunning(ctx context.Context, token string) error {
-	selfExe := selfExecutable()
-	if err := stopStaleDaemon(token, selfExe); err != nil {
+	if _, err := protocol.DaemonTLS(token, false); err != nil {
 		return err
-	}
-	if daemonHealthy(token) {
-		return nil
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	daemonCmd := exec.Command(selfExe, "daemon")
-	daemonEnv := make([]string, 0, len(os.Environ())+1)
-	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "TETHER_AUTH_TOKEN=") {
-			daemonEnv = append(daemonEnv, kv)
-		}
+	selfExe := selfExecutable()
+	if err := stopStaleDaemon(ctx, token, selfExe); err != nil {
+		return err
 	}
-	daemonEnv = append(daemonEnv, "TETHER_AUTH_TOKEN="+token)
-	daemonCmd.Env = daemonEnv
-	if err := daemonCmd.Start(); err != nil {
-		return fmt.Errorf("start daemon: %w", err)
+	if daemonHealthy(ctx, token) {
+		return nil
 	}
-	go func() { _ = daemonCmd.Wait() }()
-
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if daemonHealthy(token) {
-			return nil
+	if _, live := daemonStatus(ctx, token); !live {
+		if err := replaceOwnedLegacyDaemon(ctx, token, selfExe); err != nil {
+			return err
 		}
+		if conn, err := (&net.Dialer{Timeout: 300 * time.Millisecond}).DialContext(ctx, "tcp", cli.DefaultDaemonAddr); err == nil {
+			_ = conn.Close()
+			return errors.New("port 127.0.0.1:9333 is occupied by an unauthenticated process or daemon with a different key")
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		cmd := exec.Command(selfExe, "daemon")
+		for _, kv := range os.Environ() {
+			if !strings.HasPrefix(kv, "TETHER_AUTH_TOKEN=") {
+				cmd.Env = append(cmd.Env, kv)
+			}
+		}
+		cmd.Env = append(cmd.Env, "TETHER_AUTH_TOKEN="+token)
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("start daemon: %w", err)
+		}
+		go func() { _ = cmd.Wait() }()
+	}
+	timer := time.NewTimer(15 * time.Second)
+	defer timer.Stop()
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(200 * time.Millisecond):
+		case <-timer.C:
+			return errors.New("local daemon browser did not become ready within 15s")
+		case <-ticker.C:
+			if daemonHealthy(ctx, token) {
+				return nil
+			}
 		}
 	}
-	return errors.New("local workstation daemon failed to start on 127.0.0.1:9333")
 }
 
 func runConnect(args []string) int {
@@ -435,7 +402,7 @@ func runConnect(args []string) int {
 		fmt.Println("\nLinks your local workstation Chrome to a remote server over SSH in one step:")
 		fmt.Println("  1. Starts the local tether daemon, replacing one from another tether version")
 		fmt.Println("  2. Opens SSH reverse tunnel (ssh -R 9333:localhost:9333)")
-		fmt.Println("  3. Sets TETHER_AUTH_TOKEN in the remote shell session")
+		fmt.Println("  3. Syncs the private auth cache, then opens your normal remote shell")
 		fmt.Println("\nExample:")
 		fmt.Println("  tether connect user@my-server.com")
 		return 0
@@ -454,97 +421,21 @@ func runConnect(args []string) int {
 		fmt.Fprintf(os.Stderr, "Error resolving auth token: %v\n", err)
 		return 1
 	}
-	selfExe := selfExecutable()
-	if err := stopStaleDaemon(token, selfExe); err != nil {
+	if err := ensureDaemonRunning(context.Background(), token); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
-	// Check if local daemon is already running and authenticated.
-	// A bare TCP dial is rejected: the port could belong to an alien service
-	// or a daemon with an unmatching token, which would fail subsequent RPCs.
-	if daemonHealthy(token) {
-		fmt.Println("✓ Local workstation daemon already running on 127.0.0.1:9333 (authenticated)")
-	} else {
-		// If port 9333 responds to TCP but failed daemonHealthy, reject rather
-		// than tunneling an unauthenticated or alien listener.
-		if conn, err := net.DialTimeout("tcp", "127.0.0.1:9333", 300*time.Millisecond); err == nil {
-			_ = conn.Close()
-			fmt.Fprintln(os.Stderr, "Error: port 127.0.0.1:9333 is occupied by an unauthenticated process or daemon with a different token")
-			return 1
-		}
-
-		fmt.Println("Starting local workstation daemon...")
-		daemonCmd := exec.Command(selfExe, "daemon")
-		daemonEnv := make([]string, 0, len(os.Environ())+1)
-		for _, kv := range os.Environ() {
-			if !strings.HasPrefix(kv, "TETHER_AUTH_TOKEN=") {
-				daemonEnv = append(daemonEnv, kv)
-			}
-		}
-		daemonEnv = append(daemonEnv, "TETHER_AUTH_TOKEN="+token)
-		daemonCmd.Env = daemonEnv
-		daemonCmd.Stdout = os.Stdout
-		daemonCmd.Stderr = os.Stderr
-		if err := daemonCmd.Start(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error starting daemon: %v\n", err)
-			return 1
-		}
-		defer func() {
-			if daemonCmd.Process != nil {
-				_ = daemonCmd.Process.Kill()
-			}
-		}()
-
-		// Wait up to 75s for daemon readiness. The RPC port opens only after
-		// Chrome is up, and the launcher allows cold starts 30s plus lock
-		// acquisition 30s and process termination 5s. A bare TCP dial is not
-		// enough: confirm the daemon actually serves authenticated RPC, so
-		// a slow-but-healthy startup is never killed.
-		ready := false
-		deadline := time.Now().Add(75 * time.Second)
-		for time.Now().Before(deadline) {
-			if daemonHealthy(token) {
-				ready = true
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-		if !ready {
-			fmt.Fprintln(os.Stderr, "Error: local daemon failed to become ready on 127.0.0.1:9333 within 75s")
-			return 1
-		}
-		fmt.Println("✓ Local workstation daemon and Chrome started")
-	}
-
-	fmt.Printf("Connecting to %s with SSH reverse tunnel (-R 9333:localhost:9333)...\n", targetHost)
-	q := cli.ShellQuote(token)
-	remoteCmd := fmt.Sprintf("export TETHER_AUTH_TOKEN=%s; mkdir -p ~/.cache/tether && chmod 700 ~/.cache/tether && printf %%s %s > ~/.cache/tether/auth && chmod 600 ~/.cache/tether/auth; exec ${SHELL:-bash} -l", q, q)
-	sshArgs := []string{
-		"-R", "9333:localhost:9333",
-		"-t", targetHost,
-	}
-	sshArgs = append(sshArgs, sshExtraArgs...)
-	sshArgs = append(sshArgs, remoteCmd)
-
-	cmd := exec.Command("ssh", sshArgs...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return exitErr.ExitCode()
-		}
-		fmt.Fprintf(os.Stderr, "SSH error: %v\n", err)
+	if strings.ContainsAny(token, "\r\n") {
+		fmt.Fprintln(os.Stderr, "Error: auth key contains a line break")
 		return 1
 	}
-	return 0
+	return connectTerminal(targetHost, sshExtraArgs, token)
 }
 
 // daemonStatus performs an authenticated status call against the local daemon,
 // proving the port serves valid JSON-RPC 2.0 and the token matches.
-func daemonStatus(token string) (*protocol.StatusResult, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+func daemonStatus(ctx context.Context, token string) (*protocol.StatusResult, bool) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	c := cli.NewClient("127.0.0.1:9333")
 	c.SetTimeout(2 * time.Second)
@@ -561,8 +452,8 @@ func daemonStatus(token string) (*protocol.StatusResult, bool) {
 }
 
 // daemonHealthy reports whether the local daemon is authenticated and its browser is connected.
-func daemonHealthy(token string) bool {
-	status, ok := daemonStatus(token)
+func daemonHealthy(ctx context.Context, token string) bool {
+	status, ok := daemonStatus(ctx, token)
 	return ok && status.Connected
 }
 
@@ -578,8 +469,8 @@ func selfExecutable() string {
 // stopStaleDaemon stops a local daemon whose version differs from exe, the
 // binary about to be launched. The native host lives as long as Chrome, so its
 // own compiled-in version can be older than the installed binary.
-func stopStaleDaemon(token, exe string) error {
-	status, ok := daemonStatus(token)
+func stopStaleDaemon(ctx context.Context, token, exe string) error {
+	status, ok := daemonStatus(ctx, token)
 	if !ok {
 		return nil
 	}
@@ -587,15 +478,18 @@ func stopStaleDaemon(token, exe string) error {
 	if status.DaemonVersion == want {
 		return nil
 	}
-	if !isLocalTetherDaemon(status.DaemonPID) {
+	if pid, owned := localDaemonOwner(exe); !owned || pid != status.DaemonPID {
 		// Through a reverse tunnel, 127.0.0.1:9333 can be another machine's daemon,
 		// and daemons older than 0.1.36 report no PID. Leave both running.
 		version := status.DaemonVersion
 		if version == "" {
 			version = "older than 0.1.36"
 		}
-		fmt.Fprintf(os.Stderr, "Warning: reusing tether daemon (%s) on 127.0.0.1:9333; the installed tether is %s. If that daemon runs on this machine, stop it with: pkill -f 'tether daemon'\n", version, want)
+		fmt.Fprintf(os.Stderr, "Warning: reusing authenticated remote tether daemon (%s); the installed tether is %s\n", version, want)
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	proc, err := os.FindProcess(status.DaemonPID)
 	if err == nil {
@@ -604,15 +498,23 @@ func stopStaleDaemon(token, exe string) error {
 	if err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("stop tether daemon %s (pid %d): %w", status.DaemonVersion, status.DaemonPID, err)
 	}
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
-		conn, err := net.DialTimeout("tcp", "127.0.0.1:9333", 300*time.Millisecond)
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+		conn, err := (&net.Dialer{Timeout: 300 * time.Millisecond}).DialContext(ctx, "tcp", "127.0.0.1:9333")
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return nil
 		}
 		_ = conn.Close()
 		// A concurrent connect may already have started the replacement.
-		if current, ok := daemonStatus(token); ok && current.DaemonPID != status.DaemonPID {
+		if current, ok := daemonStatus(ctx, token); ok && current.DaemonPID != status.DaemonPID {
 			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
 		}
 	}
 	return fmt.Errorf("tether daemon %s (pid %d) did not stop within 10s", status.DaemonVersion, status.DaemonPID)
@@ -620,7 +522,11 @@ func stopStaleDaemon(token, exe string) error {
 
 // binaryVersion returns the version exe reports, or this binary's version if it cannot be read.
 func binaryVersion(exe string) string {
-	out, err := exec.Command(exe, "version", "--json").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, exe, "version", "--json")
+	cli.ManageCommand(cmd)
+	out, err := cmd.Output()
 	var v struct {
 		Version string `json:"version"`
 	}
@@ -628,14 +534,4 @@ func binaryVersion(exe string) string {
 		return protocol.Version
 	}
 	return v.Version
-}
-
-// isLocalTetherDaemon reports whether pid is a `tether daemon` process on this machine.
-func isLocalTetherDaemon(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	out, err := exec.Command("ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
-	exe, rest, found := strings.Cut(strings.TrimSpace(string(out)), " daemon")
-	return err == nil && found && (rest == "" || rest[0] == ' ') && strings.Contains(filepath.Base(exe), "tether")
 }
