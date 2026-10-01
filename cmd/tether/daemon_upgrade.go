@@ -5,9 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
+
+func isDaemonCommand(exe, command string) bool {
+	args, ok := strings.CutPrefix(strings.TrimSpace(command), filepath.Clean(exe)+" ")
+	return ok && (args == "daemon" || strings.HasPrefix(args, "daemon "))
+}
 
 func replaceOwnedLegacyDaemon(ctx context.Context, token, exe string) error {
 	if _, ok := daemonStatus(ctx, token); ok {

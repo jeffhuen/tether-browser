@@ -5,6 +5,14 @@ All notable changes to `tether-browser` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.41] - 2026-10-01
+
+### Fixed
+- macOS daemon ownership checks read the untruncated process arguments instead of combining the truncated `ps` command-name column with the arguments. Reconnect can recognize Tether's own daemon after a binary upgrade. Same-user, exact executable, daemon-mode, and loaded-executable checks remain required.
+
+### Verification
+- Command-boundary regression and native Linux process-field smoke passed. Actual macOS reconnect acceptance remains pending.
+
 ## [0.1.40] - 2026-10-01
 
 ### Fixed

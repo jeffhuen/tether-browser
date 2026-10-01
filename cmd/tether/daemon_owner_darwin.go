@@ -6,7 +6,6 @@ import (
 	"context"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -36,17 +35,13 @@ func localDaemonOwner(exe string) (int, bool) {
 	if pid <= 0 || uid != os.Getuid() {
 		return 0, false
 	}
-	check := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "comm=", "-o", "args=")
+	check := exec.CommandContext(ctx, "ps", "-ww", "-p", strconv.Itoa(pid), "-o", "args=")
 	cli.ManageCommand(check)
 	data, err = check.Output()
 	if err != nil {
 		return 0, false
 	}
-	text := strings.TrimSpace(string(data))
-	if !strings.HasPrefix(text, filepath.Clean(exe)+" ") && !strings.HasPrefix(text, filepath.Clean(exe)+"\n") {
-		return 0, false
-	}
-	if !strings.Contains(text, " daemon") {
+	if !isDaemonCommand(exe, string(data)) {
 		return 0, false
 	}
 	return pid, true
