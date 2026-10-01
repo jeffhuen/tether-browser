@@ -19,8 +19,8 @@ tether status
 Expected output when fully connected:
 ```text
 Daemon Status: connected
-Version: 0.1.40
-Daemon Version: 0.1.40
+Version: 0.1.41
+Daemon Version: 0.1.41
 Mode: extension
 Targets: 3
 Active Target: 103
@@ -28,6 +28,8 @@ Uptime: 42s
 ```
 
 `Version` is the extension's version in extension mode. `Daemon Version` is the `tether` binary running on the workstation. For the 0.1.40 protocol change, update both the workstation and remote binaries and the extension together, then click **Reconnect** in the popup. You can also reconnect with `tether connect user@server` on the workstation. Tether replaces an older local daemon only after operating-system checks verify the listener's owner and executable. It does not trust a process ID supplied by an unauthenticated network peer.
+
+If macOS 0.1.40 reports that port `127.0.0.1:9333` is occupied even though its listener is your own Tether daemon, update to 0.1.41 and click **Reconnect**. This fixes a truncated process-name check; it does not permit stopping an unknown listener or a current daemon with a different key. Do not delete the authentication key to work around this error.
 
 ---
 
