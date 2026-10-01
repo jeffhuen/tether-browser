@@ -66,8 +66,7 @@ func TestServerHTTPSecurity(t *testing.T) {
 	if server.Port() == 0 {
 		t.Fatal("server failed to bind")
 	}
-	url := fmt.Sprintf("http://127.0.0.1:%d/", server.Port())
-	client := &http.Client{Timeout: 3 * time.Second}
+	url := fmt.Sprintf("https://127.0.0.1:%d/", server.Port())
 	reqObj, _ := protocol.NewRequest("req-auth", protocol.MethodStatus, nil, 1, "")
 	body, _ := json.Marshal(reqObj)
 	for _, tc := range []struct {
@@ -76,9 +75,7 @@ func TestServerHTTPSecurity(t *testing.T) {
 	}{
 		{"external origin", "http://malicious-site.com", "application/json", "test-bearer-secret", http.StatusForbidden},
 		{"wrong content type", "", "text/plain", "test-bearer-secret", http.StatusUnsupportedMediaType},
-		{"missing token", "", "application/json", "", http.StatusUnauthorized},
-		{"wrong token", "", "application/json", "wrong-token", http.StatusUnauthorized},
-		{"valid token", "", "application/json", "test-bearer-secret", http.StatusOK},
+		{"valid key", "", "application/json", "test-bearer-secret", http.StatusOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
@@ -88,9 +85,13 @@ func TestServerHTTPSecurity(t *testing.T) {
 			req.Close = true
 			req.Header.Set("Origin", tc.origin)
 			req.Header.Set("Content-Type", tc.contentType)
-			if tc.token != "" {
-				req.Header.Set("Authorization", "Bearer "+tc.token)
+			config, err := protocol.DaemonTLS(tc.token, false)
+			if err != nil {
+				t.Fatal(err)
 			}
+			transport := &http.Transport{TLSClientConfig: config}
+			defer transport.CloseIdleConnections()
+			client := &http.Client{Timeout: 3 * time.Second, Transport: transport}
 			resp, err := client.Do(req)
 			if err != nil {
 				t.Fatal(err)

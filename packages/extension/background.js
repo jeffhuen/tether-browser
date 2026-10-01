@@ -1,7 +1,7 @@
 // Tether Browser Bridge - Manifest V3 Background Service Worker
 // Provides remote-to-local browser automation via chrome.debugger
 // and native tab groups inside the developer's active Chromium browser.
-import { initializeNetwork, networkStatus, networkDisconnected, connectSSH, disconnectSSH, setNetworkEnabled } from "./network.js";
+import { initializeNetwork, networkStatus, networkDisconnected, connectSSH, disconnectSSH, setNetworkEnabled, openSignIn } from "./network.js";
 
 const NATIVE_HOST_NAME = "com.tether_browser.host";
 const CDP_TIMEOUT_MS = 25000;
@@ -70,6 +70,29 @@ let isDaemonConnected = false;
 const pendingNative = new Map();
 let nativeReqSeq = 0;
 
+const NATIVE_MESSAGE_LIMIT = 64 * 1024 * 1024;
+function validateNativeMessage(message) {
+  const json = JSON.stringify(message);
+  // Count UTF-8 bytes without allocating another copy of a screenshot payload.
+  let bytes = json.length;
+  for (let i = 0; i < json.length; i++) {
+    const code = json.charCodeAt(i);
+    if (code < 0x80) continue;
+    if (code < 0x800) bytes++;
+    else if (code >= 0xd800 && code <= 0xdbff) {
+      bytes += 2;
+      i++;
+    } else bytes += 2;
+  }
+  if (bytes > NATIVE_MESSAGE_LIMIT) {
+    throw new RangeError("Native message exceeds Chrome's 64 MiB limit. The bridge is still connected.");
+  }
+}
+function postNativeMessage(message, port = nativePort) {
+  validateNativeMessage(message);
+  port.postMessage(message);
+}
+
 function nativeRequest(msg, timeout = 15000) {
   return new Promise((resolve, reject) => {
     if (!nativePort) {
@@ -86,13 +109,35 @@ function nativeRequest(msg, timeout = 15000) {
     }, timeout);
     pendingNative.set(id, { resolve, reject, timer });
     try {
-      nativePort.postMessage({ ...msg, id });
+      postNativeMessage({ ...msg, id });
     } catch (error) {
       clearTimeout(timer);
       pendingNative.delete(id);
       reject(error);
     }
   });
+}
+
+async function offlineScreenshotFileRequest(message) {
+  const id = `nr_${Date.now()}_${nativeReqSeq++}`;
+  const request = { ...message, id };
+  validateNativeMessage(request);
+  const reply = await chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, request);
+  if (reply?.id !== id || reply.type !== "response" || reply.method) {
+    throw new Error("Invalid local screenshot helper response");
+  }
+  if (reply.error) throw new Error(reply.error.message || String(reply.error));
+  return reply.result || {};
+}
+
+let screenshotFiles = Promise.resolve();
+function screenshotFileRequest(message) {
+  const operation = screenshotFiles.then(() => {
+    if (tetherDisconnecting) throw new Error("Native screenshot operation cancelled.");
+    return nativePort ? nativeRequest(message) : offlineScreenshotFileRequest(message);
+  });
+  screenshotFiles = operation.catch(() => {});
+  return operation;
 }
 
 initializeNetwork(nativeRequest);
@@ -113,9 +158,10 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // --- Native Messaging Connection ---
 
 function connectNativeHost() {
-  if (nativePort || (!tetherEnabled && !tetherConnecting)) return;
+  if (nativePort || (!tetherEnabled && !tetherConnecting) || tetherDisconnecting) return;
   try {
     const port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
+    postNativeMessage({ type: "heartbeat" }, port);
     nativePort = port;
     port.onMessage.addListener((message) => {
       if (nativePort !== port) return;
@@ -168,7 +214,7 @@ function startHeartbeat() {
   heartbeatTimer = setInterval(() => {
     if (!nativePort) return;
     try {
-      nativePort.postMessage({ type: "heartbeat", timestamp: Date.now() });
+      postNativeMessage({ type: "heartbeat", timestamp: Date.now() });
     } catch {
       // Handled by onDisconnect
     }
@@ -191,7 +237,8 @@ async function connectTether(host) {
   const revision = ++tetherRevision;
   tetherConnecting = true;
   try {
-    connectNativeHost();
+    await connectNativeHost();
+    if (revision !== tetherRevision) throw new Error("Tether connection cancelled.");
     const ssh = await connectSSH(host);
     if (revision !== tetherRevision) throw new Error("Tether connection cancelled.");
     await saveTether({ tether_enabled: true, tether_host: host });
@@ -217,7 +264,8 @@ async function reconnectTether() {
   const revision = ++tetherRevision;
   tetherConnecting = true;
   try {
-    if (!nativePort) connectNativeHost();
+    await connectNativeHost();
+    if (revision !== tetherRevision) throw new Error("Tether connection cancelled.");
     const ssh = await connectSSH(host);
     if (revision !== tetherRevision) throw new Error("Tether connection cancelled.");
     return ssh;
@@ -286,18 +334,27 @@ function disconnectTether() {
 function sendResponse(id, result) {
   if (!nativePort) return;
   try {
-    nativePort.postMessage({ id, type: "response", result });
+    postNativeMessage({ id, type: "response", result });
   } catch (err) {
-    console.warn("[Tether] Failed to send response:", err.message);
+    sendError(id, -32000, err.message || String(err));
   }
 }
 
 function sendError(id, code, message) {
   if (!nativePort) return;
   try {
-    nativePort.postMessage({ id, type: "error", error: { code, message } });
+    postNativeMessage({ id, type: "error", error: { code, message } });
   } catch (err) {
-    console.warn("[Tether] Failed to send error:", err.message);
+    if (err instanceof RangeError) {
+      try {
+        postNativeMessage({ id, type: "error", error: { code, message: err.message } });
+        return;
+      } catch (fallbackError) {
+        console.warn("[Tether] Failed to send size error:", fallbackError.message);
+      }
+    } else {
+      console.warn("[Tether] Failed to send error:", err.message);
+    }
   }
 }
 
@@ -1208,7 +1265,6 @@ async function handleScreenshot(params = {}) {
     format,
     width: png?.getUint32(16),
     height: png?.getUint32(20),
-    data: res.data,
     base64: res.data,
   };
 }
@@ -1512,6 +1568,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           await setNetworkEnabled(msg.enabled, msg.sessionId);
           sendResponse({ ok: true });
           break;
+        case "popup_network_signin":
+          if (!tetherEnabled || !nativePort) throw new Error("Reconnect Tether before opening sign-in.");
+          sendResponse(await openSignIn(msg.sessionId, msg.turnOff));
+          break;
         case "popup_reload_remote_tabs": {
           const tabs = await handleTabList();
           await Promise.all(tabs.tabs.filter((tab) => tab.inGroup).map((tab) => chrome.tabs.reload(Number(tab.id))));
@@ -1588,22 +1648,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             format: msg.format || "png",
           });
           const filename = `tether-shot-${Date.now()}.png`;
-          let saveResult = null;
-          if (nativePort && res && res.data) {
+          let saveResult = { mirrored: false, mirrorError: "Local helper unavailable; screenshot kept in the gallery." };
+          if (nativePort && res.base64) {
             try {
               saveResult = await nativeRequest({
                 type: "system_save_screenshot",
                 filename,
-                base64: res.data,
+                base64: res.base64,
               });
             } catch (err) {
-              console.warn("[Tether] Native save failed:", err.message);
+              saveResult = { mirrored: false, mirrorError: err.message };
             }
           }
           sendResponse({
             ok: true,
             filename,
-            data: res.data,
+            base64: res.base64,
             width: res.width,
             height: res.height,
             saveResult,
@@ -1640,16 +1700,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
                 const shotRes = await handleScreenshot({ tabId: targetTabId, clip: cropData.rect });
                 const filename = `tether-shot-${Date.now()}.png`;
-                let saveResult = null;
+                let saveResult = { mirrored: false, mirrorError: "Local helper unavailable; screenshot kept in the gallery." };
                 if (nativePort) {
                   try {
                     saveResult = await nativeRequest({
                       type: "system_save_screenshot",
                       filename,
-                      base64: shotRes.data,
+                      base64: shotRes.base64,
                     });
                   } catch (err) {
-                    console.warn("[Tether] Native save failed:", err.message);
+                    saveResult = { mirrored: false, mirrorError: err.message };
                   }
                 }
 
@@ -1657,13 +1717,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 const existing = storageData.tether_screenshots || [];
                 const newEntry = {
                   filename,
-                  data: shotRes.data,
+                  data: shotRes.base64,
                   label: "Area Crop",
                   title: cropData.title || "Area Crop",
                   url: cropData.url || "",
                   dimensions: `${shotRes.width}×${shotRes.height} px`,
                   remotePath: saveResult?.mirrored ? saveResult.remotePath : "",
+                  targetHost: saveResult?.mirrored ? saveResult.targetHost : "",
                   mirrored: saveResult?.mirrored || false,
+                  mirrorError: saveResult?.mirrorError || "",
                   comment: "",
                 };
                 await chrome.storage.local.set({ tether_screenshots: [newEntry, ...existing] });
@@ -1683,26 +1745,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         case "popup_clear_screenshots": {
-          let res = { ok: true };
-          if (nativePort) {
-            try {
-              res = await nativeRequest({ type: "system_clear_screenshots" });
-            } catch (err) {
-              res = { error: err.message };
-            }
-          }
+          const res = await screenshotFileRequest({ type: "system_clear_screenshots", screenshots: msg.screenshots });
           sendResponse(res);
           break;
         }
         case "popup_delete_screenshot": {
-          let res = { ok: true };
-          if (nativePort && msg.filename) {
-            try {
-              res = await nativeRequest({ type: "system_delete_screenshot", filename: msg.filename });
-            } catch (err) {
-              res = { error: err.message };
-            }
-          }
+          if (!msg.filename) throw new Error("No screenshot filename supplied.");
+          const res = await screenshotFileRequest({
+            type: "system_delete_screenshot", filename: msg.filename,
+            targetHost: msg.targetHost, remotePath: msg.remotePath, mirrored: msg.mirrored,
+          });
           sendResponse(res);
           break;
         }

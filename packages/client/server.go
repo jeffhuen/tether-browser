@@ -3,7 +3,7 @@ package client
 import (
 	"bufio"
 	"context"
-	"crypto/subtle"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,51 +37,28 @@ func NewServer(driver BrowserDriver) *Server {
 	}
 }
 
-// SetAuthToken configures a bearer token required for daemon access.
+// SetAuthToken configures the private TLS identity key required for daemon access.
 func (s *Server) SetAuthToken(token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.authToken = token
 }
 
-// AuthToken returns the configured bearer token.
+// AuthToken returns the configured private TLS identity key.
 func (s *Server) AuthToken() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.authToken
 }
 
-func tokenEqual(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
-}
-
-func (s *Server) isAuthorized(req *protocol.Request, httpReq *http.Request) bool {
-	token := s.AuthToken()
-	if token == "" {
-		return true
-	}
-	if httpReq != nil {
-		auth := httpReq.Header.Get("Authorization")
-		if strings.HasPrefix(auth, "Bearer ") && tokenEqual(strings.TrimPrefix(auth, "Bearer "), token) {
-			return true
-		}
-		if tokenEqual(httpReq.Header.Get("X-Tether-Token"), token) {
-			return true
-		}
-	}
-	if req != nil && tokenEqual(req.Token, token) {
-		return true
-	}
-	return false
-}
-
 // ListenAndServe binds to 127.0.0.1 on the specified port (or 0 for ephemeral).
 func (s *Server) ListenAndServe(port int) error {
+	config, err := protocol.DaemonTLS(s.AuthToken(), true)
+	if err != nil {
+		return err
+	}
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	ln, err := net.Listen("tcp", addr)
+	ln, err := tls.Listen("tcp", addr, config)
 	if err != nil {
 		return fmt.Errorf("server listen on %s: %w", addr, err)
 	}
@@ -129,103 +106,106 @@ func (s *Server) Close() error {
 
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
-	setTCPNoDelay(conn, true)
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	secured, ok := conn.(*tls.Conn)
+	if !ok || secured.Handshake() != nil {
+		return
+	}
 	_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
-
 	br := bufio.NewReader(conn)
-
+	peek, err := br.Peek(1)
+	if err != nil {
+		return
+	}
+	if strings.ContainsRune("PGHODU", rune(peek[0])) {
+		// net/http owns header parsing and its hard header limit.
+		httpServer := &http.Server{
+			MaxHeaderBytes: 16 << 10, ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.Method != http.MethodPost {
+					w.Header().Set("Allow", "POST")
+					w.WriteHeader(405)
+					return
+				}
+				if !isAuthorizedOrigin(req.Header.Get("Origin")) {
+					w.WriteHeader(403)
+					return
+				}
+				if !strings.HasPrefix(req.Header.Get("Content-Type"), "application/json") {
+					w.WriteHeader(415)
+					return
+				}
+				if req.ContentLength > protocol.MaxCommandBytes {
+					w.WriteHeader(http.StatusRequestEntityTooLarge)
+					return
+				}
+				req.Body = http.MaxBytesReader(w, req.Body, protocol.MaxCommandBytes)
+				body, err := io.ReadAll(req.Body)
+				if err != nil {
+					w.WriteHeader(http.StatusRequestEntityTooLarge)
+					return
+				}
+				var rpc protocol.Request
+				if json.Unmarshal(body, &rpc) != nil {
+					w.WriteHeader(400)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(s.Dispatch(req.Context(), &rpc))
+			}),
+		}
+		listener := &singleConnListener{conn: &bufferedConn{Conn: conn, reader: br}, done: make(chan struct{})}
+		_ = httpServer.Serve(listener)
+		return
+	}
 	for {
 		_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
-		peek, err := br.Peek(1)
+		frame, err := protocol.ReadFrame(br, protocol.MaxCommandBytes)
 		if err != nil {
 			return
 		}
-		firstByte := peek[0]
-
-		// HTTP request detection (POST, GET, etc.)
-		if firstByte == 'P' || firstByte == 'G' || firstByte == 'H' || firstByte == 'O' || firstByte == 'D' || firstByte == 'U' {
-			req, err := http.ReadRequest(br)
-			if err != nil {
-				return
-			}
-
-			if req.Method != http.MethodPost {
-				res := "HTTP/1.1 405 Method Not Allowed\r\nAllow: POST\r\nContent-Length: 0\r\n\r\n"
-				_, _ = conn.Write([]byte(res))
-				return
-			}
-
-			origin := req.Header.Get("Origin")
-			if origin != "" && !isAuthorizedOrigin(origin) {
-				res := "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"
-				_, _ = conn.Write([]byte(res))
-				return
-			}
-
-			ct := req.Header.Get("Content-Type")
-			if !strings.HasPrefix(ct, "application/json") {
-				res := "HTTP/1.1 415 Unsupported Media Type\r\nContent-Length: 0\r\n\r\n"
-				_, _ = conn.Write([]byte(res))
-				return
-			}
-
-			body, err := io.ReadAll(req.Body)
-			_ = req.Body.Close()
-			if err != nil {
-				res := "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n"
-				_, _ = conn.Write([]byte(res))
-				return
-			}
-
-			var rpcReq protocol.Request
-			if err := json.Unmarshal(body, &rpcReq); err != nil {
-				errResp := protocol.NewErrorResponse(nil, protocol.CodeParseError, "parse error", nil, 0, "")
-				respBytes, _ := json.Marshal(errResp)
-				fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(respBytes), string(respBytes))
-				return
-			}
-			if !s.isAuthorized(&rpcReq, req) {
-				errResp := protocol.NewErrorResponse(rpcReq.ID, protocol.CodeAuthRequired, "authentication required: invalid or missing bearer token", nil, rpcReq.Seq, rpcReq.Epoch)
-				respBytes, _ := json.Marshal(errResp)
-				fmt.Fprintf(conn, "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(respBytes), string(respBytes))
-				return
-			}
-
-			rpcResp := s.Dispatch(req.Context(), &rpcReq)
-			respBytes, _ := json.Marshal(rpcResp)
-			fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(respBytes), string(respBytes))
-			if !req.ProtoAtLeast(1, 1) || req.Close {
-				return
-			}
-			continue
+		var req protocol.Request
+		if json.Unmarshal(frame, &req) != nil {
+			return
 		}
-
-		// JSON-RPC stream mode: loop continuously without peeking to preserve read-ahead buffer
-		dec := json.NewDecoder(br)
-		for {
-			var req protocol.Request
-			if err := dec.Decode(&req); err != nil {
-				return
-			}
-			if !s.isAuthorized(&req, nil) {
-				errResp := protocol.NewErrorResponse(req.ID, protocol.CodeAuthRequired, "authentication required: invalid or missing token", nil, req.Seq, req.Epoch)
-				respBytes, _ := json.Marshal(errResp)
-				respBytes = append(respBytes, '\n')
-				_, _ = conn.Write(respBytes)
-				continue
-			}
-			resp := s.Dispatch(context.Background(), &req)
-			respBytes, err := json.Marshal(resp)
-			if err != nil {
-				return
-			}
-			respBytes = append(respBytes, '\n')
-			if _, err := conn.Write(respBytes); err != nil {
-				return
-			}
+		if err := json.NewEncoder(conn).Encode(s.Dispatch(context.Background(), &req)); err != nil {
+			return
 		}
 	}
 }
+
+type bufferedConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
+
+type singleConnListener struct {
+	conn     net.Conn
+	done     chan struct{}
+	accepted bool
+	once     sync.Once
+}
+
+func (l *singleConnListener) Accept() (net.Conn, error) {
+	if !l.accepted {
+		l.accepted = true
+		return &closingConn{Conn: l.conn, closeListener: l.Close}, nil
+	}
+	<-l.done
+	return nil, net.ErrClosed
+}
+func (l *singleConnListener) Close() error   { l.once.Do(func() { close(l.done) }); return nil }
+func (l *singleConnListener) Addr() net.Addr { return l.conn.LocalAddr() }
+
+type closingConn struct {
+	net.Conn
+	closeListener func() error
+}
+
+func (c *closingConn) Close() error { _ = c.closeListener(); return c.Conn.Close() }
 
 func isAuthorizedOrigin(origin string) bool {
 	if origin == "" {

@@ -288,6 +288,12 @@ try {
         window.popupCheckNetwork = { ...window.popupCheckNetwork, enabled: message.enabled, state: message.enabled ? "on" : "off" };
         return callback({ ok: true });
       }
+      if (message.type === "popup_network_signin") {
+        return window.popupCheckSignInNetwork.openSignIn(message.sessionId, message.turnOff).then((result) => {
+          window.popupCheckNetwork = { ...window.popupCheckNetwork, enabled: false, state: "off" };
+          callback(result);
+        }, (error) => callback({ error: error.message }));
+      }
       return window.popupCheckSend(message, callback);
     };
     window.popupCheckRefresh = () => new Promise((resolve) => {
@@ -302,33 +308,48 @@ try {
   });
   for (const width of [384, 320]) {
     await cdp("Emulation.setDeviceMetricsOverride", { width, height: 600, deviceScaleFactor: 1, mobile: false });
-    for (const state of ["disconnected", "ready", "on", "blocked", "offline", "reconnecting", "ssh-error", "signin"]) {
+    for (const state of ["disconnected", "ready", "on", "blocked", "offline", "reconnecting", "ssh-error", "signin", "signin-on", "netbird", "netbird-on", "auth-expired"]) {
       await evaluate(async (state) => {
         const tetherEnabled = state !== "disconnected";
-        const enabled = ["on", "blocked", "offline", "reconnecting"].includes(state);
+        const enabled = ["on", "blocked", "offline", "reconnecting", "signin-on", "netbird-on"].includes(state);
         const sshConnected = ["ready", "on", "blocked"].includes(state);
         window.popupCheckStatus = { tetherEnabled, connected: tetherEnabled, tabs: [], notes: [] };
         window.popupCheckNetwork = {
           tetherEnabled, nativeConnected: tetherEnabled && state !== "offline",
           enabled, state: !enabled ? "off" : state === "on" ? "on" : "unavailable",
           host: "dev-host", canEnable: state === "ready",
-          signInUrl: state === "signin" ? "https://login.tailscale.com/a/fixture" : "",
+          signInUrl: ["signin", "signin-on"].includes(state) ? "https://login.tailscale.com/a/fixture" : "",
           ssh: {
-            state: ["reconnecting", "signin"].includes(state) ? "connecting" : sshConnected ? "connected" : "disconnected",
+            state: ["reconnecting", "signin", "signin-on", "netbird", "netbird-on"].includes(state) ? "connecting" : sshConnected ? "connected" : "disconnected",
             host: "dev-host", sessionId: "fixture", proxyPort: 12345,
-            error: state === "ssh-error" ? "Tailscale SSH requires reauthentication at https://login.tailscale.com/a/fixture-with-a-long-authentication-token" : "",
+            authProvider: ["netbird", "netbird-on", "auth-expired"].includes(state) ? "NetBird" : "",
+            authMessage: ["netbird", "netbird-on"].includes(state) ? "Complete sign-in in the browser opened by NetBird." : "",
+            signInRequired: state === "auth-expired",
+            error: state === "ssh-error" ? "Remote host refused the connection" : "",
           },
         };
         await window.popupCheckRefresh();
         if (document.querySelector("#connection-toggle").getAttribute("aria-expanded") !== "true") document.querySelector("#connection-toggle").click();
         const toggle = document.querySelector("#network-toggle");
-        if (state === "disconnected" || state === "ssh-error" || state === "signin") {
+        if (["disconnected", "ssh-error", "signin", "netbird", "auth-expired"].includes(state)) {
           if (!toggle.disabled) throw new Error("An unavailable remote route must not be enabled");
-          if (state === "signin" && (document.querySelector("#status-text").textContent !== "Sign-in needed" ||
-              !document.querySelector("#network-signin").getClientRects().length)) {
-            throw new Error("A pending Tailscale sign-in must be named and offer its sign-in page");
-          }
-        } else {
+        }
+        const signIn = document.querySelector("#network-signin");
+        if (["signin", "signin-on", "netbird-on"].includes(state)) {
+          if (signIn.hidden || signIn.disabled || !signIn.getClientRects().length) throw new Error("Pending sign-in must offer an explicit usable action, including with Remote on");
+          signIn.focus();
+          if (document.activeElement !== signIn) throw new Error("Sign-in must remain keyboard-accessible");
+          if (!document.querySelector("#network-error").textContent.includes("dev-host")) throw new Error("Sign-in must identify the SSH source host");
+        } else if (!signIn.hidden) {
+          throw new Error("Non-Tailscale or expired authentication must not offer an arbitrary URL action");
+        }
+        if (["netbird", "netbird-on", "auth-expired"].includes(state)) {
+          if (!document.querySelector("#network-error").textContent.includes("NetBird")) throw new Error("Provider-specific auth guidance was lost");
+        }
+        if (state === "ssh-error" && !document.querySelector("#network-error-detail").textContent.includes("Remote host refused")) {
+          throw new Error("Actual remote error details must survive authentication guidance");
+        }
+        if (!["disconnected", "ssh-error", "signin", "netbird", "auth-expired"].includes(state)) {
           toggle.focus();
           if (document.activeElement !== toggle || !toggle.getClientRects().length) throw new Error("Remote control must stay keyboard-accessible in connection settings");
         }
@@ -337,6 +358,115 @@ try {
       await screenshot(`${width}-remote-${state}`);
     }
   }
+  // Exercise actual popup clicks and production challenge validation in Chrome.
+  // Proxy mocks are confined to this popup's JS context; tabs are really created.
+  await evaluate(async () => {
+    window.popupCheckProxyMethods = Object.fromEntries(["get", "set", "clear"].map((method) => [method, chrome.proxy.settings[method]]));
+    window.popupCheckProxy = { levelOfControl: "controllable_by_this_extension", value: { mode: "system" } };
+    chrome.proxy.settings.get = (_, callback) => callback(structuredClone(window.popupCheckProxy));
+    chrome.proxy.settings.set = ({ value }, callback) => {
+      window.popupCheckProxy = { levelOfControl: "controlled_by_this_extension", value };
+      callback();
+    };
+    chrome.proxy.settings.clear = (_, callback) => {
+      window.popupCheckProxy = { levelOfControl: "controllable_by_this_extension", value: { mode: "system" } };
+      callback();
+    };
+    window.popupCheckSignInNetwork = await import("./network.js?popup-check");
+    window.popupCheckStorageMethods = Object.fromEntries(["get", "set", "remove"].map((method) => [method, chrome.storage.local[method]]));
+    chrome.storage.local.get = (key) => key === "tether_remote_network" ? Promise.resolve({}) :
+      window.popupCheckStorageMethods.get.call(chrome.storage.local, key);
+    chrome.storage.local.set = (value) => Object.hasOwn(value, "tether_remote_network") ? Promise.resolve() :
+      window.popupCheckStorageMethods.set.call(chrome.storage.local, value);
+    chrome.storage.local.remove = (key) => key === "tether_remote_network" ? Promise.resolve() :
+      window.popupCheckStorageMethods.remove.call(chrome.storage.local, key);
+    window.popupCheckSignInNetwork.initializeNetwork(async () => structuredClone(window.popupCheckSSH));
+    await window.popupCheckSignInNetwork.networkStatus(false);
+    window.popupCheckSignInTabs = [];
+    const realCreate = chrome.tabs.create.bind(chrome.tabs);
+    window.popupCheckRealCreate = chrome.tabs.create;
+    chrome.tabs.create = async (details) => {
+      if (window.popupCheckCreateFailure) throw new Error("No current window");
+      const tab = await realCreate(details);
+      window.popupCheckSignInTabs.push({ id: tab.id, url: details.url, proxy: structuredClone(window.popupCheckProxy.value) });
+      return tab;
+    };
+    const click = async () => {
+      const button = document.querySelector("#network-signin");
+      if (button.hidden || button.disabled) throw new Error("Sign-in action unavailable");
+      button.click();
+      for (let i = 0; i < 200 && button.disabled; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+      if (button.disabled) throw new Error("Sign-in action never finished");
+      // networkAction refreshes after it releases the busy state.
+      await window.popupCheckRefresh();
+    };
+    const fixture = async (enabled) => {
+      window.popupCheckStatus = { tetherEnabled: true, connected: false, tabs: [], notes: [] };
+      window.popupCheckNetwork = { tetherEnabled: true, nativeConnected: true, enabled,
+        state: enabled ? "unavailable" : "off", canEnable: false, host: "dev-host",
+        signInUrl: "https://login.tailscale.com/a/OLD",
+        ssh: { state: "connecting", host: "dev-host", sessionId: "signin-click", proxyPort: 12345,
+          signInUrl: "https://hostile.example/not-validated" } };
+      window.popupCheckSSH = { ...window.popupCheckNetwork.ssh, signInUrl: "https://login.tailscale.com/a/LATEST" };
+      await window.popupCheckRefresh();
+    };
+    try {
+      await fixture(false);
+      await click();
+      const latest = window.popupCheckSignInTabs.at(-1);
+      const opened = await chrome.tabs.get(latest.id);
+      if ((opened.pendingUrl || opened.url) !== window.popupCheckSSH.signInUrl || latest.url !== window.popupCheckSSH.signInUrl) {
+        throw new Error("Popup click did not open the latest validated native challenge");
+      }
+      window.popupCheckSSH.sessionId = "replaced";
+      await click();
+      if (window.popupCheckSignInTabs.length !== 1 || !document.querySelector("#network-error-detail").textContent.includes("connection changed")) {
+        throw new Error("Stale popup session opened sign-in instead of reporting the changed connection");
+      }
+      window.popupCheckSSH.sessionId = "signin-click";
+      window.popupCheckSSH.signInUrl = "https://login.tailscale.com.evil.test/a/ABC";
+      await click();
+      if (window.popupCheckSignInTabs.length !== 1) throw new Error("Popup action accepted an invalid native URL");
+      window.popupCheckSSH.signInUrl = "https://login.tailscale.com/a/RETRY";
+      window.popupCheckCreateFailure = true;
+      await click();
+      if (!document.querySelector("#network-error-detail").textContent.includes("No current window")) throw new Error("Tab creation failure was not shown");
+      window.popupCheckCreateFailure = false;
+      await click();
+      if (window.popupCheckSignInTabs.length !== 2 || window.popupCheckSignInTabs.at(-1).url !== window.popupCheckSSH.signInUrl) {
+        throw new Error("The same sign-in button could not retry a failed open");
+      }
+      // One click, not a separate manual route switch, must handle a stalled route.
+      window.popupCheckSSH = { ...window.popupCheckSSH, state: "connected" };
+      await window.popupCheckSignInNetwork.setNetworkEnabled(true, "signin-click");
+      await fixture(true);
+      await click();
+      if (window.popupCheckSignInTabs.length !== 3 || window.popupCheckSignInTabs.at(-1).proxy.mode !== "system" ||
+          document.querySelector("#network-toggle").checked) throw new Error("Consented sign-in did not turn Remote browsing off before opening");
+      await window.popupCheckRefresh();
+      if (window.popupCheckProxy.value.mode !== "system") throw new Error("Remote browsing silently restored after sign-in");
+      window.popupCheckSSH = { ...window.popupCheckSSH, state: "connected" };
+      await window.popupCheckSignInNetwork.setNetworkEnabled(true, "signin-click");
+      await fixture(true);
+      window.popupCheckNetwork.signInUrl = "";
+      window.popupCheckNetwork.ssh = { ...window.popupCheckNetwork.ssh, authProvider: "NetBird",
+        authMessage: "Complete sign-in in the NetBird-opened browser." };
+      window.popupCheckSSH = { ...window.popupCheckNetwork.ssh, signInUrl: "https://arbitrary-sso.example/login" };
+      await window.popupCheckRefresh();
+      await click();
+      if (window.popupCheckProxy.value.mode !== "system" || window.popupCheckSignInTabs.length !== 3 ||
+          !document.querySelector("#network-signin").hidden) {
+        throw new Error("NetBird sign-in preparation must clear only the consented route, not open an arbitrary SSO tab");
+      }
+    } finally {
+      chrome.tabs.create = window.popupCheckRealCreate;
+      for (const [method, original] of Object.entries(window.popupCheckProxyMethods)) chrome.proxy.settings[method] = original;
+      for (const [method, original] of Object.entries(window.popupCheckStorageMethods)) chrome.storage.local[method] = original;
+      await Promise.all(window.popupCheckSignInTabs.map((tab) => chrome.tabs.remove(tab.id)));
+      for (const key of ["popupCheckProxyMethods", "popupCheckProxy", "popupCheckSignInNetwork", "popupCheckSignInTabs",
+        "popupCheckStorageMethods", "popupCheckRealCreate", "popupCheckCreateFailure", "popupCheckSSH"]) delete window[key];
+    }
+  });
   await evaluate(() => document.querySelector("#connection-toggle").click());
   for (const width of [384, 320]) {
     await cdp("Emulation.setDeviceMetricsOverride", { width, height: 600, deviceScaleFactor: 1, mobile: false });
@@ -362,7 +492,7 @@ try {
         };
         await chrome.storage.local.set({
           recent_hosts: ["reviewer@very-long-remote-development-host.example.test"],
-          tether_screenshots: populated ? [{ filename: "popup-layout-check.png", data: canvas.toDataURL("image/png").split(",")[1], label: "A long screenshot title that must not squeeze the delete button", url: "https://example.test/a/long/path", dimensions: "1200 × 800", remotePath: "/tmp/tether-screenshots/a-long-screenshot-filename.png", comment: "Align the action with the form fields." }] : [],
+          tether_screenshots: populated ? [{ filename: "popup-layout-check.png", data: canvas.toDataURL("image/png").split(",")[1], label: "A long screenshot title that must not squeeze the delete button", url: "https://example.test/a/long/path", dimensions: "1200 × 800", mirrored: true, targetHost: "dev-host", remotePath: "/tmp/tether-screenshots/popup-layout-check.png", comment: "Align the action with the form fields." }] : [],
         });
         await window.popupCheckRefresh();
       }, populated);
@@ -425,9 +555,17 @@ try {
     const before = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots;
     const filename = "popup-quota-check.png";
     const send = chrome.runtime.sendMessage;
+    let deletion = { ok: true, localDeleted: true, remoteDeleted: true };
+    let deferDelete = false;
+    let completeDeletion;
     chrome.runtime.sendMessage = (message, callback) => {
-      if (message.type === "popup_capture_screenshot") return callback({ data, filename });
-      if (message.type === "popup_delete_screenshot" && message.filename === filename) return callback({ ok: true });
+      if (message.type === "popup_capture_screenshot") return callback({ base64: data, filename,
+        saveResult: { mirrored: false, remotePath: "/must-not-be-claimed.png", mirrorError: "Remote mirror unavailable" } });
+      if (message.type === "popup_delete_screenshot" && message.filename === filename) {
+        if (deferDelete) { completeDeletion = () => callback(deletion); return; }
+        return callback(deletion);
+      }
+      if (message.type === "popup_clear_screenshots") return callback(deletion);
       return send(message, callback);
     };
     const capture = document.querySelector("#btn-capture-viewport");
@@ -437,7 +575,7 @@ try {
     if (shots[0].data !== data || JSON.stringify(shots.slice(1)) !== JSON.stringify(before)) {
       throw new Error("Large capture failed to persist or discarded previous screenshots");
     }
-    if (shots[0].remotePath || shots[0].mirrored || document.querySelector(".shot-path-chip").textContent !== "Local only") {
+    if (shots[0].remotePath || shots[0].mirrored || !document.querySelector(".shot-path-chip").textContent.includes("Remote mirror unavailable")) {
       throw new Error("An unsaved capture must not claim a server path");
     }
     const writeText = navigator.clipboard.writeText;
@@ -445,12 +583,61 @@ try {
     navigator.clipboard.writeText = async (text) => { copied = text; };
     document.querySelector("#btn-copy-shots").click();
     navigator.clipboard.writeText = writeText;
-    if (!copied.includes("**Storage:** Local only") || copied.includes(filename)) {
+    if (!copied.includes("Remote mirror unavailable") || copied.includes("/must-not-be-claimed.png")) {
       throw new Error("The screenshot report invented a server path for an unsaved capture");
     }
     const thumbnail = document.querySelector(".shot-thumb");
     await thumbnail.decode();
     if (thumbnail.naturalWidth !== 2048 || thumbnail.naturalHeight !== 1536) throw new Error("Large capture preview is invalid");
+    // Native failures must not remove gallery data or claim deletion succeeded.
+    const clickDelete = async () => {
+      const button = document.querySelector(".btn-del-shot");
+      button.click();
+      if (deferDelete) {
+        while (!completeDeletion) await new Promise((resolve) => setTimeout(resolve, 20));
+        const pending = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots;
+        if (JSON.stringify(pending) !== JSON.stringify(shots)) throw new Error("Gallery disappeared before native deletion completed");
+        completeDeletion();
+        completeDeletion = null;
+      }
+      while (button.disabled) await new Promise((resolve) => setTimeout(resolve, 20));
+    };
+    deletion = { error: "Local screenshot file is not writable" };
+    deferDelete = true;
+    await clickDelete();
+    deferDelete = false;
+    let retained = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots;
+    if (JSON.stringify(retained) !== JSON.stringify(shots) ||
+        !document.querySelector("#update-toast").textContent.includes(deletion.error)) {
+      throw new Error("Local deletion failure removed the screenshot or hid its error");
+    }
+    const realConfirm = window.confirm;
+    window.confirm = () => true;
+    try {
+      const clear = document.querySelector("#btn-clear-shots");
+      clear.click();
+      while (clear.disabled) await new Promise((resolve) => setTimeout(resolve, 20));
+      retained = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots;
+      if (JSON.stringify(retained) !== JSON.stringify(shots)) throw new Error("Local clear failure discarded gallery data");
+    } finally {
+      window.confirm = realConfirm;
+    }
+    // Retaining remote failures is only appropriate for an actual mirrored copy.
+    await chrome.storage.local.set({ tether_screenshots: [
+      { ...shots[0], mirrored: true, targetHost: "dev-host", remotePath: "/remote/large-capture.png" }, ...before,
+    ] });
+    document.querySelector("#tab-btn-shots").click();
+    while (!document.querySelector(".shot-path-chip")?.textContent.includes("/remote/large-capture.png")) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    deletion = { ok: false, localDeleted: true, remoteDeleted: false, remoteError: "Existing remote screenshot could not be deleted" };
+    await clickDelete();
+    retained = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots;
+    if (retained[0]?.data !== data || retained[0]?.mirrorError !== deletion.remoteError ||
+        JSON.stringify(retained.slice(1)) !== JSON.stringify(before)) {
+      throw new Error("Remote deletion failure lost a screenshot or failed to expose the remote error");
+    }
+    deletion = { ok: true, localDeleted: true, remoteDeleted: true };
     const removed = new Promise((resolve) => {
       const listener = (changes, area) => {
         if (area !== "local" || !changes.tether_screenshots) return;
@@ -467,6 +654,180 @@ try {
     return { storedBytes: data.length, defaultQuotaBytes: chrome.storage.local.QUOTA_BYTES };
   });
   console.log(`PASS: large PNG stored and deleted without losing previous screenshots (${largeCapture.storedBytes} bytes; default quota ${largeCapture.defaultQuotaBytes}).`);
+  await evaluate(async () => {
+    const original = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots;
+    const send = chrome.runtime.sendMessage;
+    const confirm = window.confirm;
+    const priorStatus = window.popupCheckStatus;
+    const priorNetwork = window.popupCheckNetwork;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 1;
+    const data = canvas.toDataURL("image/png").split(",")[1];
+    const local = { filename: "offline-local.png", label: "Offline local", data, mirrored: false, remotePath: "" };
+    const mirrored = { ...local, filename: "offline-mirrored.png", label: "Offline mirrored",
+      mirrored: true, targetHost: "dev-host", remotePath: "/remote/offline-mirrored.png" };
+    const remoteError = "SSH is disconnected; remote files could not be deleted";
+    chrome.runtime.sendMessage = (message, callback) => {
+      if (["popup_delete_screenshot", "popup_clear_screenshots"].includes(message.type)) {
+        return callback({ ok: false, localDeleted: true, remoteDeleted: false, remoteError,
+          results: (message.screenshots || []).map((shot) => ({ filename: shot.filename,
+            remoteDeleted: !shot.mirrored, ...(shot.mirrored ? { remoteError } : {}) })) });
+      }
+      return send(message, callback);
+    };
+    window.confirm = () => true;
+    const pause = () => new Promise((resolve) => setTimeout(resolve, 20));
+    const display = async (shots) => {
+      await chrome.storage.local.set({ tether_screenshots: shots });
+      document.querySelector("#tab-btn-shots").click();
+      for (let i = 0; i < 100; i++) {
+        if (document.querySelector("#shots-badge").textContent === String(shots.length) &&
+            (!shots.length || document.querySelector(".shot-title").textContent === shots[0].label)) return;
+        await pause();
+      }
+      throw new Error("Offline gallery fixture did not load");
+    };
+    const clickAndWait = async (selector) => {
+      const changed = new Promise((resolve) => {
+        const listener = (changes, area) => {
+          if (area !== "local" || !changes.tether_screenshots) return;
+          chrome.storage.onChanged.removeListener(listener);
+          resolve();
+        };
+        chrome.storage.onChanged.addListener(listener);
+      });
+      const button = document.querySelector(selector);
+      if (button.disabled) throw new Error("Offline gallery action is disabled");
+      button.click();
+      await changed;
+      await pause();
+      return (await chrome.storage.local.get("tether_screenshots")).tether_screenshots;
+    };
+    try {
+      window.popupCheckStatus = { tetherEnabled: false, connected: false, tabs: [], notes: [] };
+      window.popupCheckNetwork = { tetherEnabled: false, nativeConnected: false, enabled: false,
+        state: "off", canEnable: false, ssh: { state: "disconnected" } };
+      await window.popupCheckRefresh();
+      await display([local]);
+      if ((await clickAndWait(".btn-del-shot")).length) throw new Error("Deleting a local-only offline screenshot required remote authentication");
+      await display([local]);
+      if ((await clickAndWait("#btn-clear-shots")).length) throw new Error("Clearing a local-only offline gallery required remote authentication");
+      await display([mirrored, local]);
+      const retained = await clickAndWait("#btn-clear-shots");
+      if (retained.length !== 1 || retained[0].filename !== mirrored.filename ||
+          retained[0].data !== data || retained[0].mirrorError !== remoteError) {
+        throw new Error("Partial remote clear must remove local-only records and retain only retryable mirrored records");
+      }
+
+      // Save provenance must survive real capture clicks and a host switch.
+      // Model distinct remote stores, rather than echoing the requested host.
+      const copies = new Map([["host-a", new Set(["viewport-host.png", "full-host.png"])],
+        ["host-b", new Set(["viewport-host.png", "host-b.png", "legacy.png"])]]);
+      let currentHost = "host-b";
+      const remotePath = (filename) => `/home/dev/.cache/tether/screenshots/${filename}`;
+      const removeRemote = (shot) => {
+        if (shot.mirrored === false) return { filename: shot.filename, remoteDeleted: true };
+        if (!shot.targetHost || shot.targetHost !== currentHost) return {
+          filename: shot.filename, remoteDeleted: false,
+          remoteError: `Reconnect to the screenshot's original host ${shot.targetHost || "(unknown)"}`,
+        };
+        if (shot.remotePath !== remotePath(shot.filename) &&
+            shot.remotePath !== `/tmp/tether-screenshots/${shot.filename}`) return {
+          filename: shot.filename, remoteDeleted: false, remoteError: "Screenshot cache path does not match",
+        };
+        copies.get(currentHost).delete(shot.filename);
+        return { filename: shot.filename, remoteDeleted: true };
+      };
+      chrome.runtime.sendMessage = (message, callback) => {
+        if (message.type === "popup_capture_screenshot") {
+          const filename = message.fullPage ? "full-host.png" : "viewport-host.png";
+          return callback({ filename, base64: data, width: 1, height: 1,
+            saveResult: { mirrored: true, targetHost: "host-a", remotePath: remotePath(filename) } });
+        }
+        if (message.type === "popup_delete_screenshot") return callback({
+          localDeleted: true, ...removeRemote(message),
+        });
+        if (message.type === "popup_clear_screenshots") {
+          const results = (message.screenshots || []).map(removeRemote);
+          return callback({ localDeleted: true, remoteDeleted: results.every((item) => item.remoteDeleted), results });
+        }
+        return send(message, callback);
+      };
+      window.popupCheckStatus = { ...priorStatus, tetherEnabled: true };
+      window.popupCheckNetwork = { ...priorNetwork, tetherEnabled: true, nativeConnected: true,
+        ssh: { state: "connected", host: "host-b", sessionId: "host-b-session" } };
+      await window.popupCheckRefresh();
+      await display([]);
+      for (const mode of ["viewport", "full"]) {
+        const button = document.querySelector(`#btn-capture-${mode}`);
+        button.click();
+        while (button.disabled) await pause();
+      }
+      const captured = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots;
+      if (captured.length !== 2 || captured.some((shot) =>
+        shot.targetHost !== "host-a" || shot.remotePath !== remotePath(shot.filename))) {
+        throw new Error("Capture lost its actual mirror destination while another host was selected");
+      }
+      let remaining = await clickAndWait(".btn-del-shot");
+      if (remaining.length !== 2 || !remaining[0].mirrorError ||
+          !copies.get("host-a").has("full-host.png") || !copies.get("host-b").has("viewport-host.png")) {
+        throw new Error("Deleting a host-A capture through host B discarded its provenance or touched an unrelated copy");
+      }
+      const onB = { ...local, filename: "host-b.png", label: "Host B", mirrored: true,
+        targetHost: "host-b", remotePath: remotePath("host-b.png") };
+      await display([...remaining, onB, local]);
+      remaining = await clickAndWait("#btn-clear-shots");
+      if (remaining.length !== 2 || remaining.some((shot) => shot.targetHost !== "host-a" || !shot.mirrorError) ||
+          copies.get("host-b").has("host-b.png") || !copies.get("host-a").has("viewport-host.png") ||
+          !copies.get("host-a").has("full-host.png") || !copies.get("host-b").has("viewport-host.png")) {
+        throw new Error("Mixed-host Clear must remove only successful/local records and retain original-host failures");
+      }
+      currentHost = "host-a";
+      window.popupCheckNetwork.ssh = { state: "connected", host: "host-a", sessionId: "host-a-session" };
+      remaining = await clickAndWait("#btn-clear-shots");
+      if (remaining.length || copies.get("host-a").size) throw new Error("Reconnecting to the recorded host did not complete pending cleanup");
+
+      const legacy = { ...local, filename: "legacy.png", label: "Legacy", mirrored: true,
+        remotePath: "/tmp/tether-screenshots/legacy.png" };
+      currentHost = "host-b";
+      window.popupCheckNetwork.ssh = { state: "connected", host: "host-b", sessionId: "host-b-session" };
+      const confirmations = [];
+      let consent = false;
+      window.confirm = (text) => { confirmations.push(text); return consent; };
+      await display([legacy]);
+      remaining = await clickAndWait(".btn-del-shot");
+      if (remaining.length !== 1 || remaining[0].targetHost || !remaining[0].mirrorError ||
+          !copies.get("host-b").has("legacy.png") || !confirmations.at(-1)?.includes("host-b")) {
+        throw new Error("Legacy deletion must require explicit confirmation identifying the authenticated host");
+      }
+      window.popupCheckNetwork.ssh = { state: "disconnected", host: "host-b" };
+      consent = true;
+      const promptsBefore = confirmations.length;
+      remaining = await clickAndWait(".btn-del-shot");
+      if (remaining.length !== 1 || remaining[0].targetHost || confirmations.length !== promptsBefore ||
+          !copies.get("host-b").has("legacy.png")) {
+        throw new Error("Legacy cleanup guessed a host from disconnected or saved state");
+      }
+      window.popupCheckNetwork.ssh = { state: "connected", host: "host-b", sessionId: "host-b-session" };
+      await clickAndWait(".btn-del-shot");
+      for (let i = 0; i < 100; i++) {
+        remaining = (await chrome.storage.local.get("tether_screenshots")).tether_screenshots;
+        if (!remaining.length) break;
+        await pause();
+      }
+      if (remaining.length || copies.get("host-b").has("legacy.png")) {
+        throw new Error("Confirmed legacy cleanup did not finish on the explicitly selected host");
+      }
+    } finally {
+      chrome.runtime.sendMessage = send;
+      window.confirm = confirm;
+      window.popupCheckStatus = priorStatus;
+      window.popupCheckNetwork = priorNetwork;
+      await chrome.storage.local.set({ tether_screenshots: original });
+      document.querySelector("#tab-btn-shots").click();
+      await window.popupCheckRefresh();
+    }
+  });
   await evaluate(async () => {
     const status = await window.popupCheckSend({ type: "popup_get_status" });
     if (status.connected) throw new Error("Capture checks require a disposable, disconnected profile");
@@ -614,6 +975,20 @@ try {
       await window.captureCheckCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x: 100, y: 75, button: "left", buttons: 0, clickCount: 1 });
     };
     const editor = (expression) => window.captureCheckReviewCommand(expression);
+    const focusCaptureWindow = async () => {
+      await chrome.windows.update(window.captureCheckTab.windowId, { focused: true });
+      for (let i = 0; i < 200; i++) {
+        if ((await chrome.windows.get(window.captureCheckTab.windowId)).focused) {
+          return;
+        }
+        await pause();
+      }
+      throw new Error("Disposable Chrome window did not become active");
+    };
+    const openPopup = async () => {
+      await focusCaptureWindow();
+      await chrome.action.openPopup({ windowId: window.captureCheckTab.windowId });
+    };
     popup()?.close();
     await waitClosed();
     await editor(`
@@ -622,8 +997,7 @@ try {
       target.textContent = 'Review target';
       document.body.append(target);
     `);
-    await chrome.windows.update(window.captureCheckTab.windowId, { focused: true });
-    await chrome.action.openPopup({ windowId: window.captureCheckTab.windowId });
+    await openPopup();
     let view = await waitPopup("shots");
     view.document.querySelector("#tab-btn-notes").click();
     view.document.querySelector("#btn-inspect").click();
@@ -641,7 +1015,7 @@ try {
       else shotsTab.dispatchEvent(new view.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
       view.close();
       await waitClosed();
-      await chrome.action.openPopup({ windowId: window.captureCheckTab.windowId });
+      await openPopup();
       view = await waitPopup(panel, panel === "notes" ? "Automatic popup return" : "Area Crop");
     }
     view.document.querySelector("#btn-inspect").click();
@@ -661,6 +1035,7 @@ try {
     view.document.querySelector("#tab-btn-shots").click();
     view.document.querySelector("#btn-capture-area").click();
     await waitClosed();
+    await focusCaptureWindow();
     await window.captureCheckCommand("Input.dispatchKeyEvent", { type: "keyDown", key: "ArrowRight" });
     await window.captureCheckCommand("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter" });
     view = await waitPopup("shots", "450×300 px");
@@ -697,6 +1072,10 @@ try {
   console.log(`PASS: 320px/384px, empty/populated tabs, overflow, keyboard, preview, feedback persistence. Captures: ${captures}`);
 } finally {
   if (saved) await evaluate(async (saved) => {
+    if (window.popupCheckRealCreate) chrome.tabs.create = window.popupCheckRealCreate;
+    for (const [method, original] of Object.entries(window.popupCheckProxyMethods || {})) chrome.proxy.settings[method] = original;
+    for (const [method, original] of Object.entries(window.popupCheckStorageMethods || {})) chrome.storage.local[method] = original;
+    await Promise.all((window.popupCheckSignInTabs || []).map((tab) => chrome.tabs.remove(tab.id).catch(() => {})));
     if (window.captureCheckTab) await chrome.tabs.remove(window.captureCheckTab.id);
     for (const key of ["captureCheckTab", "captureCheckCommand", "captureCheckReviewCommand", "captureCheckStart", "captureCheckLatest", "captureCheckImage"]) delete window[key];
     chrome.runtime.sendMessage = window.popupCheckSend;

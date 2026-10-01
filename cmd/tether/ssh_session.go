@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httputil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,15 +27,20 @@ import (
 )
 
 type sshConnectionStatus struct {
-	State     string `json:"state"`
-	Host      string `json:"host"`
-	ProxyPort int    `json:"proxyPort"`
-	SessionID string `json:"sessionId"`
-	Error     string `json:"error,omitempty"`
+	State              string `json:"state"`
+	Host               string `json:"host"`
+	ProxyPort          int    `json:"proxyPort"`
+	ProxyToken         string `json:"proxyToken,omitempty"`
+	ProxyRealm         string `json:"proxyRealm,omitempty"`
+	ProxyAuthSupported bool   `json:"proxyAuthSupported"`
+	SessionID          string `json:"sessionId"`
+	Error              string `json:"error,omitempty"`
 	// SignInURL is a pending Tailscale SSH check-mode sign-in for this attempt.
 	SignInURL string `json:"signInUrl,omitempty"`
 	// SignInRequired reports that the session stopped because sign-in was not completed.
-	SignInRequired bool `json:"signInRequired,omitempty"`
+	SignInRequired bool   `json:"signInRequired,omitempty"`
+	AuthProvider   string `json:"authProvider,omitempty"`
+	AuthMessage    string `json:"authMessage,omitempty"`
 }
 
 // Cellular and relayed Tailscale links stall for seconds at a time. A stall
@@ -59,7 +66,7 @@ var tailscaleSignIn = regexp.MustCompile(`https://login\.tailscale\.com/a/[0-9A-
 
 var (
 	errSetupTimeout  = errors.New("SSH setup timed out")
-	errSignInTimeout = errors.New("Tailscale sign-in was not completed in time")
+	errSignInTimeout = errors.New("SSH sign-in was not completed in time")
 )
 
 // signInURL returns the last Tailscale sign-in link in text, or "".
@@ -80,18 +87,24 @@ type sshSession struct {
 	cancel   context.CancelFunc
 	done     chan struct{}
 	ctx      context.Context
-	upstream int
+	upstream string
 	wake     chan struct{} // cuts a reconnect wait short
 	// signedIn: the current attempt passed SSH authentication, so a late
 	// sign-in banner must not mark it as waiting for sign-in again.
-	signedIn bool
-	closed   bool
+	signedIn    bool
+	closed      bool
+	controlPath string
+	httpProxy   *httputil.ReverseProxy
+	proxyServer *http.Server
+	proxyToken  string
+	proxyRealm  string
 }
 
 func (s *sshSession) Status() sshConnectionStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	status := s.status
+	status.ProxyAuthSupported = true
 	if status.State == "" {
 		status.State = "disconnected"
 	}
@@ -127,11 +140,17 @@ func (s *sshSession) Connect(parent context.Context, host string, port int) (ssh
 		return s.status, nil
 	}
 	if s.listener == nil {
+		var credential [48]byte
+		if _, err := rand.Read(credential[:]); err != nil {
+			return sshConnectionStatus{}, err
+		}
 		ln, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 		if err != nil {
 			return sshConnectionStatus{}, fmt.Errorf("reserve browser proxy: %w; turn remote browsing off, reconnect, then enable it again", err)
 		}
 		s.listener = ln
+		s.proxyToken = hex.EncodeToString(credential[:32])
+		s.proxyRealm = "tether-" + hex.EncodeToString(credential[32:])
 		go s.serveProxy(ln)
 	} else if port != 0 && port != s.listener.Addr().(*net.TCPAddr).Port {
 		return sshConnectionStatus{}, errors.New("proxy port changed; turn remote browsing off before reconnecting")
@@ -146,13 +165,15 @@ func (s *sshSession) Connect(parent context.Context, host string, port int) (ssh
 		cancel()
 		return sshConnectionStatus{}, err
 	}
-	s.ctx, s.cancel, s.upstream = ctx, cancel, 0
+	s.ctx, s.cancel, s.upstream, s.httpProxy = ctx, cancel, "", nil
 	s.done, s.wake = make(chan struct{}), make(chan struct{}, 1)
 	wake := s.wake
 	s.status = sshConnectionStatus{
 		State: "connecting", Host: host,
-		ProxyPort: s.listener.Addr().(*net.TCPAddr).Port,
-		SessionID: hex.EncodeToString(nonce[:]),
+		ProxyPort:  s.listener.Addr().(*net.TCPAddr).Port,
+		SessionID:  hex.EncodeToString(nonce[:]),
+		ProxyToken: s.proxyToken, ProxyRealm: s.proxyRealm,
+		ProxyAuthSupported: true,
 	}
 	status := s.status
 	go func(done chan struct{}) {
@@ -174,18 +195,26 @@ func (s *sshSession) Connect(parent context.Context, host string, port int) (ssh
 				s.mu.Unlock()
 				return
 			}
-			up := s.upstream != 0 // run sets upstream only after forwarding was verified
+			up := s.upstream != "" // run sets upstream only after forwarding was verified
 			everConnected = everConnected || up
 			// The link belongs to the finished attempt; Tailscale issues a new one next time.
-			needSignIn := s.status.SignInURL != ""
-			s.upstream, s.status.SignInURL = 0, ""
+			needSignIn := errors.Is(err, errSignInTimeout)
+			authStopped := !s.signedIn && (s.status.AuthProvider != "" || s.status.SignInURL != "")
+			s.upstream, s.controlPath, s.status.SignInURL, s.httpProxy = "", "", "", nil
 			if err != nil {
 				s.status.Error = err.Error()
 			}
 			// Retrying would only print links nobody is watching; wait for Reconnect.
-			if !everConnected || needSignIn {
+			if !everConnected || needSignIn || authStopped {
 				// Never came up: a bad host, sign-in, or denied forwarding will not fix itself.
 				s.status.State, s.status.SignInRequired = "disconnected", needSignIn
+				if authStopped && s.status.AuthProvider == "NetBird" {
+					if needSignIn {
+						s.status.AuthMessage = "NetBird SSH authentication timed out. Reconnect to try again."
+					} else {
+						s.status.AuthMessage = "NetBird SSH authentication failed. Reconnect to try again."
+					}
+				}
 				if getActiveHost() == host {
 					clearActiveHost()
 				}
@@ -193,6 +222,7 @@ func (s *sshSession) Connect(parent context.Context, host string, port int) (ssh
 				return
 			}
 			s.status.State = "connecting"
+			s.status.AuthProvider, s.status.AuthMessage = "", ""
 			s.mu.Unlock()
 			if up {
 				delay = reconnectDelay
@@ -221,6 +251,16 @@ func (s *sshSession) setSignInURL(sessionID, url string) bool {
 	return true
 }
 
+func (s *sshSession) setAuthWait(sessionID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.signedIn || s.status.SessionID != sessionID || s.status.State != "connecting" || s.status.AuthProvider != "" {
+		return false
+	}
+	s.status.AuthProvider, s.status.AuthMessage = "NetBird", "Waiting for NetBird SSH authentication. NetBird opens its sign-in browser."
+	return true
+}
+
 // completeSignIn records that the current attempt passed SSH authentication.
 // A later forwarding failure then retries instead of asking to sign in again.
 func (s *sshSession) completeSignIn(sessionID string) {
@@ -228,20 +268,24 @@ func (s *sshSession) completeSignIn(sessionID string) {
 	defer s.mu.Unlock()
 	if s.status.SessionID == sessionID {
 		s.signedIn, s.status.SignInURL = true, ""
+		s.status.AuthProvider, s.status.AuthMessage = "", ""
 	}
 }
 
 func (s *sshSession) Disconnect() sshConnectionStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.status.ProxyAuthSupported = true
 	if s.cancel != nil {
 		s.cancel()
 	}
 	if getActiveHost() == s.status.Host {
 		clearActiveHost()
 	}
-	s.status.State, s.status.SessionID, s.status.Error, s.upstream = "disconnected", "", "", 0
+	s.status.State, s.status.SessionID, s.status.Error, s.upstream = "disconnected", "", "", ""
+	s.httpProxy = nil
 	s.status.SignInURL, s.status.SignInRequired = "", false
+	s.controlPath, s.status.AuthProvider, s.status.AuthMessage = "", "", ""
 	return s.status
 }
 
@@ -251,54 +295,22 @@ func (s *sshSession) Close() {
 	if s.cancel != nil {
 		s.cancel()
 	}
-	s.status.State, s.status.SignInURL, s.upstream = "disconnected", "", 0
+	s.status.State, s.status.SignInURL, s.upstream = "disconnected", "", ""
+	s.httpProxy = nil
+	s.controlPath, s.status.AuthProvider, s.status.AuthMessage = "", "", ""
 	if s.status.Host != "" && getActiveHost() == s.status.Host {
 		clearActiveHost()
 	}
-	ln, done := s.listener, s.done
+	ln, done, server := s.listener, s.done, s.proxyServer
 	s.mu.Unlock()
+	if server != nil {
+		_ = server.Close()
+	}
 	if ln != nil {
 		_ = ln.Close()
 	}
 	if done != nil {
 		<-done
-	}
-}
-
-func (s *sshSession) serveProxy(ln net.Listener) {
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		s.mu.Lock()
-		ctx, port, connected := s.ctx, s.upstream, s.status.State == "connected"
-		s.mu.Unlock()
-		if !connected {
-			_ = conn.Close()
-			continue
-		}
-		go func() {
-			defer conn.Close()
-			stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
-			defer stop()
-			upstream, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
-			if err != nil {
-				return
-			}
-			defer upstream.Close()
-			stopUpstream := context.AfterFunc(ctx, func() { _ = upstream.Close() })
-			defer stopUpstream()
-			copied := make(chan struct{})
-			go func() {
-				_, _ = io.Copy(upstream, conn)
-				_ = upstream.Close()
-				close(copied)
-			}()
-			_, _ = io.Copy(conn, upstream)
-			_ = conn.Close()
-			<-copied
-		}()
 	}
 }
 
@@ -313,30 +325,31 @@ func (s *sshSession) run(ctx context.Context, status sshConnectionStatus) error 
 	if err := ensureDaemonRunning(ctx, token); err != nil {
 		return err
 	}
-	port, err := reserveSSHPort()
-	if err != nil {
-		return err
-	}
 	controlDir, err := os.MkdirTemp("", "tether-ssh-")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(controlDir)
 	controlPath := filepath.Join(controlDir, "s")
+	socketPath := filepath.Join(controlDir, "p")
 	// A held stdin keeps the remote cat alive. Its random readiness marker is
 	// emitted only after SSH authentication and token sync.
-	remote := fmt.Sprintf("umask 077 && mkdir -p ~/.cache/tether && chmod 700 ~/.cache/tether && IFS= read -r token && printf %%s \"$token\" > ~/.cache/tether/auth && unset token && chmod 600 ~/.cache/tether/auth && printf '%%s\\n' %s && cat", cli.ShellQuote(status.SessionID))
-	remote = "sh -c " + cli.ShellQuote(remote)
+	remote := cli.TokenSyncCommand() + " && printf '%s\\n' " + cli.ShellQuote(status.SessionID) + " && cat"
+	netbird := usesNetBirdProxy(ctx, status.Host, nil)
+	connectTimeout := "10"
+	if netbird {
+		connectTimeout = "300"
+	}
 	args := []string{
-		"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+		"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=" + connectTimeout, "-o", "LogLevel=INFO",
 		"-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
 		"-o", "ExitOnForwardFailure=yes", "-o", "ForkAfterAuthentication=no",
 		"-o", "ControlMaster=yes", "-o", "ControlPersist=no", "-S", controlPath, "-o", "SessionType=default",
-		"-D", fmt.Sprintf("127.0.0.1:%d", port),
+		"-o", "ClearAllForwardings=yes", "-o", "StreamLocalBindMask=0177",
 		"--", status.Host, remote,
 	}
 	cmd := exec.CommandContext(ctx, "ssh", args...)
-	cmd.WaitDelay = time.Second
+	cli.ManageCommand(cmd)
 	// The Tailscale sign-in link can arrive as an SSH banner (stderr) or as session output.
 	signIn := make(chan struct{}, 1)
 	noteSignIn := func(url string) {
@@ -348,6 +361,17 @@ func (s *sshSession) run(ctx context.Context, status sshConnectionStatus) error 
 		}
 	}
 	stderr := &sshErrorBuffer{onSignIn: noteSignIn}
+	if netbird {
+		stderr.onAuthWait = func() {
+			if s.setAuthWait(status.SessionID) {
+				select {
+				case signIn <- struct{}{}:
+				default:
+				}
+			}
+		}
+		stderr.onAuthFailure = func() { s.setAuthWait(status.SessionID) }
+	}
 	cmd.Stderr = stderr
 	input, err := cmd.StdinPipe()
 	if err != nil {
@@ -364,7 +388,7 @@ func (s *sshSession) run(ctx context.Context, status sshConnectionStatus) error 
 	// Keep the bearer token out of process arguments and process listings.
 	go func() { _, _ = fmt.Fprintln(input, token) }()
 	defer func() {
-		_ = cmd.Process.Kill()
+		_ = cli.KillCommand(cmd)
 		_ = cmd.Wait()
 	}()
 	ready := make(chan bool, 1)
@@ -379,6 +403,9 @@ func (s *sshSession) run(ctx context.Context, status sshConnectionStatus) error 
 				return
 			}
 			noteSignIn(signInURL(scanner.Text()))
+			if netbird && (strings.Contains(scanner.Text(), "SSH authentication required.") || strings.Contains(scanner.Text(), "Waiting for authentication...")) {
+				stderr.onAuthWait()
+			}
 		}
 		ready <- false
 	}()
@@ -391,33 +418,29 @@ func (s *sshSession) run(ctx context.Context, status sshConnectionStatus) error 
 		return fmt.Errorf("SSH could not connect%s. Check this host in a terminal with ssh first", sshDetail(stderr))
 	}
 	s.completeSignIn(status.SessionID)
+	closeProxy, err := openPrivateSSHProxy(ctx, controlPath, status.Host, socketPath)
+	if err != nil {
+		return err
+	}
+	defer closeProxy()
 	// Reuse a CLI-created reverse tunnel after a status check. If its owner
 	// exits later, establish our own forward without interrupting SOCKS traffic.
 	ensureReverse := func() error {
-		if err := probeSOCKS(ctx, port, token, status.SessionID); err == nil {
-			return nil
-		}
-		forwardCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		forward := exec.CommandContext(forwardCtx, "ssh", "-S", controlPath, "-O", "forward",
-			"-o", "ExitOnForwardFailure=yes", "-R", "127.0.0.1:9333:127.0.0.1:9333", "--", status.Host)
-		if out, err := forward.CombinedOutput(); err != nil {
-			return fmt.Errorf("SSH reverse forwarding failed: %s (%w)", strings.TrimSpace(string(out)), err)
-		}
-		if err := probeSOCKS(ctx, port, token, status.SessionID); err != nil {
-			return fmt.Errorf("SSH connected but authenticated forwarding failed: %w", err)
-		}
-		return nil
+		return ensureSSHReverse(ctx, controlPath, status.Host, socketPath, token, status.SessionID)
 	}
 	if err := ensureReverse(); err != nil {
 		return err
 	}
+	proxy, transport := newSSHHTTPProxy(ctx, socketPath)
+	defer transport.CloseIdleConnections()
 	s.mu.Lock()
 	if ctx.Err() != nil || s.status.SessionID != status.SessionID {
 		s.mu.Unlock()
 		return nil
 	}
-	s.status.State, s.status.Error, s.status.SignInURL, s.upstream = "connected", "", "", port
+	s.status.State, s.status.Error, s.status.SignInURL, s.upstream = "connected", "", "", socketPath
+	s.httpProxy = proxy
+	s.controlPath = controlPath
 	saveActiveHost(status.Host)
 	s.mu.Unlock()
 	ticker := time.NewTicker(probeInterval)
@@ -438,19 +461,10 @@ func (s *sshSession) run(ctx context.Context, status sshConnectionStatus) error 
 	}
 }
 
-func reserveSSHPort() (int, error) {
-	ln, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	return port, ln.Close()
-}
-
 // Exercise direct-tcpip through SSH to our reverse listener, not just the
 // SOCKS greeting. This detects hosts that authenticate but deny TCP forwarding.
-func probeSOCKS(ctx context.Context, port int, token, sessionID string) error {
-	conn, err := (&net.Dialer{Timeout: probeTimeout}).DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
+func probeSOCKS(ctx context.Context, socketPath, token, sessionID string) error {
+	conn, err := dialSSHProxy(ctx, socketPath, "127.0.0.1:9333")
 	if err != nil {
 		return err
 	}
@@ -458,42 +472,24 @@ func probeSOCKS(ctx context.Context, port int, token, sessionID string) error {
 	_ = conn.SetDeadline(time.Now().Add(probeTimeout))
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
-	if _, err := conn.Write([]byte{5, 1, 0}); err != nil {
+	secured, err := protocol.AuthenticateDaemon(ctx, conn, token)
+	if err != nil {
 		return err
 	}
-	var greeting [2]byte
-	if _, err := io.ReadFull(conn, greeting[:]); err != nil {
+	req, err := protocol.NewRequest("route-probe", protocol.MethodStatus, protocol.StatusParams{}, 1, sessionID)
+	if err != nil {
 		return err
 	}
-	if greeting != [2]byte{5, 0} {
-		return errors.New("SOCKS authentication negotiation failed")
-	}
-	if _, err := conn.Write([]byte{5, 1, 0, 1, 127, 0, 0, 1, 36, 117}); err != nil {
+	if err := json.NewEncoder(secured).Encode(req); err != nil {
 		return err
 	}
-	var reply [10]byte
-	if _, err := io.ReadFull(conn, reply[:]); err != nil {
+	response, err := protocol.ReadResponse(secured, req)
+	if err != nil {
 		return err
 	}
-	if reply[0] != 5 || reply[1] != 0 || reply[2] != 0 || reply[3] != 1 {
-		return fmt.Errorf("SOCKS forwarding rejected (reply %d)", reply[1])
-	}
-	if token != "" {
-		req, err := protocol.NewRequestWithToken("route-probe", protocol.MethodStatus, protocol.StatusParams{}, 1, sessionID, token)
-		if err != nil {
-			return err
-		}
-		if err := json.NewEncoder(conn).Encode(req); err != nil {
-			return err
-		}
-		var response protocol.Response
-		if err := json.NewDecoder(io.LimitReader(conn, 64*1024)).Decode(&response); err != nil {
-			return err
-		}
-		var status protocol.StatusResult
-		if response.JSONRPC != "2.0" || response.Error != nil || json.Unmarshal(response.Result, &status) != nil || !status.Connected {
-			return errors.New("reverse tunnel is not connected to this workstation's browser")
-		}
+	var status protocol.StatusResult
+	if response.Error != nil || json.Unmarshal(response.Result, &status) != nil || !status.Connected {
+		return errors.New("reverse tunnel is not connected to this workstation's browser")
 	}
 	return nil
 }
@@ -531,20 +527,33 @@ func sshDetail(b *sshErrorBuffer) string {
 }
 
 type sshErrorBuffer struct {
-	mu       sync.Mutex
-	text     string
-	signIn   string
-	onSignIn func(string)
+	mu            sync.Mutex
+	text          string
+	pending       string
+	signIn        string
+	onSignIn      func(string)
+	onAuthWait    func()
+	onAuthFailure func()
 }
 
 func (b *sshErrorBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
+	combined := b.pending + string(p)
+	end := strings.LastIndexByte(combined, '\n') + 1
+	complete := combined[:end]
+	b.pending = combined[end:]
+	// Match the stdout scanner's bounded line size, independently of the
+	// 4096-byte diagnostic tail, so long split lines are not lost.
+	if len(b.pending) > 64<<10 {
+		b.pending = b.pending[len(b.pending)-4096:]
+	}
 	b.text += string(p)
+	url := signInURL(complete)
+	authWait := strings.Contains(complete, "SSH authentication required.") || strings.Contains(complete, "Waiting for authentication...")
+	authFailure := netBirdAuthFailure(complete)
 	if len(b.text) > 4096 {
 		b.text = b.text[len(b.text)-4096:]
 	}
-	// Only complete lines: a link split across writes must not be reported truncated.
-	url := signInURL(b.text[:strings.LastIndexByte(b.text, '\n')+1])
 	fresh := url != "" && url != b.signIn
 	if fresh {
 		b.signIn = url
@@ -552,6 +561,12 @@ func (b *sshErrorBuffer) Write(p []byte) (int, error) {
 	b.mu.Unlock()
 	if fresh && b.onSignIn != nil {
 		b.onSignIn(url)
+	}
+	if authWait && b.onAuthWait != nil {
+		b.onAuthWait()
+	}
+	if authFailure && b.onAuthFailure != nil {
+		b.onAuthFailure()
 	}
 	return len(p), nil
 }

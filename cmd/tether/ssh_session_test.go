@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,7 +25,7 @@ func fakeSSH(t *testing.T, delay time.Duration, up map[int32]bool, fail map[int3
 		started <- n
 		if up[n] {
 			s.mu.Lock()
-			s.upstream = 1
+			s.upstream = "fixture"
 			s.mu.Unlock()
 		}
 		if msg, ok := fail[n]; ok {
@@ -224,7 +226,7 @@ func TestCompletedSignInStillRetriesForwarding(t *testing.T) {
 		switch attempts.Add(1) {
 		case 1:
 			s.mu.Lock()
-			s.upstream = 1
+			s.upstream = "fixture"
 			s.mu.Unlock()
 			return errors.New("SSH connection closed")
 		case 2:
@@ -264,7 +266,7 @@ func TestAbandonedSignInStopsReconnecting(t *testing.T) {
 	runSSH = func(s *sshSession, ctx context.Context, status sshConnectionStatus) error {
 		if attempts.Add(1) == 1 {
 			s.mu.Lock()
-			s.upstream = 1
+			s.upstream = "fixture"
 			s.mu.Unlock()
 			return errors.New("SSH connection closed")
 		}
@@ -295,17 +297,26 @@ func TestSOCKSReadinessRequiresForwarding(t *testing.T) {
 		ready bool
 		token string
 	}{
-		{"forwarded", []byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}, true, ""},
+		{"forwarded without key", []byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}, false, ""},
 		{"forwarding denied", []byte{5, 2, 0, 1, 0, 0, 0, 0, 0, 0}, false, ""},
 		{"greeting without forwarding", nil, false, ""},
 		{"SOCKS success without daemon response", []byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}, false, "fixture-token"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ln, err := net.Listen("tcp4", "127.0.0.1:0")
+			dir := t.TempDir()
+			if err := os.Chmod(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			socketPath := filepath.Join(dir, "s")
+			ln, err := net.Listen("unix", socketPath)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer ln.Close()
+			_ = ln.(*net.UnixListener).SetDeadline(time.Now().Add(5 * time.Second))
+			if err := os.Chmod(socketPath, 0600); err != nil {
+				t.Fatal(err)
+			}
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
@@ -326,7 +337,7 @@ func TestSOCKSReadinessRequiresForwarding(t *testing.T) {
 				}
 				_, _ = conn.Write(tc.reply)
 			}()
-			err = probeSOCKS(context.Background(), ln.Addr().(*net.TCPAddr).Port, tc.token, "fixture-session")
+			err = probeSOCKS(context.Background(), socketPath, tc.token, "fixture-session")
 			if (err == nil) != tc.ready {
 				t.Fatalf("ready=%v, error=%v", tc.ready, err)
 			}

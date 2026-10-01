@@ -5,6 +5,29 @@ All notable changes to `tether-browser` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.40] - 2026-10-01
+
+### Fixed
+- Tailscale SSH sign-in opens only from an explicit, host-labelled popup action. When Remote browsing is on, the action turns it off before opening the validated link and leaves it off. Authentication websites have no proxy bypass.
+- Configured `netbird ssh proxy` authentication uses NetBird's own sign-in browser, shows the host and provider, and allows a 5-minute authentication wait. The popup offers explicit Remote browsing OFF preparation. Expired waits and authentication helper failures stop automatic retries.
+- Screenshot mirroring reuses an authenticated SSH control master with a 12-second limit, including verified terminal-created masters. Mirror failures preserve local captures and the gallery. Server paths appear only after successful mirroring; delete and clear report remote failures instead of claiming success.
+- Offline screenshot Delete and Clear use a one-shot native helper without opening the automation listener. Cleanup retains each capture's original host and path; owned historical caches migrate even with restrictive umasks.
+- Terminal Connect keeps generated keys outside argv and preserves interactive input and remote job control through one authenticated SSH master.
+- Reconnecting replaces older local daemons only after operating-system ownership and executable checks. A current daemon with a different key or an unverified listener is not stopped.
+
+### Security
+- Daemon TCP uses TLS 1.3 mutual authentication with standard certificates derived from the shared key. No user certificate setup, bearer-token authentication, or plaintext fallback remains.
+- Remote key sync uses encrypted SSH stdin and an atomic private write. Keys and screenshots use private XDG-aware storage. Unix IPC checks ownership and permissions, and the broker log stays in its private socket directory.
+- Remote browsing uses an authenticated HTTP proxy with a separate, temporary per-helper credential. The extension adds `webRequest` and `webRequestAuthProvider` permissions for proxy authentication. SOCKS and SSH control sockets are private, and Tether-owned masters suppress configured forwarding listeners without changing authentication settings.
+- Mixed-version helpers are rejected before SSH forwarding starts. Existing unauthenticated helpers are disconnected, saved SOCKS routes become fail-closed HTTP routes, and explicit Remote browsing OFF remains available.
+- Rejected proxy authentication closes the connection without waiting for an untrusted request body. HTTP forwarding preserves raw query strings and end-to-end forwarding headers while removing hop-by-hop and proxy credentials.
+
+Update both the workstation and remote `tether` binaries and the extension together, approve the additional extension permissions, then click **Reconnect**.
+
+### Verification and performance
+- Linux runtime checks and independent patch and security reviews passed. Darwin arm64 and amd64 builds passed. Actual macOS runtime acceptance remains pending.
+- In a same-host Linux fixture, 30 cold HTTP requests measured median latency of 2.10 ms before isolation and 4.02 ms afterward. One 64 MiB transfer measured 606 MiB/s before and 648 MiB/s afterward. These measurements do not establish WAN or macOS performance.
+
 ## [0.1.39] - 2026-09-28
 
 ### Fixed

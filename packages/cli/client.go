@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -27,6 +28,7 @@ type Client struct {
 	epoch   string
 	seq     uint64
 	timeout time.Duration
+	tokenMu sync.RWMutex
 	token   string
 }
 
@@ -57,9 +59,11 @@ func NewClient(addr string) *Client {
 	}
 }
 
-// SetToken configures the bearer authentication token.
+// SetToken configures the TLS authentication key; it is never sent in RPC.
 func (c *Client) SetToken(token string) {
+	c.tokenMu.Lock()
 	c.token = token
+	c.tokenMu.Unlock()
 }
 
 // SetTimeout configures the request timeout duration.
@@ -93,10 +97,20 @@ func isConnectionRefused(err error) bool {
 
 // Call executes a single JSON-RPC method call against the daemon.
 func (c *Client) Call(ctx context.Context, method string, params any) (*protocol.Response, error) {
+	c.tokenMu.RLock()
+	token := c.token
+	c.tokenMu.RUnlock()
 	d := net.Dialer{
 		Timeout: c.timeout,
 	}
 
+	if c.network == "unix" {
+		if err := protocol.ValidatePrivateSocket(c.addr); err != nil {
+			return nil, err
+		}
+	} else if strings.TrimSpace(token) == "" {
+		return nil, errors.New("daemon authentication key is missing")
+	}
 	conn, err := d.DialContext(ctx, c.network, c.addr)
 	if err != nil {
 		if c.addr == DefaultDaemonAddr || isConnectionRefused(err) {
@@ -105,16 +119,36 @@ func (c *Client) Call(ctx context.Context, method string, params any) (*protocol
 		return nil, fmt.Errorf("connect to %s: %w", c.addr, err)
 	}
 	defer conn.Close()
+	if c.network == "unix" {
+		if err := protocol.VerifyPeerCredentials(conn); err != nil {
+			return nil, err
+		}
+	}
 
 	// Set TCP_NODELAY on TCP connection to minimize latency (best-effort;
 	// forwarded or proxied sockets may return EINVAL on setsockopt).
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		_ = tcpConn.SetNoDelay(true)
 	}
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(dl)
+	} else {
+		_ = conn.SetDeadline(time.Now().Add(c.timeout))
+	}
+	rawConn := conn
+	stop := context.AfterFunc(ctx, func() { _ = rawConn.Close() })
+	defer stop()
+	if c.network != "unix" {
+		secured, err := protocol.AuthenticateDaemon(ctx, conn, token)
+		if err != nil {
+			return nil, err
+		}
+		conn = secured
+	}
 
 	seq := c.NextSeq()
 	reqID := fmt.Sprintf("req-%d", seq)
-	req, err := protocol.NewRequestWithToken(reqID, method, params, seq, c.epoch, c.token)
+	req, err := protocol.NewRequest(reqID, method, params, seq, c.epoch)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -122,6 +156,9 @@ func (c *Client) Call(ctx context.Context, method string, params any) (*protocol
 	reqData, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	if len(reqData)+1 > protocol.MaxCommandBytes {
+		return nil, errors.New("command exceeds 1MiB size limit")
 	}
 	reqData = append(reqData, '\n')
 
@@ -135,15 +172,12 @@ func (c *Client) Call(ctx context.Context, method string, params any) (*protocol
 		return nil, fmt.Errorf("send request: %w", err)
 	}
 
-	var resp protocol.Response
-	decoder := json.NewDecoder(conn)
-	if err := decoder.Decode(&resp); err != nil {
+	resp, err := protocol.ReadResponse(conn, req)
+	if err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
-
 	if resp.Error != nil {
 		return nil, resp.Error
 	}
-
-	return &resp, nil
+	return resp, nil
 }

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -36,7 +37,6 @@ func DefaultBrokerSocket() string {
 	if runtimeDir != "" {
 		dir = filepath.Join(runtimeDir, "tether")
 	}
-	_ = os.MkdirAll(dir, 0700)
 	return filepath.Join(dir, "broker.sock")
 }
 
@@ -73,8 +73,15 @@ func IsBrokerAlive(socketPath string) bool {
 	if socketPath == "" {
 		socketPath = DefaultBrokerSocket()
 	}
+	if err := protocol.ValidatePrivateSocket(socketPath); err != nil {
+		return false
+	}
 	conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond)
 	if err != nil {
+		return false
+	}
+	if err := protocol.VerifyPeerCredentials(conn); err != nil {
+		_ = conn.Close()
 		return false
 	}
 	_ = conn.Close()
@@ -83,19 +90,20 @@ func IsBrokerAlive(socketPath string) bool {
 
 // Run starts the broker socket listener in the foreground and serves requests until stopped.
 func (b *Broker) Run(ctx context.Context) error {
+	if err := protocol.PrivateDir(filepath.Dir(b.socketPath)); err != nil {
+		return err
+	}
 	if fi, err := os.Lstat(b.socketPath); err == nil {
 		if fi.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("refusing to use symlinked broker socket: %s", b.socketPath)
+		}
+		if err := protocol.ValidatePrivateSocket(b.socketPath); err != nil {
+			return err
 		}
 		if IsBrokerAlive(b.socketPath) {
 			return fmt.Errorf("broker already running on %s", b.socketPath)
 		}
 		_ = os.Remove(b.socketPath)
-	}
-
-	dir := filepath.Dir(b.socketPath)
-	if err := os.MkdirAll(dir, 0700); err == nil {
-		_ = os.Chmod(dir, 0700)
 	}
 
 	oldUmask := setRestrictiveUmask()
@@ -168,14 +176,18 @@ func (b *Broker) Close() {
 func (b *Broker) handleClient(conn net.Conn) {
 	defer conn.Close()
 
-	if err := verifyPeerCredentials(conn); err != nil {
+	if err := protocol.VerifyPeerCredentials(conn); err != nil {
 		log.Printf("broker: rejected connection: %v", err)
 		return
 	}
 
-	decoder := json.NewDecoder(io.LimitReader(conn, 16*1024*1024))
+	_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
+	frame, err := protocol.ReadFrame(bufio.NewReader(conn), protocol.MaxCommandBytes)
+	if err != nil {
+		return
+	}
 	var req protocol.Request
-	if err := decoder.Decode(&req); err != nil {
+	if json.Unmarshal(frame, &req) != nil {
 		return
 	}
 
@@ -197,7 +209,7 @@ func (b *Broker) handleClient(conn net.Conn) {
 		tid, exists := b.sessionTargets[sessionKey]
 		if (!exists || tid == "") && req.Method != protocol.MethodOpen && req.Method != protocol.MethodStatus {
 			b.mu.Unlock()
-			errResp := protocol.NewErrorResponse(req.ID, protocol.CodeTargetNotFound, fmt.Sprintf("session %q has no active target", sessionKey), nil, b.client.NextSeq(), b.client.Epoch())
+			errResp := protocol.NewErrorResponse(req.ID, protocol.CodeTargetNotFound, fmt.Sprintf("session %q has no active target", sessionKey), nil, req.Seq, req.Epoch)
 			data, _ := json.Marshal(errResp)
 			_, _ = conn.Write(append(data, '\n'))
 			return
@@ -220,9 +232,11 @@ func (b *Broker) handleClient(conn net.Conn) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	// A persistent broker must see credentials synced after it started.
+	b.client.SetToken(ResolveClientToken())
 	resp, err := b.client.Call(ctx, req.Method, modifiedParams)
 	if err != nil {
-		errResp := protocol.NewErrorResponse(req.ID, protocol.CodeInternalError, err.Error(), nil, b.client.NextSeq(), b.client.Epoch())
+		errResp := protocol.NewErrorResponse(req.ID, protocol.CodeInternalError, err.Error(), nil, req.Seq, req.Epoch)
 		data, _ := json.Marshal(errResp)
 		_, _ = conn.Write(append(data, '\n'))
 		return
@@ -232,7 +246,7 @@ func (b *Broker) handleClient(conn net.Conn) {
 	b.updateSessionState(sessionKey, req.Method, resp)
 
 	// Preserve the caller's request ID
-	resp.ID = req.ID
+	resp.ID, resp.Seq, resp.Epoch = req.ID, req.Seq, req.Epoch
 
 	data, err := json.Marshal(resp)
 	if err != nil {
@@ -333,12 +347,23 @@ func StartBackgroundBroker() error {
 	cmd := exec.Command(bin, "broker", "run")
 	setSysProcAttr(cmd)
 
-	logPath := filepath.Join(os.TempDir(), "tether-broker.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err == nil {
-		cmd.Stdout = logFile
-		cmd.Stderr = logFile
+	if err := protocol.PrivateDir(filepath.Dir(socketPath)); err != nil {
+		return err
 	}
+	logPath := filepath.Join(filepath.Dir(socketPath), "broker.log")
+	if _, err := os.Lstat(logPath); err == nil {
+		if err := protocol.ValidatePrivateFile(logPath); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+	cmd.Stdout, cmd.Stderr = logFile, logFile
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start broker background process: %w", err)
@@ -358,21 +383,33 @@ func StartBackgroundBroker() error {
 // StopBroker sends a shutdown request over the socket and waits for the broker process to exit.
 func StopBroker() error {
 	socketPath := DefaultBrokerSocket()
-	if !IsBrokerAlive(socketPath) {
-		_ = os.Remove(socketPath)
+	if _, err := os.Lstat(socketPath); os.IsNotExist(err) {
 		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := protocol.ValidatePrivateSocket(socketPath); err != nil {
+		return err
+	}
+	if !IsBrokerAlive(socketPath) {
+		return os.Remove(socketPath)
 	}
 
 	conn, err := net.DialTimeout("unix", socketPath, 1*time.Second)
 	if err != nil {
-		_ = os.Remove(socketPath)
-		return nil
+		return fmt.Errorf("connect to broker for shutdown: %w", err)
 	}
 	defer conn.Close()
 
+	if err := protocol.VerifyPeerCredentials(conn); err != nil {
+		return err
+	}
 	req, _ := protocol.NewRequest("shutdown", "broker.shutdown", nil, 0, "")
 	reqBytes, _ := json.Marshal(req)
-	_, _ = conn.Write(append(reqBytes, '\n'))
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := conn.Write(append(reqBytes, '\n')); err != nil {
+		return err
+	}
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -382,8 +419,7 @@ func StopBroker() error {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	_ = os.Remove(socketPath)
-	return nil
+	return errors.New("broker did not stop within 2s")
 }
 
 // HandleBrokerCommand executes broker subcommands (run, start, stop, status).

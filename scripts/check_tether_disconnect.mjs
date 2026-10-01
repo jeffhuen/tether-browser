@@ -14,18 +14,25 @@ let ssh = { state: "disconnected", host: "" };
 let proxy = { mode: "system" };
 const replies = new Map();
 const listen = { addListener() {} };
+let legacyHelper = false;
+let connectRequests = 0;
 
 const nativePort = {
   onMessage: { addListener(fn) { nativeMessage = fn; } },
   onDisconnect: { addListener(fn) { nativeDisconnect = fn; } },
   postMessage(message) {
     if (message.type === "system_ssh_connect") {
-      ssh = { state: "connected", host: message.targetHost, sessionId: "session-1", proxyPort: 14567 };
+      connectRequests++;
+      ssh = legacyHelper
+        ? { state: "connecting", host: message.targetHost, sessionId: "legacy", proxyPort: 14567 }
+        : { state: "connected", host: message.targetHost, sessionId: "session-1", proxyPort: 14567,
+          proxyToken: "a".repeat(64), proxyRealm: "tether-" + "b".repeat(32) };
     } else if (message.type === "system_ssh_disconnect") {
       ssh = { state: "disconnected", host: "" };
     }
     if (message.type?.startsWith("system_")) {
-      queueMicrotask(() => nativeMessage({ id: message.id, result: ssh }));
+      const result = { ...ssh, ...(legacyHelper ? {} : { proxyAuthSupported: true }) };
+      queueMicrotask(() => nativeMessage({ id: message.id, result }));
     } else if (replies.has(message.id)) {
       replies.get(message.id)(message);
       replies.delete(message.id);
@@ -51,6 +58,7 @@ globalThis.chrome = {
     clear(_details, callback) { proxy = { mode: "system" }; callback(); },
   } },
   action: { setBadgeText() {}, setBadgeBackgroundColor() {} },
+  webRequest: { onAuthRequired: listen, onCompleted: listen, onErrorOccurred: listen },
   alarms: { create() {}, onAlarm: listen },
   runtime: {
     id: "extension-id", lastError: null, onMessage: { addListener(fn) { popupMessage = fn; } },
@@ -131,11 +139,19 @@ proxy = { mode: "fixed_servers", rules: {
   singleProxy: { scheme: "socks5", host: "127.0.0.1", port: 14567 },
   bypassList: ["<-loopback>"],
 } };
+legacyHelper = true;
+ssh = { state: "connecting", host: "dev", sessionId: "legacy", proxyPort: 14567 };
+const connectsBeforeUpgrade = connectRequests;
 await import("../packages/extension/background.js?upgrade");
 assert.equal(portCount, 2, "an existing active route must keep its connection on upgrade");
 assert.equal((await popup("popup_network_status")).tetherEnabled, true);
 assert.equal(data.tether_enabled, true, "migration must persist parent consent before child OFF");
 assert.equal(data.tether_host, "dev");
+assert.equal(connectRequests, connectsBeforeUpgrade, "Upgrade must reject the old helper before starting SSH");
+assert.equal(ssh.state, "disconnected", "An already-running incompatible helper must be stopped");
+assert.equal(proxy.rules.singleProxy.scheme, "http", "A saved SOCKS route must become HTTP without clearing consent");
+assert.equal((await popup("popup_network_status")).state, "unavailable");
+legacyHelper = false;
 await popup("popup_network_set", { enabled: false });
 assert.equal(data.tether_remote_network, undefined);
 await import("../packages/extension/background.js?legacy-child-off");

@@ -16,35 +16,20 @@ import (
 	"github.com/jeffhuen/tether-browser/packages/protocol"
 )
 
-func TestNativeMessageFraming(t *testing.T) {
-	testPayload := []byte(`{"id":"req-1","method":"browser.open","params":{"url":"https://example.com"}}`)
-
-	var buf bytes.Buffer
-	if err := WriteNativeMessage(&buf, testPayload); err != nil {
-		t.Fatalf("WriteNativeMessage failed: %v", err)
-	}
-
-	if buf.Len() != 4+len(testPayload) {
-		t.Fatalf("expected buffer length %d, got %d", 4+len(testPayload), buf.Len())
-	}
-
-	readBack, err := ReadNativeMessage(&buf)
-	if err != nil {
-		t.Fatalf("ReadNativeMessage failed: %v", err)
-	}
-
-	if !bytes.Equal(readBack, testPayload) {
-		t.Fatalf("expected payload %s, got %s", testPayload, readBack)
-	}
-}
-
 func TestExtensionBridgeOverUnixSocket(t *testing.T) {
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "bridge.sock")
+	socketPath := filepath.Join(tmpDir, "native", "bridge.sock")
+	if err := protocol.PrivateDir(filepath.Dir(socketPath)); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("TETHER_BRIDGE_SOCKET", socketPath)
 
 	hostToExtReader, hostToExtWriter := io.Pipe()
 	extToHostReader, extToHostWriter := io.Pipe()
+	defer hostToExtReader.Close()
+	defer hostToExtWriter.Close()
+	defer extToHostReader.Close()
+	defer extToHostWriter.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -52,17 +37,29 @@ func TestExtensionBridgeOverUnixSocket(t *testing.T) {
 	// 1. Start NativeHost server listening on the private Unix socket
 	serverErrChan := make(chan error, 1)
 	go func() {
-		serverErrChan <- RunNativeHostServer(ctx, extToHostReader, hostToExtWriter, nil)
+		serverErrChan <- RunNativeHostServer(ctx, extToHostReader, hostToExtWriter, []byte(`{"type":"heartbeat"}`), nil)
 	}()
 
 	// Wait for socket to become ready
 	deadline := time.Now().Add(2 * time.Second)
+	ready := false
 	for time.Now().Before(deadline) {
-		if conn, err := net.Dial("unix", socketPath); err == nil {
-			conn.Close()
-			break
+		select {
+		case runErr := <-serverErrChan:
+			t.Fatalf("native host exited before becoming ready: %v", runErr)
+		default:
+		}
+		if err := protocol.ValidatePrivateSocket(socketPath); err == nil {
+			if conn, err := net.Dial("unix", socketPath); err == nil {
+				conn.Close()
+				ready = true
+				break
+			}
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	if !ready {
+		t.Fatal("private native socket failed to become ready")
 	}
 
 	// 2. Simulate Chrome extension processing commands in background
@@ -159,25 +156,45 @@ func TestExtensionBridgeOverUnixSocket(t *testing.T) {
 }
 func TestServerWithExtensionDriver(t *testing.T) {
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "bridge.sock")
+	socketPath := filepath.Join(tmpDir, "native", "bridge.sock")
+	if err := protocol.PrivateDir(filepath.Dir(socketPath)); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("TETHER_BRIDGE_SOCKET", socketPath)
 
 	hostToExtReader, hostToExtWriter := io.Pipe()
 	extToHostReader, extToHostWriter := io.Pipe()
+	defer hostToExtReader.Close()
+	defer hostToExtWriter.Close()
+	defer extToHostReader.Close()
+	defer extToHostWriter.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	nativeErrors := make(chan error, 1)
 	go func() {
-		_ = RunNativeHostServer(ctx, extToHostReader, hostToExtWriter, nil)
+		nativeErrors <- RunNativeHostServer(ctx, extToHostReader, hostToExtWriter, []byte(`{"type":"heartbeat"}`), nil)
 	}()
-	// Wait for socket
+	// Wait for the private socket or surface the actual asynchronous error.
 	deadline := time.Now().Add(2 * time.Second)
+	ready := false
 	for time.Now().Before(deadline) {
-		if conn, err := net.Dial("unix", socketPath); err == nil {
-			conn.Close()
-			break
+		select {
+		case runErr := <-nativeErrors:
+			t.Fatalf("native host exited before becoming ready: %v", runErr)
+		default:
+		}
+		if err := protocol.ValidatePrivateSocket(socketPath); err == nil {
+			if conn, err := net.Dial("unix", socketPath); err == nil {
+				conn.Close()
+				ready = true
+				break
+			}
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	if !ready {
+		t.Fatal("private native socket failed to become ready")
 	}
 
 	// Mock extension
@@ -210,10 +227,16 @@ func TestServerWithExtensionDriver(t *testing.T) {
 	go func() {
 		serverErrChan <- server.ListenAndServe(0)
 	}()
+	defer server.Close()
 	// Wait for server to bind
 	var serverPort int
 	bindDeadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(bindDeadline) {
+		select {
+		case runErr := <-serverErrChan:
+			t.Fatalf("daemon exited before becoming ready: %v", runErr)
+		default:
+		}
 		if p := server.Port(); p > 0 {
 			serverPort = p
 			break
@@ -231,14 +254,19 @@ func TestServerWithExtensionDriver(t *testing.T) {
 	}
 	reqBytes, _ := json.Marshal(reqObj)
 
-	httpReq, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/", serverPort), bytes.NewReader(reqBytes))
+	httpReq, err := http.NewRequest(http.MethodPost, fmt.Sprintf("https://127.0.0.1:%d/", serverPort), bytes.NewReader(reqBytes))
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer auth-token-xyz")
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 3 * time.Second}
+	config, err := protocol.DaemonTLS("auth-token-xyz", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &http.Transport{TLSClientConfig: config}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Timeout: 3 * time.Second, Transport: transport}
 	httpResp, err := client.Do(httpReq)
 	if err != nil {
 		t.Fatalf("client.Do failed: %v", err)

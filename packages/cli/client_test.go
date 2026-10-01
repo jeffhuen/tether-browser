@@ -3,11 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 )
 
 func TestDaemonUnreachableDiagnostic(t *testing.T) {
+	t.Setenv("TETHER_AUTH_TOKEN", "fixture-key")
 	deadAddr := "127.0.0.1:65534"
 	t.Setenv("TETHER_DAEMON_ADDR", deadAddr)
 	client := NewClient(deadAddr)
@@ -44,7 +47,12 @@ func TestDaemonUnreachableDiagnostic(t *testing.T) {
 
 func TestBrokerLifecycleAndTargetInjection(t *testing.T) {
 	// Create mock daemon server
-	daemonLn, err := net.Listen("tcp", "127.0.0.1:0")
+	t.Setenv("TETHER_AUTH_TOKEN", "fixture-key")
+	config, err := protocol.DaemonTLS("fixture-key", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemonLn, err := tls.Listen("tcp", "127.0.0.1:0", config)
 	if err != nil {
 		t.Fatalf("failed to start mock daemon: %v", err)
 	}
@@ -53,7 +61,7 @@ func TestBrokerLifecycleAndTargetInjection(t *testing.T) {
 	daemonAddr := daemonLn.Addr().String()
 
 	// Track requests received by daemon
-	var receivedMethods []string
+	var captured sync.Mutex
 	var receivedTargetIDs []string
 
 	go func() {
@@ -70,13 +78,13 @@ func TestBrokerLifecycleAndTargetInjection(t *testing.T) {
 					return
 				}
 
-				receivedMethods = append(receivedMethods, req.Method)
-
 				var paramMap map[string]any
 				if len(req.Params) > 0 {
 					_ = json.Unmarshal(req.Params, &paramMap)
 					if tid, ok := paramMap["targetId"].(string); ok {
+						captured.Lock()
 						receivedTargetIDs = append(receivedTargetIDs, tid)
+						captured.Unlock()
 					}
 				}
 
@@ -100,19 +108,33 @@ func TestBrokerLifecycleAndTargetInjection(t *testing.T) {
 
 	// Start broker on temp socket
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test-broker.sock")
+	sockPath := filepath.Join(tmpDir, "broker", "test-broker.sock")
+	if err := protocol.PrivateDir(filepath.Dir(sockPath)); err != nil {
+		t.Fatal(err)
+	}
 
+	t.Setenv("TETHER_AUTH_TOKEN", "")
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmpDir, "cache"))
 	broker := NewBroker(sockPath, daemonAddr)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	runErrors := make(chan error, 1)
 	go func() {
-		_ = broker.Run(ctx)
+		runErrors <- broker.Run(ctx)
 	}()
+	defer broker.Close()
 
 	// Wait for broker socket to be ready
 	ready := false
 	for i := 0; i < 20; i++ {
+		select {
+		case runErr := <-runErrors:
+			t.Fatalf("broker exited before becoming ready: %v", runErr)
+		default:
+		}
 		if IsBrokerAlive(sockPath) {
 			ready = true
 			break
@@ -121,6 +143,15 @@ func TestBrokerLifecycleAndTargetInjection(t *testing.T) {
 	}
 	if !ready {
 		t.Fatalf("broker socket failed to become ready")
+	}
+
+	// A broker started before SSH credential sync must use the new private key.
+	tokenPath := filepath.Join(tmpDir, "cache", "tether", "auth")
+	if err := protocol.PrivateDir(filepath.Dir(tokenPath)); err != nil {
+		t.Fatal(err)
+	}
+	if err := protocol.WritePrivateFile(tokenPath, []byte("fixture-key")); err != nil {
+		t.Fatal(err)
 	}
 
 	// Connect client to broker
@@ -159,6 +190,8 @@ func TestBrokerLifecycleAndTargetInjection(t *testing.T) {
 	}
 
 	// Verify targetId was injected into Click call
+	captured.Lock()
+	defer captured.Unlock()
 	foundInjected := false
 	for _, tid := range receivedTargetIDs {
 		if tid == "target-tab-99" {
@@ -173,6 +206,7 @@ func TestBrokerLifecycleAndTargetInjection(t *testing.T) {
 
 func TestRunJSONResults(t *testing.T) {
 	t.Setenv("TETHER_BROKER_SOCKET", filepath.Join(t.TempDir(), "absent.sock"))
+	t.Setenv("TETHER_AUTH_TOKEN", "fixture-key")
 	screenshotPath := filepath.Join(t.TempDir(), "screenshot.png")
 	for _, tc := range []struct {
 		name   string
@@ -185,7 +219,11 @@ func TestRunJSONResults(t *testing.T) {
 		{"screenshot file", []string{"screenshot", screenshotPath, "--json"}, json.RawMessage(`{"base64":"AAECAw==","format":"png","width":1,"height":1}`), 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			config, err := protocol.DaemonTLS("fixture-key", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ln, err := tls.Listen("tcp", "127.0.0.1:0", config)
 			if err != nil {
 				t.Fatal(err)
 			}
