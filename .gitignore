@@ -25,6 +25,7 @@ bin/
 *.test
 dist/
 .beads/interactions.jsonl
+graphify-out/
 
 # Local research notes & environments
 notes/

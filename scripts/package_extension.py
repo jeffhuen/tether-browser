@@ -7,7 +7,11 @@ ROOT = Path(__file__).resolve().parent.parent
 EXT_DIR = ROOT / "packages" / "extension"
 DIST_DIR = ROOT / "dist"
 DIST_DIR.mkdir(exist_ok=True)
-ZIP_PATH = DIST_DIR / "tether-extension-v0.1.41.zip"
+manifest_file = EXT_DIR / "manifest.json"
+import json
+with open(manifest_file, "r", encoding="utf-8") as f:
+    version = json.load(f).get("version", "0.1.41")
+ZIP_PATH = DIST_DIR / f"tether-extension-v{version}.zip"
 
 print(f"Packaging Tether Chrome Extension from {EXT_DIR}...")
 
