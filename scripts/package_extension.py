@@ -12,6 +12,7 @@ import json
 with open(manifest_file, "r", encoding="utf-8") as f:
     version = json.load(f).get("version", "0.1.41")
 ZIP_PATH = DIST_DIR / f"tether-extension-v{version}.zip"
+UNPACKED_ZIP_PATH = DIST_DIR / f"tether-extension-unpacked-v{version}.zip"
 
 print(f"Packaging Tether Chrome Extension from {EXT_DIR}...")
 
@@ -37,3 +38,13 @@ with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as zf:
                 print(f"  + {arcname}")
 
 print(f"\n✓ Created Chrome Web Store bundle: {ZIP_PATH} ({ZIP_PATH.stat().st_size} bytes)")
+with zipfile.ZipFile(UNPACKED_ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as zf:
+    for root, dirs, files in os.walk(EXT_DIR):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
+        for file in files:
+            if file.startswith(".") or file.endswith(".tmp"):
+                continue
+            file_path = Path(root) / file
+            arcname = file_path.relative_to(EXT_DIR)
+            zf.write(file_path, arcname)
+print(f"✓ Created Unpacked Development bundle: {UNPACKED_ZIP_PATH} ({UNPACKED_ZIP_PATH.stat().st_size} bytes)")

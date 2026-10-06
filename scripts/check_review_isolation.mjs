@@ -8,12 +8,13 @@ const listen = { addListener() {} };
 const port = {
   onMessage: { addListener(fn) { receive = fn; } },
   onDisconnect: listen,
-  postMessage(message) { reply(message); },
+  postMessage(message) { if (reply) reply(message); },
 };
 
 globalThis.self = { addEventListener() {} };
 globalThis.chrome = {
   proxy: { settings: { onChange: listen } },
+  webRequest: { onAuthRequired: listen, onCompleted: listen, onErrorOccurred: listen },
   storage: { local: { get: async () => ({ tether_enabled: true }) } },
   alarms: { create() {}, onAlarm: listen },
   runtime: { connectNative: () => port, getURL: () => "chrome-extension://example/", onMessage: listen, lastError: null },

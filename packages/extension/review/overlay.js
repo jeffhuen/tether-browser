@@ -650,6 +650,26 @@
   }
 
   // --- 4. Shadow DOM Overlay UI & Badge Pins ---
+  function createEl(tag, attrs, ...children) {
+    const node = document.createElement(tag);
+    if (attrs) {
+      for (const [k, v] of Object.entries(attrs)) {
+        if (k === 'className') node.className = v;
+        else if (k === 'id') node.id = v;
+        else if (k === 'style') node.style.cssText = v;
+        else if (k === 'title') node.title = v;
+        else if (k === 'type') node.type = v;
+        else if (k === 'value') node.value = v;
+        else if (k === 'placeholder') node.placeholder = v;
+        else node.setAttribute(k, v);
+      }
+    }
+    for (const child of children.flat()) {
+      if (child != null) node.append(child);
+    }
+    return node;
+  }
+
 
   class TetherReviewManager {
     constructor() {
@@ -817,24 +837,22 @@
       shadow.appendChild(tooltip);
       this.tooltip = tooltip;
 
-      const card = document.createElement('div');
-      card.className = 'card';
-      card.innerHTML = `
-        <div class="card-header">Add Review Note</div>
-        <div class="card-meta" id="card-meta"></div>
-        <label style="font-size: 11px; font-weight: 600; color: #475569;">Intent</label>
-        <select id="card-intent">
-          <option value="design_fix">Design Fix</option>
-          <option value="bug">Bug</option>
-          <option value="clarification">Clarification</option>
-        </select>
-        <label style="font-size: 11px; font-weight: 600; color: #475569;">Feedback</label>
-        <textarea id="card-comment" placeholder="What should be changed?"></textarea>
-        <div class="card-actions">
-          <button class="btn btn-secondary" id="card-cancel">Cancel</button>
-          <button class="btn btn-primary" id="card-save">Save Note</button>
-        </div>
-      `;
+      const card = createEl('div', { className: 'card' },
+        createEl('div', { className: 'card-header' }, 'Add Review Note'),
+        createEl('div', { className: 'card-meta', id: 'card-meta' }),
+        createEl('label', { style: 'font-size: 11px; font-weight: 600; color: #475569;' }, 'Intent'),
+        createEl('select', { id: 'card-intent' },
+          createEl('option', { value: 'design_fix' }, 'Design Fix'),
+          createEl('option', { value: 'bug' }, 'Bug'),
+          createEl('option', { value: 'clarification' }, 'Clarification')
+        ),
+        createEl('label', { style: 'font-size: 11px; font-weight: 600; color: #475569;' }, 'Feedback'),
+        createEl('textarea', { id: 'card-comment', placeholder: 'What should be changed?' }),
+        createEl('div', { className: 'card-actions' },
+          createEl('button', { className: 'btn btn-secondary', id: 'card-cancel' }, 'Cancel'),
+          createEl('button', { className: 'btn btn-primary', id: 'card-save' }, 'Save Note')
+        )
+      );
       shadow.appendChild(card);
       this.modal = card;
 
@@ -865,15 +883,13 @@
         }
       });
 
-      const dock = document.createElement('div');
-      dock.className = 'dock';
-      dock.innerHTML = `
-        <span class="dock-title">Tether</span>
-        <button class="dock-btn" id="dock-select" title="Select an element to annotate">⊕ Select</button>
-        <span class="dock-count" id="dock-count">0</span>
-        <button class="dock-btn" id="dock-list" title="Show all pins">☰ List</button>
-        <button class="dock-btn dock-done" id="dock-done" title="End review session">✕ Done</button>
-      `;
+      const dock = createEl('div', { className: 'dock' },
+        createEl('span', { className: 'dock-title' }, 'Tether'),
+        createEl('button', { className: 'dock-btn', id: 'dock-select', title: 'Select an element to annotate' }, '⊕ Select'),
+        createEl('span', { className: 'dock-count', id: 'dock-count' }, '0'),
+        createEl('button', { className: 'dock-btn', id: 'dock-list', title: 'Show all pins' }, '☰ List'),
+        createEl('button', { className: 'dock-btn dock-done', id: 'dock-done', title: 'End review session' }, '✕ Done')
+      );
       shadow.appendChild(dock);
       this.dock = dock;
       this.dockSelect = dock.querySelector('#dock-select');
@@ -883,12 +899,13 @@
       dock.querySelector('#dock-list').addEventListener('click', () => this.toggleSummary());
       dock.querySelector('#dock-done').addEventListener('click', () => this.stop());
 
-      const summary = document.createElement('div');
-      summary.className = 'summary';
-      summary.innerHTML = `
-        <div class="summary-header"><span>Review notes</span><button class="dock-btn" id="summary-copy" title="Copy all notes to clipboard">⧉ Copy all</button></div>
-        <div class="summary-list" id="summary-list"></div>
-      `;
+      const summary = createEl('div', { className: 'summary' },
+        createEl('div', { className: 'summary-header' },
+          createEl('span', null, 'Review notes'),
+          createEl('button', { className: 'dock-btn', id: 'summary-copy', title: 'Copy all notes to clipboard' }, '⧉ Copy all')
+        ),
+        createEl('div', { className: 'summary-list', id: 'summary-list' })
+      );
       shadow.appendChild(summary);
       this.summary = summary;
       summary.addEventListener('click', (e) => { e.stopPropagation(); });
@@ -947,7 +964,17 @@
       crop.setAttribute('aria-label', 'Select screenshot area');
       crop.setAttribute('aria-describedby', 'crop-help');
       crop.tabIndex = -1;
-      crop.innerHTML = '<div class="crop-selection"></div><div class="crop-controls"><span id="crop-help">Drag to select an area. Release to capture.<small>Arrows move · Shift + arrows resize · Enter captures · Esc cancels</small></span><output aria-live="polite"></output><button type="button">Cancel</button></div>';
+      crop.append(
+        createEl('div', { className: 'crop-selection' }),
+        createEl('div', { className: 'crop-controls' },
+          createEl('span', { id: 'crop-help' },
+            'Drag to select an area. Release to capture.',
+            createEl('small', null, 'Arrows move · Shift + arrows resize · Enter captures · Esc cancels')
+          ),
+          createEl('output', { 'aria-live': 'polite' }),
+          createEl('button', { type: 'button' }, 'Cancel')
+        )
+      );
       shadow.appendChild(crop);
       const selection = crop.querySelector('.crop-selection');
       const size = crop.querySelector('output');
@@ -1071,9 +1098,9 @@
       if (!this.summary) return;
       const list = this.summary.querySelector('#summary-list');
       if (!list) return;
-      list.innerHTML = '';
+      list.replaceChildren();
       if (this.notes.length === 0) {
-        list.innerHTML = '<div class="summary-empty">No pins yet — press Select, then click an element.</div>';
+        list.appendChild(createEl('div', { className: 'summary-empty' }, 'No pins yet — press Select, then click an element.'));
         return;
       }
       this.notes.forEach(n => {
